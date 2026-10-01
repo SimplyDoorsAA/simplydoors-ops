@@ -249,3 +249,33 @@ def test_long_remarks_pdf_and_csv_formulas(client):
     assert ",'=cmd()" not in csv and "'Anything" not in csv or True
     assert "\n=" not in csv and ",=" not in csv
     assert client.get("/ops/api/admin/audit?limit=abc").status_code == 400
+
+
+def test_photo_location_stamp(client):
+    from app import geo
+    assert geo.parse_geo('{"status":"ok","lat":"bad"}', "2026-10-01T18:00:00Z")["status"] == "missing"
+    assert geo.parse_geo('{"status":"ok","lat":95,"lon":0,"acc":5}', "2026-10-01T18:00:00Z")["status"] == "missing"
+    assert geo.parse_geo("not json", "2026-10-01T18:00:00Z")["status"] == "missing"
+    assert login(client, "Jaime Mendoza", "135790").status_code == 200
+    good = json.dumps({"status": "ok", "lat": 29.4241, "lon": -98.4936, "acc": 12,
+                       "at": "2026-10-01T18:52:00.000Z", "fileAge": 3})
+    old_gallery = json.dumps({"status": "denied", "at": "2026-10-01T18:53:00.000Z", "fileAge": 86400})
+    r = receiving(client, "sub-geo-0001", geo_ticket1=good, geo_product1=old_gallery)
+    assert r.status_code == 200, r.text
+    rid = conn().execute("SELECT id FROM reports WHERE submission_id='sub-geo-0001'").fetchone()[0]
+    rows = {p["slot"]: p for p in conn().execute("SELECT * FROM photos WHERE report_id=?", (rid,))}
+    assert rows["ticket1"]["geo_status"] == "ok" and abs(rows["ticket1"]["lat"] - 29.4241) < 1e-6
+    assert rows["ticket1"]["taken_at"] == "2026-10-01T18:52:00Z"
+    assert rows["product1"]["geo_status"] == "denied" and rows["product1"]["file_age"] == 86400
+    with Image.open(rows["ticket1"]["path"]) as im:
+        w, h = im.size
+        assert h > w * 2000 / 3000  # stamp bar added below the 3:2 photo
+    login(client, "Adem Atis", "246810")
+    det = client.get(f"/ops/api/admin/reports/{rid}").json()
+    t = next(p for p in det["photos"] if p["slot"] == "ticket1")
+    pr = next(p for p in det["photos"] if p["slot"] == "product1")
+    assert t["map"].endswith("29.4241,-98.4936") and "1:52 PM" in t["lines"][0]
+    assert pr["map"] is None and any("gallery" in l for l in pr["lines"]) and any("blocked" in l for l in pr["lines"])
+    lst = next(x for x in client.get("/ops/api/admin/reports").json() if x["id"] == rid)
+    assert lst["no_geo"] == 1
+    assert client.get(f"/ops/api/admin/reports/{rid}/pdf").content[:4] == b"%PDF"

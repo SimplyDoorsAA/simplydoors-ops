@@ -54,7 +54,7 @@
       $("#repList").innerHTML = rows.length ? `<table class="rows"><thead><tr><th>Receipt</th><th>Form</th><th>From</th>
         <th class="hide-sm">Details</th><th>Received</th><th>Email</th></tr></thead><tbody>` +
         rows.map(r => `<tr class="click" data-id="${r.id}"><td><b>${esc(r.receipt)}</b></td><td>${esc(r.form_type)}</td>
-          <td>${esc(r.staff_name)}</td><td class="hide-sm">${esc(r.summary)}</td><td>${esc(when(r.submitted_at))}${r.queued_on_phone ? ' <span class="badge warn">sent late</span>' : ""}</td>
+          <td>${esc(r.staff_name)}</td><td class="hide-sm">${esc(r.summary)}</td><td>${esc(when(r.submitted_at))}${r.queued_on_phone ? ' <span class="badge warn">sent late</span>' : ""}${r.no_geo ? ` <span class="badge warn">${r.no_geo} photo${r.no_geo > 1 ? "s" : ""} without location</span>` : ""}</td>
           <td>${emailBadge(r.email_status)}</td></tr>`).join("") + `</tbody></table>`
         : `<p class="muted">No reports yet.</p>`;
       $$("#repList tr.click").forEach(tr => tr.onclick = () => openReport(tr.dataset.id));
@@ -75,7 +75,10 @@
         <button class="mini" id="resend" type="button">Email it again</button></div>
         <table class="kv">${r.rows.map(([a, b]) => `<tr><td>${esc(a)}</td><td>${esc(b)}</td></tr>`).join("")}</table>
         <h3>Photos (${r.photos.length})</h3>
-        <div class="gallery">${r.photos.map(p => `<a href="api/admin/photos/${p.id}" target="_blank" rel="noopener"><img loading="lazy" src="api/admin/photos/${p.id}" alt=""><span>${esc(p.label)}</span></a>`).join("") || '<p class="muted">None</p>'}</div>
+        <div class="gallery">${r.photos.map(p => `<div><a href="api/admin/photos/${p.id}" target="_blank" rel="noopener"><img loading="lazy" src="api/admin/photos/${p.id}" alt=""></a>
+          <span><b>${esc(p.label)}</b>${p.located ? "" : ' <span class="badge warn">no location</span>'}</span>
+          ${p.lines.map(l => `<span>${esc(l)}</span>`).join("")}
+          ${p.map ? `<a class="maplink" href="${esc(p.map)}" target="_blank" rel="noopener">View on map</a>` : ""}</div>`).join("") || '<p class="muted">None</p>'}</div>
         <h3>Emails</h3>
         ${r.emails.map(e => `<div class="rule"><b>${emailBadge(e.status)}</b> ${esc(e.subject)}<div class="det">To: ${esc(e.recipients)}
           ${e.sent_at ? `<br>Sent ${esc(when(e.sent_at))}` : ""}${e.last_error ? `<br>Last error: ${esc(e.last_error)}` : ""}</div>

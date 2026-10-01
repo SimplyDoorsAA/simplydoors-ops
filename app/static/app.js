@@ -14,6 +14,7 @@
 
   let me = null;            // {name, dept, is_admin, sales_reps, locations}
   let photos = {};          // slot -> Blob for the open form
+  let photoMeta = {};       // slot -> {status, lat, lon, acc, at, fileAge}
   let previews = {};        // slot -> object URL
   let startedAt = null;
   let pickSlot = null;
@@ -141,12 +142,80 @@
       me = JSON.parse(localStorage.getItem("sdops_me") || "null");   // offline: keep working
       if (!me) return showLogin();
     }
-    setUser(); showHome(); flushOutbox();
+    setUser();
+    if (!(await maybeShowLocationScreen())) showHome();
+    flushOutbox();
+  }
+
+  // ------------------------------------------------------------ photo location
+  // Asked once (the screen below), used only when a photo is added, never in the background.
+  const GEO_KEY = "sdops_geo_choice";          // "yes" | "no"
+  const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  let lastFix = null;                          // reused for 2 minutes so the phone isn't asked twice in a row
+
+  async function geoPermission() {
+    if (!("geolocation" in navigator)) return "unsupported";
+    try { return (await navigator.permissions.query({ name: "geolocation" })).state; }   // granted | prompt | denied
+    catch (e) { return "unknown"; }
+  }
+  function getFix(timeoutMs = 12000) {
+    return new Promise(res => {
+      if (!("geolocation" in navigator)) return res({ status: "unsupported" });
+      if (lastFix && Date.now() - lastFix.t < 120000) return res(lastFix.fix);
+      navigator.geolocation.getCurrentPosition(
+        p => { const fix = { status: "ok", lat: p.coords.latitude, lon: p.coords.longitude, acc: Math.round(p.coords.accuracy) };
+               lastFix = { t: Date.now(), fix }; res(fix); },
+        err => res({ status: err.code === 1 ? "denied" : err.code === 3 ? "timeout" : "unavailable" }),
+        { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 60000 });
+    });
+  }
+  // Called when a photo is added. Only shows the phone's location question if the person said yes on our screen.
+  async function locationForPhoto() {
+    const perm = await geoPermission();
+    if (perm === "unsupported") return { status: "unsupported" };
+    if (perm === "denied") return { status: "denied" };
+    if (perm !== "granted" && localStorage.getItem(GEO_KEY) === "no") return { status: "off" };
+    const fix = await getFix();
+    if (fix.status === "denied") localStorage.setItem(GEO_KEY, "no");   // don't keep asking someone who said no
+    return fix;
+  }
+  async function maybeShowLocationScreen() {
+    if (localStorage.getItem(GEO_KEY)) return false;
+    const perm = await geoPermission();
+    if (perm === "granted") { localStorage.setItem(GEO_KEY, "yes"); return false; }
+    if (perm === "unsupported" || perm === "denied") { localStorage.setItem(GEO_KEY, "no"); return false; }
+    $("#iosTip").classList.toggle("hidden", !isIOS);
+    show("viewLocation");
+    return true;
+  }
+  $("#geoYes").addEventListener("click", async () => {
+    const btn = $("#geoYes"); btn.disabled = true; btn.textContent = "Waiting for your phone…";
+    const fix = await getFix();
+    localStorage.setItem(GEO_KEY, fix.status === "denied" ? "no" : "yes");
+    btn.disabled = false; btn.textContent = "Turn on photo location";
+    showHome();
+  });
+  $("#geoNo").addEventListener("click", () => { localStorage.setItem(GEO_KEY, "no"); showHome(); });
+
+  async function updateGeoNote() {
+    const note = $("#geoNote");
+    const perm = await geoPermission();
+    const off = perm === "denied" || (perm !== "granted" && localStorage.getItem(GEO_KEY) === "no");
+    if (!off) { note.classList.add("hidden"); return; }
+    note.innerHTML = perm === "denied"
+      ? (isIOS ? "Photo location is blocked on this phone, so photos are marked “No location”. To turn it on: Settings → Apps → Safari → Location → Allow."
+               : "Photo location is blocked on this phone, so photos are marked “No location”. Turn it on in your browser's site settings for this app.")
+      : `Photo location is off, so photos are marked “No location”. <button type="button" class="link" id="geoAgain">Turn it on</button>`;
+    note.classList.remove("hidden");
+    const again = $("#geoAgain");
+    if (again) again.onclick = () => { localStorage.removeItem(GEO_KEY); maybeShowLocationScreen(); };
   }
 
   // ------------------------------------------------------------ home
   async function showHome() {
     show("viewHome");
+    updateGeoNote();
     const list = $("#recentList");
     const pending = (await outboxAll()).filter(e => e.userId === me.id);
     let rows = pending.map(e => `<li><span>${esc(e.type)} · ${esc(e.fields.po || "")} ${esc(e.fields.customer || "")}</span><span class="tag wait">${e.error ? "Needs fixing" : "Waiting to send"}</span></li>`);
@@ -192,7 +261,10 @@
         t.setAttribute("aria-label", photos[slot] ? `${RECEIVING.labels[slot]} added` : `Add ${RECEIVING.labels[slot]}`);
         if (photos[slot]) {
           if (!previews[slot]) previews[slot] = URL.createObjectURL(photos[slot]);
-          t.innerHTML = `<img src="${previews[slot]}" alt=""><button type="button" class="remove" aria-label="Remove photo">×</button>`;
+          const m = photoMeta[slot] || {};
+          const badge = m.status === "ok" ? (m.acc > 200 ? `<span class="geo warn">📍 ±${m.acc} m</span>` : `<span class="geo">📍 Located</span>`)
+            : m.status ? `<span class="geo warn">No location</span>` : "";
+          t.innerHTML = `<img src="${previews[slot]}" alt="">${badge}<button type="button" class="remove" aria-label="Remove photo">×</button>`;
           t.querySelector(".remove").onclick = (e) => { e.stopPropagation(); removePhoto(slot); };
         } else {
           t.innerHTML = `<span><span class="plus">+</span>${esc(RECEIVING.labels[slot])}</span>`;
@@ -205,7 +277,7 @@
   }
   function removePhoto(slot) {
     if (previews[slot]) URL.revokeObjectURL(previews[slot]);
-    delete previews[slot]; delete photos[slot];
+    delete previews[slot]; delete photos[slot]; delete photoMeta[slot];
     renderTiles(); saveDraftSoon();
   }
 
@@ -244,10 +316,15 @@
     if (!file || !slot) return;
     const tile = $(`.tile[data-slot="${slot}"]`);
     if (tile) tile.classList.add("busy");
+    const addedAt = new Date();
+    const fileAge = file.lastModified ? Math.max(0, Math.round((addedAt.getTime() - file.lastModified) / 1000)) : null;
+    const where = locationForPhoto();          // runs while the photo is being shrunk
     try {
       const blob = await compress(file);
+      const loc = await where;
       if (previews[slot]) { URL.revokeObjectURL(previews[slot]); delete previews[slot]; }
       photos[slot] = blob;
+      photoMeta[slot] = { ...loc, at: addedAt.toISOString(), fileAge };
       renderTiles(); saveDraftSoon();
     } catch (e) {
       if (tile) tile.classList.remove("busy");
@@ -281,7 +358,7 @@
     clearTimeout(draftTimer);
     draftTimer = setTimeout(async () => {
       try {
-        await draftPut(RECEIVING.slug, { fields: readFields(), photos: { ...photos }, startedAt });
+        await draftPut(RECEIVING.slug, { fields: readFields(), photos: { ...photos }, photoMeta: { ...photoMeta }, startedAt });
         $("#draftNote").textContent = "Saved on this phone";
       } catch (e) { /* storage full or private mode: the form still works */ }
     }, 400);
@@ -292,7 +369,7 @@
   async function openReceiving(prefill) {
     buildSelects();
     Object.values(previews).forEach(u => URL.revokeObjectURL(u));
-    photos = {}; previews = {};
+    photos = {}; previews = {}; photoMeta = {};
     $("#formError").classList.add("hidden");
     $$(".invalid", form).forEach(el => el.classList.remove("invalid"));
     let draft = prefill || null;
@@ -300,6 +377,7 @@
     if (draft) {
       writeFields(draft.fields || {});
       photos = { ...(draft.photos || {}) };
+      photoMeta = { ...(draft.photoMeta || {}) };
       startedAt = draft.startedAt || new Date().toISOString();
       $("#draftNote").textContent = prefill ? "Fix the problem below, then submit again" : "Picked up where you left off";
     } else {
@@ -351,7 +429,7 @@
     btn.disabled = true; btn.textContent = "Saving…";
     clearTimeout(draftTimer);
     const entry = { id: newId(), slug: RECEIVING.slug, type: RECEIVING.type, userId: me.id, user: me.name, fields: f,
-      photos: { ...photos }, startedAt, createdAt: new Date().toISOString(), tries: 0 };
+      photos: { ...photos }, photoMeta: { ...photoMeta }, startedAt, createdAt: new Date().toISOString(), tries: 0 };
     try {
       await outboxPut(entry);              // safe on the phone before anything else
       await draftDel(RECEIVING.slug).catch(() => {});
@@ -377,7 +455,7 @@
     } else if (result.fix) {
       // The server rejected something; put it straight back in the form (the form slot is empty: we just submitted it).
       // Save it as the draft first, and only then take it out of the queue.
-      const back = { fields: entry.fields, photos: entry.photos, startedAt: entry.startedAt };
+      const back = { fields: entry.fields, photos: entry.photos, photoMeta: entry.photoMeta, startedAt: entry.startedAt };
       draftPut(RECEIVING.slug, back).then(() => outboxDel(entry.id)).then(updateBanner).catch(() => {});
       openReceiving(back);
       $("#formError").textContent = result.message; $("#formError").classList.remove("hidden");
@@ -396,7 +474,10 @@
   async function sendEntry(entry) {
     const fd = new FormData();
     Object.entries(entry.fields).forEach(([k, v]) => fd.append(k, typeof v === "boolean" ? (v ? "1" : "0") : v));
-    Object.entries(entry.photos || {}).forEach(([slot, blob]) => fd.append(slot, blob, slot + ".jpg"));
+    Object.entries(entry.photos || {}).forEach(([slot, blob]) => {
+      fd.append(slot, blob, slot + ".jpg");
+      fd.append("geo_" + slot, JSON.stringify((entry.photoMeta || {})[slot] || { status: "missing" }));
+    });
     fd.append("submission_id", entry.id);
     fd.append("started_at", entry.startedAt || "");
     fd.append("queued", entry.tries > 0 ? "1" : "0");
@@ -447,7 +528,7 @@
     if (!e) return;
     const existing = await draftGet(RECEIVING.slug).catch(() => null);
     if (existing && !confirm("You have an unfinished Receiving Report open. Replace it with the one that needs fixing?")) return;
-    const back = { fields: e.fields, photos: e.photos, startedAt: e.startedAt };
+    const back = { fields: e.fields, photos: e.photos, photoMeta: e.photoMeta, startedAt: e.startedAt };
     await draftPut(RECEIVING.slug, back);
     await outboxDel(e.id);
     await openReceiving(back);

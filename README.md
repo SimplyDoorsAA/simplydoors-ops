@@ -21,6 +21,13 @@ GitHub Pages portal + Google Apps Script, one form at a time.
   - Staff & PINs.
   - Email lists per form.
   - Status.
+- **Photo time + location stamps:**
+  - Asked once per phone, on a one-time screen after the first sign-in. Location is used only when a photo is added, never in the background.
+  - Each photo gets a bar printed along the bottom: when it was added, GPS position and accuracy, receipt number and who took it.
+  - The admin screen and PDF show the same details with a "View on map" link.
+  - Photos without a location still go through but are flagged.
+  - Photos that look older than 10 minutes when added (likely picked from the gallery) are flagged too.
+  - iPhones re-ask about location about once a day unless each phone sets Settings → Apps → Safari → Location → Allow. The one-time screen tells staff how.
 - Phone alerts (ntfy) for lockouts, PIN resets, staff changes, email-list changes, emails that keep failing, and any opening of a disciplinary record (Stage 2).
 
 ### Email rules

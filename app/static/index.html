@@ -41,6 +41,23 @@
     </form>
   </section>
 
+  <!-- ONE-TIME LOCATION SCREEN -->
+  <section id="viewLocation" class="view hidden">
+    <h1>Photo locations</h1>
+    <p>When you add a photo, SimplyDoors stamps it with the <b>time</b> and <b>where it was taken</b>, so the office can see deliveries were checked in the right place.</p>
+    <ul class="plain">
+      <li>Location is used <b>only at the moment you add a photo</b>.</li>
+      <li>It is <b>never</b> tracked in the background, and never when the app is closed.</li>
+    </ul>
+    <button class="btn" id="geoYes" type="button">Turn on photo location</button>
+    <button class="btn secondary" id="geoNo" type="button">Not now</button>
+    <div class="tip hidden" id="iosTip">
+      <b>iPhone: stop it from asking again</b>
+      <p>iPhones ask about location again every day or so. To make it a one-time thing:</p>
+      <ol><li>Open <b>Settings</b> → <b>Apps</b> → <b>Safari</b></li><li>Tap <b>Location</b></li><li>Choose <b>Allow</b></li></ol>
+    </div>
+  </section>
+
   <!-- HOME -->
   <section id="viewHome" class="view hidden">
     <h1>What are you doing?</h1>
@@ -48,6 +65,7 @@
       <span class="card-title">Receiving Report</span>
       <span class="card-sub">Log a delivery: tickets, product photos, location.</span>
     </button>
+    <p class="note hidden" id="geoNote"></p>
     <p class="note">During the test run, End of Shift, vehicle and incident forms are still in the old portal.</p>
     <h2>Your recent reports</h2>
     <ul class="receipts" id="recentList"><li class="muted">Loading…</li></ul>

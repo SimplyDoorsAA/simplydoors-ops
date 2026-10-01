@@ -44,7 +44,7 @@ def _report_bundle(report_id: int):
     c = conn()
     r = c.execute("SELECT r.*, s.name AS staff_name FROM reports r JOIN staff s ON s.id=r.staff_id WHERE r.id=?",
                   (report_id,)).fetchone()
-    photos = c.execute("SELECT slot, path FROM photos WHERE report_id=? ORDER BY id", (report_id,)).fetchall()
+    photos = c.execute("SELECT * FROM photos WHERE report_id=? ORDER BY id", (report_id,)).fetchall()
     return r, json.loads(r["data"]), photos
 
 

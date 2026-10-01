@@ -28,7 +28,7 @@ Image.MAX_IMAGE_PIXELS = 40_000_000           # phone photos are ~12-50 MP; refu
 warnings.simplefilter("error", Image.DecompressionBombWarning)
 PHOTO_FORMATS = ["JPEG", "PNG", "WEBP"]
 
-from . import alerts, auth, mailer
+from . import alerts, auth, geo, mailer
 from .db import DATA_DIR, DB_PATH, audit, conn, init_db, now_iso
 from .forms import FORM_BY_SLUG, FORMS, RECEIVING_LOCATIONS, clean, recipients_for, subject_for
 from .pdf import build_pdf
@@ -40,7 +40,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 60 * 1024 * 1024
-APP_VERSION = "stage1-1"
+APP_VERSION = "stage1-2"
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -210,12 +210,15 @@ def me(staff=Depends(current_staff)):
 
 
 # ---------------------------------------------------------------- reports
-def _save_photo(upload_bytes: bytes, dest: str) -> int:
-    """Re-saves the photo as a clean JPEG: fixes rotation, removes hidden data like GPS."""
+def _save_photo(upload_bytes: bytes, dest: str, g: dict | None = None, receipt: str = "", who: str = "") -> int:
+    """Re-saves the photo as a clean JPEG with the time/location stamp printed on it.
+    Hidden file data is dropped; the location kept is the one the app recorded."""
     with Image.open(io.BytesIO(upload_bytes), formats=PHOTO_FORMATS) as im:
         im.draft("RGB", (2000, 2000))           # JPEG: decode at reduced size, saves memory
         im.thumbnail((2000, 2000))
         im = ImageOps.exif_transpose(im).convert("RGB")
+        if g is not None:
+            im = geo.stamp(im, g, receipt, who)
         im.save(dest, "JPEG", quality=85, optimize=True)
     return os.path.getsize(dest)
 
@@ -269,7 +272,7 @@ async def submit_report(slug: str, request: Request, staff=Depends(current_staff
         if not await run_in_threadpool(_check_photo, b):
             errors.append(f"{_label} could not be read as a photo. Please take it again.")
             continue
-        photo_blobs.append((slot, b))
+        photo_blobs.append((slot, b, geo.parse_geo(str(form.get(f"geo_{slot}") or ""), now_iso())))
     if errors:
         raise HTTPException(422, " ".join(errors))
 
@@ -293,13 +296,16 @@ def _store_report(form_type, spec, staff, submission_id, data, photo_blobs, star
         c.execute("UPDATE reports SET receipt=? WHERE id=?", (receipt, rid))
         folder = os.path.join(PHOTO_DIR, str(rid))
         os.makedirs(folder, exist_ok=True)
-        for slot, b in photo_blobs:
+        for slot, b, g in photo_blobs:
             dest = os.path.join(folder, f"{slot}.jpg")
-            size = _save_photo(b, dest)
-            c.execute("INSERT INTO photos(report_id, slot, path, bytes) VALUES (?,?,?,?)", (rid, slot, dest, size))
+            size = _save_photo(b, dest, g, receipt, staff["name"])
+            c.execute("INSERT INTO photos(report_id, slot, path, bytes, taken_at, lat, lon, acc, geo_status, file_age)"
+                      " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                      (rid, slot, dest, size, g["taken_at"], g["lat"], g["lon"], g["acc"], g["status"], g["file_age"]))
+        no_loc = sum(1 for _, _, g in photo_blobs if g["status"] != "ok")
         audit(staff["id"], staff["name"], "report_submitted", f"report:{rid}",
-              {"form": form_type, "receipt": receipt, "photos": len(photo_blobs), "queued_on_phone": bool(queued)},
-              ip, agent)
+              {"form": form_type, "receipt": receipt, "photos": len(photo_blobs), "photos_without_location": no_loc,
+               "queued_on_phone": bool(queued)}, ip, agent)
         mailer.queue_report_email(rid, recipients_for(form_type, data),
                                   subject_for(form_type, data, staff["name"], receipt))
         c.execute("COMMIT")
@@ -394,14 +400,15 @@ def admin_reports(request: Request, admin=Depends(current_admin)):
     w = (" WHERE " + " AND ".join(where)) if where else ""
     rows = conn().execute(
         f"SELECT r.id, r.receipt, r.form_type, r.submitted_at, r.queued_on_phone, s.name AS staff_name, r.data,"
-        f" (SELECT status FROM emails e WHERE e.report_id=r.id ORDER BY e.id DESC LIMIT 1) AS email_status"
+        f" (SELECT status FROM emails e WHERE e.report_id=r.id ORDER BY e.id DESC LIMIT 1) AS email_status,"
+        f" (SELECT COUNT(*) FROM photos p WHERE p.report_id=r.id AND COALESCE(p.geo_status,'missing')!='ok') AS no_geo"
         f" FROM reports r JOIN staff s ON s.id=r.staff_id{w} ORDER BY r.id DESC LIMIT 300", args).fetchall()
     out = []
     for r in rows:
         d = json.loads(r["data"])
         summary = " · ".join(x for x in [d.get("po"), d.get("customer")] if x)
         out.append({k: r[k] for k in ("id", "receipt", "form_type", "submitted_at", "queued_on_phone",
-                                      "staff_name", "email_status")} | {"summary": summary})
+                                      "staff_name", "email_status", "no_geo")} | {"summary": summary})
     return out
 
 
@@ -414,7 +421,8 @@ def admin_report(rid: int, request: Request, admin=Depends(current_admin)):
         raise HTTPException(404)
     from .forms import display_rows
     data = json.loads(r["data"])
-    photos = c.execute("SELECT id, slot FROM photos WHERE report_id=? ORDER BY id", (rid,)).fetchall()
+    photos = c.execute("SELECT id, slot, taken_at, lat, lon, acc, geo_status, file_age FROM photos"
+                       " WHERE report_id=? ORDER BY id", (rid,)).fetchall()
     emails = c.execute("SELECT id, recipients, subject, status, attempts, last_error, created_at, sent_at"
                        " FROM emails WHERE report_id=? ORDER BY id", (rid,)).fetchall()
     audit(admin["id"], admin["name"], "report_viewed", f"report:{rid}", {"receipt": r["receipt"],
@@ -426,9 +434,17 @@ def admin_report(rid: int, request: Request, admin=Depends(current_admin)):
         "id": r["id"], "receipt": r["receipt"], "form_type": r["form_type"], "staff_name": r["staff_name"],
         "submitted_at": r["submitted_at"], "started_at": r["started_at"], "queued_on_phone": r["queued_on_phone"],
         "rows": display_rows(r["form_type"], data),
-        "photos": [{"id": p["id"], "slot": p["slot"], "label": labels.get(p["slot"], p["slot"])} for p in photos],
+        "photos": [{"id": p["id"], "slot": p["slot"], "label": labels.get(p["slot"], p["slot"]),
+                    "located": p["geo_status"] == "ok",
+                    "lines": geo.describe(_geo_row(p, r["submitted_at"])),
+                    "map": geo.map_url(p["lat"], p["lon"]) if p["geo_status"] == "ok" else None} for p in photos],
         "emails": [dict(e) for e in emails],
     }
+
+
+def _geo_row(p, fallback_time):
+    return {"status": p["geo_status"] or "missing", "lat": p["lat"], "lon": p["lon"], "acc": p["acc"],
+            "taken_at": p["taken_at"] or fallback_time, "file_age": p["file_age"]}
 
 
 @app.get("/api/admin/reports/{rid}/pdf")
@@ -438,7 +454,7 @@ def admin_report_pdf(rid: int, request: Request, admin=Depends(current_admin)):
                   (rid,)).fetchone()
     if not r:
         raise HTTPException(404)
-    photos = c.execute("SELECT slot, path FROM photos WHERE report_id=? ORDER BY id", (rid,)).fetchall()
+    photos = c.execute("SELECT * FROM photos WHERE report_id=? ORDER BY id", (rid,)).fetchall()
     pdf = build_pdf(r, r["staff_name"], json.loads(r["data"]), photos)
     audit(admin["id"], admin["name"], "report_pdf_downloaded", f"report:{rid}", {"receipt": r["receipt"]},
           client_ip(request), ua(request))

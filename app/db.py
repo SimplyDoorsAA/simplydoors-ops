@@ -82,7 +82,11 @@ CREATE TABLE IF NOT EXISTS photos (
     report_id INTEGER NOT NULL REFERENCES reports(id),
     slot TEXT NOT NULL,                         -- e.g. ticket1, product2
     path TEXT NOT NULL,
-    bytes INTEGER NOT NULL
+    bytes INTEGER NOT NULL,
+    taken_at TEXT,                              -- when it was added on the phone
+    lat REAL, lon REAL, acc REAL,               -- where (acc = accuracy in metres)
+    geo_status TEXT,                            -- ok | denied | off | unavailable | timeout | unsupported | missing
+    file_age INTEGER                            -- seconds old the file was when added (gallery check)
 );
 
 CREATE TABLE IF NOT EXISTS emails (
@@ -165,6 +169,11 @@ def init_db() -> None:
     c = conn()
     c.executescript(SCHEMA)
     cols = {r[1] for r in c.execute("PRAGMA table_info(staff)")}
+    pcols = {r[1] for r in c.execute("PRAGMA table_info(photos)")}
+    for col, typ in (("taken_at", "TEXT"), ("lat", "REAL"), ("lon", "REAL"), ("acc", "REAL"),
+                     ("geo_status", "TEXT"), ("file_age", "INTEGER")):
+        if col not in pcols:
+            c.execute(f"ALTER TABLE photos ADD COLUMN {col} {typ}")
     if "lock_level" not in cols:
         c.execute("ALTER TABLE staff ADD COLUMN lock_level INTEGER NOT NULL DEFAULT 0")
         c.execute("ALTER TABLE staff ADD COLUMN last_lock_at TEXT")

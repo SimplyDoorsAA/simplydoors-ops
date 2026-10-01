@@ -74,6 +74,12 @@ label.check:has(input:checked) { border-color: var(--green); background: var(--g
 .tile.busy::after { content: "Processing…"; position: absolute; inset: 0; background: rgba(255,255,255,.85);
   display: flex; align-items: center; justify-content: center; }
 
+ul.plain { padding-left: 20px; } ul.plain li { margin: 6px 0; }
+.tip { background: #fff; border: 1.5px solid var(--line); border-radius: 12px; padding: 14px; margin-top: 22px; font-size: 15px; }
+.tip p { margin: 6px 0; } .tip ol { margin: 6px 0; padding-left: 22px; }
+.tile .geo { position: absolute; left: 4px; bottom: 4px; z-index: 2; background: rgba(20,24,28,.82); color: #fff;
+  font-size: 11px; font-weight: 700; border-radius: 6px; padding: 2px 6px; }
+.tile .geo.warn { background: rgba(138,90,0,.92); }
 .error { color: var(--red); background: var(--red-bg); border-radius: 10px; padding: 12px; font-weight: 600; margin-top: 18px; }
 .receipts { list-style: none; padding: 0; margin: 0; }
 .receipts li { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 8px 0; font-size: 15px;
