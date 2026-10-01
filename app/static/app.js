@@ -6,12 +6,6 @@
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 
-  const RECEIVING = {
-    slug: "receiving", type: "Receiving Report",
-    photos: { ticket: ["ticket1", "ticket2", "ticket3"], product: ["product1", "product2"] },
-    labels: { ticket1: "Ticket 1", ticket2: "Ticket 2", ticket3: "Ticket 3", product1: "Product 1", product2: "Product 2" },
-  };
-
   let me = null;            // {name, dept, is_admin, sales_reps, locations}
   let photos = {};          // slot -> Blob for the open form
   let photoMeta = {};       // slot -> {status, lat, lon, acc, at, fileAge}
@@ -349,9 +343,13 @@
   async function showHome() {
     show("viewHome");
     updateGeoNote();
+    const cards = $("#formCards");
+    cards.innerHTML = (me.forms || []).map(f => `<button class="card${f.admin_only ? " admin" : ""}" type="button" data-open="${esc(f.slug)}">
+        <span class="card-title">${esc(f.type)}${me.is_admin && !f.staff_can_see ? ' <span class="pillnote">hidden from staff</span>' : ""}</span>
+        <span class="card-sub">${esc(f.blurb)}</span></button>`).join("") || `<p class="muted">No forms are switched on yet.</p>`;
     const list = $("#recentList");
     const pending = (await outboxAll()).filter(e => e.userId === me.id);
-    let rows = pending.map(e => `<li><span>${esc(e.type)} · ${esc(e.fields.po || "")} ${esc(e.fields.customer || "")}</span><span class="tag wait">${e.error ? "Needs fixing" : "Waiting to send"}</span></li>`);
+    let rows = pending.map(e => `<li><span>${esc(e.type)}</span><span class="tag wait">${e.error ? "Needs fixing" : "Waiting to send"}</span></li>`);
     try {
       const sent = await api("api/my-reports");
       rows = rows.concat(sent.map(r => `<li><span>${esc(r.form_type)} · ${esc(fmtTime(r.submitted_at))}</span><span class="tag ok">${esc(r.receipt)} ✓</span></li>`));
@@ -365,33 +363,94 @@
 
   document.addEventListener("click", (ev) => {
     const open = ev.target.closest("[data-open]");
-    if (open && open.dataset.open === "receiving") openReceiving();
+    if (open) openForm(open.dataset.open === "again" ? spec.slug : open.dataset.open);
     if (ev.target.closest("[data-home]")) showHome();
   });
 
-  // ------------------------------------------------------------ receiving form
-  const form = $("#receivingForm");
+  // ------------------------------------------------------------ forms (drawn from the server's definitions)
+  const form = $("#genForm");
+  let spec = null;                 // the form being filled in
+  const slugify = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+  const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  const okdefName = (key, group, item) => `${key}:${slugify(group)}:${slugify(item)}`;
+  const allSlots = () => spec.photos.flatMap(g => [...(g.slots || []).map(s => s[0]), ...(g.signature ? [g.signature] : [])]);
+  const slotLabel = (slot) => { for (const g of spec.photos) { for (const [s, l] of (g.slots || [])) if (s === slot) return l; if (g.signature === slot) return "Signature"; } return slot; };
 
-  function buildSelects() {
-    const loc = $("#location");
-    loc.innerHTML = `<option value="" disabled selected>Pick a location…</option>` +
-      me.locations.map(l => `<option>${esc(l)}</option>`).join("") +
-      `<option value="Custom">Somewhere else (type it)</option>`;
-    const sales = $("#sales_notify");
-    sales.innerHTML = `<option value="none">Don't notify anyone</option>` +
-      me.sales_reps.map(r => `<option value="${r.id}">${esc(r.name)}</option>`).join("");
+  function fieldHTML(f) {
+    const id = "f_" + f.key, req = f.required ? " *" : "";
+    const ask = esc(f.ask || f.label) + req;
+    const help = f.help ? `<p class="muted small">${esc(f.help)}</p>` : "";
+    const ph = f.placeholder ? ` placeholder="${esc(f.placeholder)}"` : "";
+    let inner = "";
+    switch (f.type) {
+      case "text": inner = `<label for="${id}">${ask}</label>${help}<input id="${id}" name="${esc(f.key)}" type="text" maxlength="300" autocomplete="off"${ph}>`; break;
+      case "textarea": inner = `<label for="${id}">${ask}</label>${help}<textarea id="${id}" name="${esc(f.key)}" rows="4" maxlength="4000"${ph}></textarea>`; break;
+      case "number": inner = `<label for="${id}">${ask}</label>${help}<input id="${id}" name="${esc(f.key)}" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="9">`; break;
+      case "date": inner = `<label for="${id}">${ask}</label>${help}<input id="${id}" name="${esc(f.key)}" type="date">`; break;
+      case "time": inner = `<label for="${id}">${ask}</label>${help}<input id="${id}" name="${esc(f.key)}" type="time">`; break;
+      case "select": {
+        const people = f.options && f.options.length && /^\d+$/.test(String(f.options[0][0]));
+        const first = f.none_label ? `<option value="none">${esc(f.none_label)}</option>`
+          : `<option value="" disabled selected>${people ? "Pick a person…" : "Pick one…"}</option>`;
+        inner = `<label for="${id}">${ask}</label>${help}<select id="${id}" name="${esc(f.key)}">${first}` +
+          f.options.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("") +
+          (f.allow_other ? `<option value="Custom">Something else (type it)</option>` : "") + `</select>` +
+          (f.allow_other ? `<input name="${esc(f.key)}_custom" type="text" class="hidden other" maxlength="120" placeholder="Type it">` : "");
+        break;
+      }
+      case "choice":
+        inner = `<fieldset><legend>${ask}</legend>${help}<div class="choice">` +
+          f.options.map(([v, l]) => `<label><input type="radio" name="${esc(f.key)}" value="${esc(v)}"><span>${esc(l)}</span></label>`).join("") + `</div></fieldset>`;
+        break;
+      case "checks":
+        inner = `<fieldset><legend>${ask}</legend>${help}` +
+          f.items.map(([k, t]) => `<label class="check"><input type="checkbox" name="${esc(k)}"><span>${esc(t)}</span></label>`).join("") + `</fieldset>`;
+        break;
+      case "okdef":
+        inner = `<div class="okdef-head"><b>${esc(f.label)}${req}</b><button type="button" class="link" data-allok="${esc(f.key)}">Mark all OK</button></div>` +
+          Object.entries(f.groups).map(([g, items]) => `<h3>${esc(g)}</h3>` + items.map(it => {
+            const n = okdefName(f.key, g, it);
+            return `<div class="okrow" data-row="${esc(n)}"><span>${esc(it)}</span><div class="okbtns">
+              <label><input type="radio" name="${esc(n)}" value="OK"><span>OK</span></label>
+              <label class="bad"><input type="radio" name="${esc(n)}" value="Defective"><span>Defective</span></label></div></div>`;
+          }).join("")).join("");
+        break;
+    }
+    const cond = f.show_if ? ` data-show-field="${esc(f.show_if.field)}" data-show-in="${esc(f.show_if.in.join("|"))}"` : "";
+    return `<div class="fld" data-key="${esc(f.key)}"${cond}>${inner}</div>`;
+  }
+
+  function photosHTML() {
+    return spec.photos.map(g => g.signature
+      ? `<div class="fld"><h2>${esc(g.title)}</h2>${g.help ? `<p class="muted small">${esc(g.help)}</p>` : ""}
+          <div class="sigwrap"><canvas class="sigpad" data-slot="${esc(g.signature)}"></canvas>
+          <button type="button" class="link" data-sigclear="${esc(g.signature)}">Clear signature</button></div></div>`
+      : `<div class="fld"><h2>${esc(g.title)}${g.min ? ` <span class="muted small">(at least ${g.min})</span>` : ""}</h2>
+          ${g.help ? `<p class="muted small">${esc(g.help)}</p>` : ""}<div class="photos" data-group="${esc(g.group)}"></div></div>`).join("");
+  }
+
+  function applyConditions() {
+    $$(".fld[data-show-field]", form).forEach(div => {
+      const ctl = form.elements[div.dataset.showField];
+      const val = ctl ? (ctl.value !== undefined ? ctl.value : "") : "";
+      div.classList.toggle("hidden", !div.dataset.showIn.split("|").includes(val));
+    });
+    $$("select", form).forEach(sel => {
+      const other = form.elements[sel.name + "_custom"];
+      if (other) other.classList.toggle("hidden", sel.value !== "Custom");
+    });
   }
 
   function renderTiles() {
-    Object.entries(RECEIVING.photos).forEach(([group, slots]) => {
-      const box = $(`.photos[data-group="${group}"]`);
+    spec.photos.filter(g => !g.signature).forEach(g => {
+      const box = $(`.photos[data-group="${g.group}"]`, form);
       box.innerHTML = "";
-      slots.forEach(slot => {
+      g.slots.forEach(([slot, label]) => {
         const t = document.createElement("div");
         t.className = "tile" + (photos[slot] ? " filled" : "");
         t.dataset.slot = slot;
         t.setAttribute("role", "button"); t.tabIndex = 0;
-        t.setAttribute("aria-label", photos[slot] ? `${RECEIVING.labels[slot]} added` : `Add ${RECEIVING.labels[slot]}`);
+        t.setAttribute("aria-label", photos[slot] ? `${label} added` : `Add ${label}`);
         if (photos[slot]) {
           if (!previews[slot]) previews[slot] = URL.createObjectURL(photos[slot]);
           const m = photoMeta[slot] || {};
@@ -400,7 +459,7 @@
           t.innerHTML = `<img src="${previews[slot]}" alt="">${badge}<button type="button" class="remove" aria-label="Remove photo">×</button>`;
           t.querySelector(".remove").onclick = (e) => { e.stopPropagation(); removePhoto(slot); };
         } else {
-          t.innerHTML = `<span><span class="plus">+</span>${esc(RECEIVING.labels[slot])}</span>`;
+          t.innerHTML = `<span><span class="plus">+</span>${esc(label)}</span>`;
         }
         t.onclick = () => { pickSlot = slot; $("#photoPicker").value = ""; $("#photoPicker").click(); };
         t.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); t.click(); } };
@@ -412,6 +471,34 @@
     if (previews[slot]) URL.revokeObjectURL(previews[slot]);
     delete previews[slot]; delete photos[slot]; delete photoMeta[slot];
     renderTiles(); saveDraftSoon();
+  }
+
+  // ---- signature pad (finger or mouse); saved as an image like a photo, but never location-stamped
+  function setupSignatures() {
+    $$(".sigpad", form).forEach(cv => {
+      const slot = cv.dataset.slot;
+      const ratio = window.devicePixelRatio || 1;
+      const w = cv.clientWidth || 320, h = 180;
+      cv.width = w * ratio; cv.height = h * ratio; cv.style.height = h + "px";
+      const ctx = cv.getContext("2d");
+      ctx.scale(ratio, ratio); ctx.lineWidth = 2.5; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.strokeStyle = "#111";
+      let drawing = false, last = null, inked = false;
+      const pos = (e) => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+      if (photos[slot]) {
+        const img = new Image(); img.onload = () => ctx.drawImage(img, 0, 0, w, h); img.src = URL.createObjectURL(photos[slot]); inked = true;
+      }
+      cv.addEventListener("pointerdown", (e) => { drawing = true; last = pos(e); cv.setPointerCapture(e.pointerId); e.preventDefault(); });
+      cv.addEventListener("pointermove", (e) => {
+        if (!drawing) return; const p = pos(e);
+        ctx.beginPath(); ctx.moveTo(last[0], last[1]); ctx.lineTo(p[0], p[1]); ctx.stroke(); last = p; inked = true; e.preventDefault();
+      });
+      const end = () => {
+        if (!drawing) return; drawing = false;
+        if (inked) cv.toBlob(b => { if (b) { photos[slot] = b; saveDraftSoon(); } }, "image/png");
+      };
+      cv.addEventListener("pointerup", end); cv.addEventListener("pointercancel", end); cv.addEventListener("pointerleave", end);
+      $(`[data-sigclear="${slot}"]`, form).onclick = () => { ctx.clearRect(0, 0, w, h); inked = false; delete photos[slot]; saveDraftSoon(); };
+    });
   }
 
   // Shrink a phone photo to a reasonable size. Fails loudly instead of hanging.
@@ -465,82 +552,131 @@
     }
   });
 
-  $("#location").addEventListener("change", () => {
-    const custom = $("#location").value === "Custom";
-    $("#location_custom").classList.toggle("hidden", !custom);
-    if (custom) $("#location_custom").focus();
-  });
-
   function readFields() {
     const f = {};
-    ["po", "customer", "location", "location_custom", "sales_notify", "remarks"].forEach(k => { f[k] = form.elements[k].value; });
-    ["sop_unloaded", "sop_inspected", "sop_entered"].forEach(k => { f[k] = form.elements[k].checked; });
+    for (const el of form.elements) {
+      if (!el.name) continue;
+      if (el.type === "checkbox") f[el.name] = el.checked;
+      else if (el.type === "radio") { if (el.checked) f[el.name] = el.value; else if (!(el.name in f)) f[el.name] = ""; }
+      else f[el.name] = el.value;
+    }
     return f;
   }
-  function writeFields(f) {
-    form.reset();
-    ["po", "customer", "location_custom", "remarks"].forEach(k => { form.elements[k].value = f[k] || ""; });
-    if (f.location) form.elements.location.value = f.location;
-    if (f.sales_notify) form.elements.sales_notify.value = f.sales_notify;
-    ["sop_unloaded", "sop_inspected", "sop_entered"].forEach(k => { form.elements[k].checked = !!f[k]; });
-    $("#location_custom").classList.toggle("hidden", form.elements.location.value !== "Custom");
+  function writeFields(vals) {
+    for (const el of form.elements) {
+      if (!el.name) continue;
+      const v = vals[el.name];
+      if (el.type === "checkbox") el.checked = !!v;
+      else if (el.type === "radio") el.checked = v !== undefined && el.value === v;
+      else if (v !== undefined) el.value = v;
+    }
+    applyConditions();
+  }
+  function defaults() {
+    const d = {};
+    spec.fields.forEach(f => {
+      if (f.default === "today") d[f.key] = todayISO();
+      else if (f.default) d[f.key] = f.default;
+      if (f.none_label) d[f.key] = "none";
+    });
+    return d;
   }
 
   let draftTimer = null;
   function saveDraftSoon() {
     clearTimeout(draftTimer);
+    const slug = spec && spec.slug;
+    if (!slug) return;
     draftTimer = setTimeout(async () => {
       try {
-        await draftPut(RECEIVING.slug, { fields: readFields(), photos: { ...photos }, photoMeta: { ...photoMeta }, startedAt });
+        await draftPut(slug, { fields: readFields(), photos: { ...photos }, photoMeta: { ...photoMeta }, startedAt });
         $("#draftNote").textContent = "Saved on this phone";
       } catch (e) { /* storage full or private mode: the form still works */ }
     }, 400);
   }
-  form.addEventListener("input", (e) => { e.target.classList.remove("invalid"); saveDraftSoon(); });
-  form.addEventListener("change", (e) => { e.target.classList.remove("invalid"); saveDraftSoon(); });
+  form.addEventListener("input", (e) => { clearMark(e.target); applyConditions(); saveDraftSoon(); });
+  form.addEventListener("change", (e) => { clearMark(e.target); applyConditions(); saveDraftSoon(); });
+  form.addEventListener("click", (e) => {
+    const all = e.target.closest("[data-allok]");
+    if (!all) return;
+    $$(`input[type=radio][value="OK"]`, form).forEach(r => { if (r.name.startsWith(all.dataset.allok + ":")) r.checked = true; });
+    $$(".okrow.invalid", form).forEach(r => r.classList.remove("invalid"));
+    saveDraftSoon();
+  });
+  function clearMark(el) {
+    el.classList.remove("invalid");
+    const wrap = el.closest(".okrow, label.check, .fld"); if (wrap) wrap.classList.remove("invalid");
+  }
 
-  async function openReceiving(prefill) {
-    buildSelects();
+  async function openForm(slug, prefill) {
+    const s = (me.forms || []).find(f => f.slug === slug);
+    if (!s) { alert("This form isn't available."); return; }
+    spec = s;
     Object.values(previews).forEach(u => URL.revokeObjectURL(u));
     photos = {}; previews = {}; photoMeta = {};
+    $("#formTitle").textContent = spec.type;
+    $("#formFields").innerHTML = spec.fields.map(fieldHTML).join("") + photosHTML();
+    $("#submitBtn").textContent = "Submit " + spec.type;
     $("#formError").classList.add("hidden");
-    $$(".invalid", form).forEach(el => el.classList.remove("invalid"));
     let draft = prefill || null;
-    if (!draft) { try { draft = await draftGet(RECEIVING.slug); } catch (e) { draft = null; } }
+    if (!draft) { try { draft = await draftGet(spec.slug); } catch (e) { draft = null; } }
     if (draft) {
-      writeFields(draft.fields || {});
+      writeFields({ ...defaults(), ...(draft.fields || {}) });
       photos = { ...(draft.photos || {}) };
       photoMeta = { ...(draft.photoMeta || {}) };
       startedAt = draft.startedAt || new Date().toISOString();
       $("#draftNote").textContent = prefill ? "Fix the problem below, then submit again" : "Picked up where you left off";
     } else {
-      writeFields({});
+      writeFields(defaults());
       startedAt = new Date().toISOString();
       $("#draftNote").textContent = "";
     }
+    show("viewForm");
     renderTiles();
-    show("viewReceiving");
+    setupSignatures();
   }
 
   $("#clearBtn").addEventListener("click", async () => {
     if (!confirm("Clear everything on this form, including photos?")) return;
-    await draftDel(RECEIVING.slug).catch(() => {});
-    openReceiving();
+    await draftDel(spec.slug).catch(() => {});
+    openForm(spec.slug);
   });
 
-  function validate(f) {
+  function validate(vals) {
     const problems = [];
-    const mark = (name, msg) => { const el = form.elements[name]; if (el) el.classList.add("invalid"); problems.push(msg); };
-    if (!f.po.trim()) mark("po", "Job / PO number");
-    if (!f.customer.trim()) mark("customer", "Customer name");
-    if (!f.location) mark("location", "Location");
-    if (f.location === "Custom" && !f.location_custom.trim()) mark("location_custom", "Type the location");
-    [["sop_unloaded", "Unloaded box"], ["sop_inspected", "Inspected box"], ["sop_entered", "Entered box"]].forEach(([k, label]) => {
-      if (!f[k]) { form.elements[k].closest("label").classList.add("invalid"); problems.push(label); }
+    const markDiv = (key) => { const d = $(`.fld[data-key="${CSS.escape(key)}"]`, form); if (d) d.classList.add("invalid"); };
+    let anyDefective = false;
+    for (const f of spec.fields) {
+      const div = $(`.fld[data-key="${CSS.escape(f.key)}"]`, form);
+      if (div && div.classList.contains("hidden")) continue;
+      const v = vals[f.key];
+      if (f.type === "checks") {
+        if (f.required) f.items.forEach(([k, t]) => { if (!vals[k]) { const l = form.elements[k].closest("label"); l.classList.add("invalid"); problems.push(t.length > 40 ? t.slice(0, 38) + "…" : t); } });
+        continue;
+      }
+      if (f.type === "okdef") {
+        let left = 0;
+        Object.entries(f.groups).forEach(([g, items]) => items.forEach(it => {
+          const n = okdefName(f.key, g, it), val = vals[n];
+          if (val === "Defective") anyDefective = true;
+          if (!val) { left++; const row = $(`.okrow[data-row="${CSS.escape(n)}"]`, form); if (row) row.classList.add("invalid"); }
+        }));
+        if (f.required && left) problems.push(`${left} inspection item${left > 1 ? "s" : ""} not marked`);
+        continue;
+      }
+      const empty = !v || !String(v).trim() || (f.type === "select" && v === "Custom" && !String(vals[f.key + "_custom"] || "").trim());
+      if (f.required && empty) { markDiv(f.key); problems.push(f.label); }
+      if (f.type === "number" && v && !/^\d+$/.test(String(v).replace(/,/g, ""))) { markDiv(f.key); problems.push(`${f.label} (numbers only)`); }
+    }
+    spec.fields.filter(f => f.required_if_defective).forEach(f => {
+      if (anyDefective && !String(vals[f.key] || "").trim()) { markDiv(f.key); problems.push(`${f.label} (something is Defective)`); }
+    });
+    spec.photos.filter(g => g.min).forEach(g => {
+      const have = g.slots.filter(([s]) => photos[s]).length;
+      if (have < g.min) problems.push(`${g.min - have} more photo${g.min - have > 1 ? "s" : ""} in “${g.title}”`);
     });
     return problems;
   }
-  form.addEventListener("change", (e) => { if (e.target.type === "checkbox") e.target.closest("label").classList.remove("invalid"); });
 
   const newId = () => (crypto.randomUUID ? crypto.randomUUID() :
     "id-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 12));
@@ -559,39 +695,41 @@
       return;
     }
     err.classList.add("hidden");
+    const label = btn.textContent;
     btn.disabled = true; btn.textContent = "Saving…";
     clearTimeout(draftTimer);
-    const entry = { id: newId(), slug: RECEIVING.slug, type: RECEIVING.type, userId: me.id, user: me.name, fields: f,
-      photos: { ...photos }, photoMeta: { ...photoMeta }, startedAt, createdAt: new Date().toISOString(), tries: 0 };
+    const keep = new Set(allSlots());
+    const ph = Object.fromEntries(Object.entries(photos).filter(([s]) => keep.has(s)));
+    const entry = { id: newId(), slug: spec.slug, type: spec.type, userId: me.id, user: me.name, fields: f,
+      photos: ph, photoMeta: { ...photoMeta }, startedAt, createdAt: new Date().toISOString(), tries: 0 };
     try {
       await outboxPut(entry);              // safe on the phone before anything else
-      await draftDel(RECEIVING.slug).catch(() => {});
+      await draftDel(spec.slug).catch(() => {});
     } catch (e) {
-      btn.disabled = false; btn.textContent = "Submit Receiving Report";
+      btn.disabled = false; btn.textContent = label;
       err.textContent = "This phone couldn't save the report (storage full?). Don't close this page; free up space and try again.";
       err.classList.remove("hidden");
       return;
     }
     btn.textContent = "Sending…";
     const result = await sendEntry(entry);
-    btn.disabled = false; btn.textContent = "Submit Receiving Report";
+    btn.disabled = false; btn.textContent = label;
     showResult(result, entry);
     updateBanner();
   });
 
   function showResult(result, entry) {
     const box = $("#resultBox");
+    $("#againBtn").textContent = "Start another " + entry.type;
     if (result.ok) {
       box.className = "result";
       box.innerHTML = `<div class="big">Received ✓</div><div class="muted">Your receipt number</div>
         <div class="receipt">${esc(result.receipt)}</div><p class="muted small">The office will be emailed a copy.</p>`;
     } else if (result.fix) {
-      // The server rejected something; put it straight back in the form (the form slot is empty: we just submitted it).
-      // Save it as the draft first, and only then take it out of the queue.
+      // The server rejected something; put it straight back in the form. Save it as the draft first, then take it out of the queue.
       const back = { fields: entry.fields, photos: entry.photos, photoMeta: entry.photoMeta, startedAt: entry.startedAt };
-      draftPut(RECEIVING.slug, back).then(() => outboxDel(entry.id)).then(updateBanner).catch(() => {});
-      openReceiving(back);
-      $("#formError").textContent = result.message; $("#formError").classList.remove("hidden");
+      draftPut(entry.slug, back).then(() => outboxDel(entry.id)).then(updateBanner).catch(() => {});
+      openForm(entry.slug, back).then(() => { $("#formError").textContent = result.message; $("#formError").classList.remove("hidden"); });
       return;
     } else {
       box.className = "result wait";
@@ -608,7 +746,7 @@
     const fd = new FormData();
     Object.entries(entry.fields).forEach(([k, v]) => fd.append(k, typeof v === "boolean" ? (v ? "1" : "0") : v));
     Object.entries(entry.photos || {}).forEach(([slot, blob]) => {
-      fd.append(slot, blob, slot + ".jpg");
+      fd.append(slot, blob, slot + (blob.type === "image/png" ? ".png" : ".jpg"));
       fd.append("geo_" + slot, JSON.stringify((entry.photoMeta || {})[slot] || { status: "missing" }));
     });
     fd.append("submission_id", entry.id);
@@ -621,7 +759,7 @@
     } catch (e) {
       entry.tries += 1;
       entry.lastError = e.message;
-      if (e.status === 422 || e.status === 400 || e.status === 409) {
+      if (e.status === 422 || e.status === 400 || e.status === 409 || e.status === 403) {
         entry.error = e.message;         // kept on the phone, flagged "needs fixing"
         await outboxPut(entry).catch(() => {});
         return { ok: false, fix: true, message: e.message };
@@ -659,12 +797,12 @@
   async function openFix(id) {
     const e = (await outboxAll()).find(x => x.id === id);
     if (!e) return;
-    const existing = await draftGet(RECEIVING.slug).catch(() => null);
-    if (existing && !confirm("You have an unfinished Receiving Report open. Replace it with the one that needs fixing?")) return;
+    const existing = await draftGet(e.slug).catch(() => null);
+    if (existing && !confirm(`You have an unfinished ${e.type} open. Replace it with the one that needs fixing?`)) return;
     const back = { fields: e.fields, photos: e.photos, photoMeta: e.photoMeta, startedAt: e.startedAt };
-    await draftPut(RECEIVING.slug, back);
+    await draftPut(e.slug, back);
     await outboxDel(e.id);
-    await openReceiving(back);
+    await openForm(e.slug, back);
     $("#formError").textContent = "Fix this, then submit again: " + e.error;
     $("#formError").classList.remove("hidden");
     updateBanner();

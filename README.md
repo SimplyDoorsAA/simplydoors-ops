@@ -6,7 +6,17 @@ GitHub Pages portal + Google Apps Script, one form at a time.
 - **Staff app:** https://optiplex-ai.tailf0af63.ts.net:10000/ops/
 - **Admin (Adem, Paz):** https://optiplex-ai.tailf0af63.ts.net:10000/ops/admin
 
-## Stage 1 (this version)
+## Stage 2 (this version): every portal form
+
+- Seven forms on the phone: Receiving Report, **Delivery Proof** (new: site photos + customer signature), End of Shift, Vehicle Inspection, Vehicle Incident, Employee Incident, Disciplinary Action (admins only, marked CONFIDENTIAL).
+- Forms are described once in `app/forms.py`. That one description drives the phone screen, the server's checks, the PDF and the email.
+- **Admin → Forms & lists**:
+  - Choose which forms staff see. Default is Receiving only, so staff keep using the old portal for the rest until you switch each one on. Admins always see every form.
+  - Edit the location and vehicle pick lists.
+- Each form numbers its own receipts (RCV-, DLV-, EOS-, VIN-, VIC-, INC-, DSC-).
+- Defective inspections and disciplinary records get a red header in the email and PDF.
+
+## Stage 1
 
 - Sign-in with name + 6–8 digit PIN, checked on the server. Lockouts get longer with repeated misses (15 min, 1 hour, then admin unlock). Connections making many wrong guesses are blocked.
 - **Receiving Report** form, built for phones:
@@ -42,6 +52,7 @@ The rules were copied from the old Apps Script and are editable in the admin scr
 | Employee Incident | adem@, lupes@, admin@ | |
 | Vehicle Incident | adem@, lupes@, admin@ | |
 | Disciplinary Action | adem@, paz@, admin@ | the employee written up |
+| Delivery Proof | adem@, lupes@ | sales rep picked on the form |
 | Measure Report | admin@ | the person who measured |
 
 ## Install / update (on the OptiPlex, as `adem`)

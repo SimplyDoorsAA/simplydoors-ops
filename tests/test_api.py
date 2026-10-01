@@ -326,3 +326,118 @@ def test_setup_link_flow(client):
     acts = {x["action"] for x in client.get("/ops/api/admin/audit?limit=100").json()["rows"]}
     assert {"invite_created", "pin_created_by_staff", "setup_code_rejected"} <= acts
     conn().execute("DELETE FROM ip_failures")
+
+
+# ---------------------------------------------------------------- Stage 2: every form
+from app import forms as F  # noqa: E402
+
+
+def _ok_items(**bad):
+    out = {}
+    for g, items in F.INSPECTION_ITEMS.items():
+        for it in items:
+            out[f"items:{F._slug(g)}:{F._slug(it)}"] = "OK"
+    out.update(bad)
+    return out
+
+
+def _sid(name):
+    return str(conn().execute("SELECT id FROM staff WHERE name=?", (name,)).fetchone()[0])
+
+
+def test_staff_only_see_enabled_forms(client):
+    login(client, "Jaime Mendoza", "135790")
+    assert [f["slug"] for f in client.get("/ops/api/me").json()["forms"]] == ["receiving"]
+    r = client.post("/ops/api/reports/eos", data={"submission_id": "sub-eos-staff1", "role": "Driver"}, headers=H)
+    assert r.status_code == 403
+    login(client, "Adem Atis", "246810")
+    slugs = [f["slug"] for f in client.get("/ops/api/me").json()["forms"]]
+    assert slugs == ["receiving", "delivery", "eos", "inspection", "vincident", "incident", "disciplinary"]
+    r = client.put("/ops/api/admin/forms-enabled", json={"forms": ["Receiving Report", "End of Shift", "Disciplinary Action"]}, headers=H)
+    assert r.json()["forms"] == ["Receiving Report", "End of Shift"]  # admin-only form can't be switched on for staff
+    login(client, "Jaime Mendoza", "135790")
+    assert [f["slug"] for f in client.get("/ops/api/me").json()["forms"]] == ["receiving", "eos"]
+    r = client.post("/ops/api/reports/disciplinary", data={"submission_id": "sub-dsc-staff1"}, headers=H)
+    assert r.status_code == 403
+    acts = [a[0] for a in conn().execute("SELECT action FROM audit WHERE action='forms_switched'")]
+    assert acts
+
+
+def test_end_of_shift_checks_follow_role(client):
+    login(client, "Jaime Mendoza", "135790")
+    fld = next(x for x in F.FORMS["End of Shift"]["fields"] if x["key"] == "checks_driver")
+    drv = {k: "1" for k, _ in fld["items"]}
+    files = {"area1": ("a.jpg", jpeg(), "image/jpeg")}
+    base = {"submission_id": "sub-eos-0001", "role": "Driver", **drv}
+    r = client.post("/ops/api/reports/eos", data=base, files=files, headers=H)
+    assert r.status_code == 422 and "photo" in r.json()["detail"].lower()  # needs 2 area photos
+    files["area2"] = ("b.jpg", jpeg((0, 0, 200)), "image/jpeg")
+    r = client.post("/ops/api/reports/eos", data={**base, "submission_id": "sub-eos-0002"}, files=files, headers=H)
+    assert r.status_code == 200, r.text
+    assert r.json()["receipt"] == "EOS-00001"  # each form numbers on its own
+    # warehouse checks were not required for a driver; missing a driver check is refused
+    r = client.post("/ops/api/reports/eos", data={**base, "submission_id": "sub-eos-0003", list(drv)[0]: ""},
+                    files=files, headers=H)
+    assert r.status_code == 422
+
+
+def test_inspection_defective_routing(client):
+    login(client, "Adem Atis", "246810")
+    first = next(iter(_ok_items()))
+    data = {"submission_id": "sub-vin-0001", "trip": "Pre-Trip", "vehicle": "Big Truck", "odometer": "120500",
+            **_ok_items(**{first: "Defective"})}
+    r = client.post("/ops/api/reports/inspection", data=data, headers=H)
+    assert r.status_code == 422 and "Remarks" in r.json()["detail"]
+    r = client.post("/ops/api/reports/inspection", data={**data, "remarks": "Fuel gauge stuck"}, headers=H)
+    assert r.status_code == 200, r.text
+    e = conn().execute("SELECT subject, recipients FROM emails ORDER BY id DESC LIMIT 1").fetchone()
+    assert e[0].startswith("DEFECTIVE") and "admin@simplydoors.com" in e[1]
+    r = client.post("/ops/api/reports/inspection", data={**data, "submission_id": "sub-vin-0002", **_ok_items()}, headers=H)
+    e = conn().execute("SELECT subject, recipients FROM emails ORDER BY id DESC LIMIT 1").fetchone()
+    assert not e[0].startswith("DEFECTIVE") and "admin@simplydoors.com" not in e[1]
+    # a missing row is refused
+    partial = {**data, "submission_id": "sub-vin-0003", "remarks": "x"}
+    partial.pop(first)
+    assert client.post("/ops/api/reports/inspection", data=partial, headers=H).status_code == 422
+
+
+def test_disciplinary_goes_to_employee_and_is_confidential(client):
+    login(client, "Adem Atis", "246810")
+    data = {"submission_id": "sub-dsc-0001", "target": _sid("Jaime Mendoza"), "level": "First Written Warning",
+            "infraction": "Safety Violation", "date": "2026-09-30", "description": "No vest", "plan": "Wear vest",
+            "consequences": "Further action"}
+    r = client.post("/ops/api/reports/disciplinary", data=data, headers=H)
+    assert r.status_code == 200, r.text
+    e = conn().execute("SELECT subject, recipients FROM emails ORDER BY id DESC LIMIT 1").fetchone()
+    assert e[0].startswith("CONFIDENTIAL") and "Jaime Mendoza" in e[0]
+    to = {x.strip() for x in e[1].split(",")}
+    assert {"adem@simplydoors.com", "paz@simplydoors.com", "admin@simplydoors.com"} <= to
+    assert "lupes@simplydoors.com" not in to
+    assert len(to) == 4  # plus the employee
+    bad = client.post("/ops/api/reports/disciplinary", data={**data, "submission_id": "sub-dsc-0002", "target": "99999"}, headers=H)
+    assert bad.status_code == 422
+
+
+def test_delivery_signature_and_lists(client):
+    login(client, "Adem Atis", "246810")
+    sig = io.BytesIO()
+    Image.new("RGBA", (600, 200), (0, 0, 0, 0)).save(sig, "PNG")
+    data = {"submission_id": "sub-dlv-0001", "po": "PO-9", "customer": "Lee", "address": "1 Elm", "condition": "Yes"}
+    r = client.post("/ops/api/reports/delivery", data=data, headers=H,
+                    files={"sig": ("sig.png", sig.getvalue(), "image/png")})
+    assert r.status_code == 422  # needs at least one site photo
+    r = client.post("/ops/api/reports/delivery", data={**data, "submission_id": "sub-dlv-0002"}, headers=H,
+                    files={"site1": ("s.jpg", jpeg(), "image/jpeg"), "sig": ("sig.png", sig.getvalue(), "image/png")})
+    assert r.status_code == 200, r.text
+    rid = conn().execute("SELECT id FROM reports WHERE receipt=?", (r.json()["receipt"],)).fetchone()[0]
+    rows = {p[0]: p[1] for p in conn().execute("SELECT slot, geo_status FROM photos WHERE report_id=?", (rid,))}
+    assert rows == {"site1": "missing", "sig": "signature"}
+    d = client.get(f"/ops/api/admin/reports/{rid}").json()
+    assert d["no_geo"] == 1 if "no_geo" in d else True
+    assert client.get(f"/ops/api/admin/reports/{rid}/pdf").status_code == 200
+    # editable vehicle list feeds the form and validation
+    r = client.put("/ops/api/admin/lists/vehicles", json={"values": ["Van 1", "Van 2", " ", "Van 1"]}, headers=H)
+    assert r.json()["values"] == ["Van 1", "Van 2"]
+    spec = next(f for f in client.get("/ops/api/me").json()["forms"] if f["slug"] == "inspection")
+    assert [o[0] for o in next(x for x in spec["fields"] if x["key"] == "vehicle")["options"]] == ["Van 1", "Van 2"]
+    assert client.put("/ops/api/admin/lists/nope", json={"values": ["x"]}, headers=H).status_code == 404

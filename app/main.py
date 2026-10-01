@@ -30,7 +30,9 @@ PHOTO_FORMATS = ["JPEG", "PNG", "WEBP"]
 
 from . import alerts, auth, geo, mailer
 from .db import DATA_DIR, DB_PATH, audit, conn, init_db, now_iso
-from .forms import FORM_BY_SLUG, FORMS, RECEIVING_LOCATIONS, clean, recipients_for, subject_for
+from . import forms as forms_mod
+from .forms import (FORM_BY_SLUG, FORMS, EXTRA_RULES, LIST_LABELS, DEFAULT_LISTS, clean, get_list, photo_minimums,
+                    photo_slots, public_spec, recipients_for, set_list, subject_for, summary, visible_forms)
 from .pdf import build_pdf
 
 BASE_PATH = os.environ.get("BASE_PATH", "/ops").rstrip("/")
@@ -40,7 +42,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 60 * 1024 * 1024
-APP_VERSION = "stage1-5"
+APP_VERSION = "stage2-1"
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -254,12 +256,9 @@ def logout(request: Request):
 
 @app.get("/api/me")
 def me(staff=Depends(current_staff)):
-    reps = conn().execute("SELECT id, name FROM staff WHERE sales_notify=1 AND active=1 ORDER BY name").fetchall()
     return {
         "id": staff["id"], "name": staff["name"], "dept": staff["dept"], "is_admin": bool(staff["is_admin"]),
-        "forms": [{"type": k, "slug": v["slug"]} for k, v in FORMS.items()],
-        "sales_reps": [{"id": r["id"], "name": r["name"]} for r in reps],
-        "locations": RECEIVING_LOCATIONS,
+        "forms": [public_spec(t) for t in visible_forms(staff)],
     }
 
 
@@ -270,7 +269,13 @@ def _save_photo(upload_bytes: bytes, dest: str, g: dict | None = None, receipt: 
     with Image.open(io.BytesIO(upload_bytes), formats=PHOTO_FORMATS) as im:
         im.draft("RGB", (2000, 2000))           # JPEG: decode at reduced size, saves memory
         im.thumbnail((2000, 2000))
-        im = ImageOps.exif_transpose(im).convert("RGB")
+        im = ImageOps.exif_transpose(im)
+        if im.mode in ("RGBA", "LA", "P"):
+            im = im.convert("RGBA")
+            bg = Image.new("RGB", im.size, (255, 255, 255))   # signatures: ink on white, not on black
+            bg.paste(im, mask=im.split()[-1])
+            im = bg
+        im = im.convert("RGB")
         if g is not None:
             im = geo.stamp(im, g, receipt, who)
         im.save(dest, "JPEG", quality=85, optimize=True)
@@ -294,6 +299,11 @@ async def submit_report(slug: str, request: Request, staff=Depends(current_staff
     if not form_type:
         raise HTTPException(404, "Unknown form")
     spec = FORMS[form_type]
+    if not staff["is_admin"] and form_type not in visible_forms(staff):
+        raise HTTPException(403, "This form isn't switched on yet. Ask Adem or Paz.")
+    if spec.get("admin_only") and not staff["is_admin"]:
+        audit(staff["id"], staff["name"], "admin_denied", f"form:{slug}", None, client_ip(request), ua(request))
+        raise HTTPException(403, "Only admins can file this form.")
     form = await request.form()
     submission_id = str(form.get("submission_id", ""))
     if not re.fullmatch(r"[a-zA-Z0-9-]{8,64}", submission_id):
@@ -310,7 +320,8 @@ async def submit_report(slug: str, request: Request, staff=Depends(current_staff
     data, errors = clean(form_type, raw)
 
     photo_blobs = []
-    for slot, _label in spec["photos"]:
+    for ps in photo_slots(form_type):
+        slot, _label = ps["slot"], ps["label"]
         f = form.get(slot)
         if f is None or isinstance(f, str):
             continue
@@ -326,7 +337,13 @@ async def submit_report(slug: str, request: Request, staff=Depends(current_staff
         if not await run_in_threadpool(_check_photo, b):
             errors.append(f"{_label} could not be read as a photo. Please take it again.")
             continue
-        photo_blobs.append((slot, b, geo.parse_geo(str(form.get(f"geo_{slot}") or ""), now_iso())))
+        g = None if ps["signature"] else geo.parse_geo(str(form.get(f"geo_{slot}") or ""), now_iso())
+        photo_blobs.append((slot, b, g))
+    got = {s for s, _, _ in photo_blobs}
+    for title, slots, need in photo_minimums(form_type):
+        have = len(got.intersection(slots))
+        if have < need:
+            errors.append(f"Add {need - have} more photo{'s' if need - have > 1 else ''} under “{title}”.")
     if errors:
         raise HTTPException(422, " ".join(errors))
 
@@ -346,17 +363,24 @@ def _store_report(form_type, spec, staff, submission_id, data, photo_blobs, star
             " VALUES (?,?,?,?,?,?,?)",
             (submission_id, form_type, staff["id"], now_iso(), started_at, queued, json.dumps(data, ensure_ascii=False)))
         rid = cur.lastrowid
-        receipt = f"{spec['prefix']}-{rid:05d}"
+        # each form counts on its own (VIN-00001, VIN-00002 ...), carrying on from any earlier numbers
+        last = c.execute("SELECT MAX(CAST(substr(receipt, ?) AS INTEGER)) FROM reports WHERE receipt LIKE ?",
+                         (len(spec["prefix"]) + 2, spec["prefix"] + "-%")).fetchone()[0]
+        receipt = f"{spec['prefix']}-{(last or 0) + 1:05d}"
         c.execute("UPDATE reports SET receipt=? WHERE id=?", (receipt, rid))
         folder = os.path.join(PHOTO_DIR, str(rid))
         os.makedirs(folder, exist_ok=True)
         for slot, b, g in photo_blobs:
             dest = os.path.join(folder, f"{slot}.jpg")
             size = _save_photo(b, dest, g, receipt, staff["name"])
+            if g is None:      # signature: no stamp, no location
+                c.execute("INSERT INTO photos(report_id, slot, path, bytes, taken_at, geo_status) VALUES (?,?,?,?,?,?)",
+                          (rid, slot, dest, size, now_iso(), "signature"))
+                continue
             c.execute("INSERT INTO photos(report_id, slot, path, bytes, taken_at, lat, lon, acc, geo_status, file_age)"
                       " VALUES (?,?,?,?,?,?,?,?,?,?)",
                       (rid, slot, dest, size, g["taken_at"], g["lat"], g["lon"], g["acc"], g["status"], g["file_age"]))
-        no_loc = sum(1 for _, _, g in photo_blobs if g["status"] != "ok")
+        no_loc = sum(1 for _, _, g in photo_blobs if g is not None and g["status"] != "ok")
         audit(staff["id"], staff["name"], "report_submitted", f"report:{rid}",
               {"form": form_type, "receipt": receipt, "photos": len(photo_blobs), "photos_without_location": no_loc,
                "queued_on_phone": bool(queued)}, ip, agent)
@@ -455,12 +479,12 @@ def admin_reports(request: Request, admin=Depends(current_admin)):
     rows = conn().execute(
         f"SELECT r.id, r.receipt, r.form_type, r.submitted_at, r.queued_on_phone, s.name AS staff_name, r.data,"
         f" (SELECT status FROM emails e WHERE e.report_id=r.id ORDER BY e.id DESC LIMIT 1) AS email_status,"
-        f" (SELECT COUNT(*) FROM photos p WHERE p.report_id=r.id AND COALESCE(p.geo_status,'missing')!='ok') AS no_geo"
+        f" (SELECT COUNT(*) FROM photos p WHERE p.report_id=r.id AND COALESCE(p.geo_status,'missing') NOT IN ('ok','signature')) AS no_geo"
         f" FROM reports r JOIN staff s ON s.id=r.staff_id{w} ORDER BY r.id DESC LIMIT 300", args).fetchall()
     out = []
     for r in rows:
         d = json.loads(r["data"])
-        summary = " · ".join(x for x in [d.get("po"), d.get("customer")] if x)
+        summary = forms_mod.summary(r["form_type"], d)
         out.append({k: r[k] for k in ("id", "receipt", "form_type", "submitted_at", "queued_on_phone",
                                       "staff_name", "email_status", "no_geo")} | {"summary": summary})
     return out
@@ -483,14 +507,14 @@ def admin_report(rid: int, request: Request, admin=Depends(current_admin)):
           "form": r["form_type"]}, client_ip(request), ua(request))
     if r["form_type"] == "Disciplinary Action":
         alerts.push("Ops app: disciplinary record opened", f"{admin['name']} opened {r['receipt']}.", "high")
-    labels = dict(FORMS[r["form_type"]]["photos"])
+    labels = {p["slot"]: p["label"] for p in photo_slots(r["form_type"])}
     return {
         "id": r["id"], "receipt": r["receipt"], "form_type": r["form_type"], "staff_name": r["staff_name"],
         "submitted_at": r["submitted_at"], "started_at": r["started_at"], "queued_on_phone": r["queued_on_phone"],
         "rows": display_rows(r["form_type"], data),
         "photos": [{"id": p["id"], "slot": p["slot"], "label": labels.get(p["slot"], p["slot"]),
-                    "located": p["geo_status"] == "ok",
-                    "lines": geo.describe(_geo_row(p, r["submitted_at"])),
+                    "located": p["geo_status"] in ("ok", "signature"), "signature": p["geo_status"] == "signature",
+                    "lines": [] if p["geo_status"] == "signature" else geo.describe(_geo_row(p, r["submitted_at"])),
                     "map": geo.map_url(p["lat"], p["lon"]) if p["geo_status"] == "ok" else None} for p in photos],
         "emails": [dict(e) for e in emails],
     }
@@ -687,11 +711,13 @@ def admin_rules(admin=Depends(current_admin)):
     rows = conn().execute("SELECT form_type, recipients FROM email_rules ORDER BY form_type").fetchall()
     extra = {
         "Receiving Report": "Plus the sales rep picked on the form.",
-        "Vehicle Inspection": "Plus admin@simplydoors.com when anything is marked Defective (Stage 2).",
-        "Disciplinary Action": "Plus the employee being written up (Stage 2).",
+        "Delivery Proof": "Plus the sales rep picked on the form.",
+        "Vehicle Inspection": "Plus the list below when anything is marked Defective.",
+        "Vehicle Inspection: when something is Defective": "Added to the Vehicle Inspection email only when an item is Defective.",
+        "Disciplinary Action": "Plus the employee being written up.",
         "Measure Report": "Plus the person who measured (Stage 3).",
     }
-    live = set(FORMS)
+    live = set(FORMS) | set(EXTRA_RULES)
     return [{"form_type": r["form_type"], "recipients": r["recipients"], "extra": extra.get(r["form_type"], ""),
              "live": r["form_type"] in live} for r in rows]
 
@@ -714,6 +740,41 @@ async def admin_set_rule(request: Request, admin=Depends(current_admin)):
           client_ip(request), ua(request))
     alerts.push("Ops app: email list changed", f"{admin['name']} changed who gets {form_type}.")
     return {"ok": True}
+
+
+@app.get("/api/admin/lists")
+def admin_lists(admin=Depends(current_admin)):
+    return {"lists": [{"name": n, "label": LIST_LABELS[n], "values": get_list(n)} for n in DEFAULT_LISTS],
+            "forms": [{"type": k, "enabled": k in forms_mod.enabled_forms(), "admin_only": bool(v.get("admin_only"))}
+                      for k, v in sorted(FORMS.items(), key=lambda kv: kv[1]["order"])]}
+
+
+@app.put("/api/admin/forms-enabled")
+async def admin_set_forms(request: Request, admin=Depends(current_admin)):
+    body = await request.json()
+    old = forms_mod.enabled_forms()
+    new = forms_mod.set_enabled_forms([str(x) for x in (body.get("forms") or [])])
+    audit(admin["id"], admin["name"], "forms_switched", None, {"from": old, "to": new}, client_ip(request), ua(request))
+    alerts.push("Ops app: forms switched", f"{admin['name']} set staff forms to: {', '.join(new) or 'none'}.")
+    return {"ok": True, "forms": new}
+
+
+@app.put("/api/admin/lists/{name}")
+async def admin_set_list(name: str, request: Request, admin=Depends(current_admin)):
+    if name not in DEFAULT_LISTS:
+        raise HTTPException(404)
+    body = await request.json()
+    vals = body.get("values")
+    if not isinstance(vals, list) or len(vals) > 100:
+        raise HTTPException(422, "Send one item per line (up to 100).")
+    old = get_list(name)
+    try:
+        new = set_list(name, vals)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    audit(admin["id"], admin["name"], "list_changed", LIST_LABELS[name], {"from": old, "to": new},
+          client_ip(request), ua(request))
+    return {"ok": True, "values": new}
 
 
 @app.get("/api/admin/status")

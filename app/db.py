@@ -173,6 +173,8 @@ SEED_RULES = {
     "Vehicle Incident": "adem@simplydoors.com, lupes@simplydoors.com, admin@simplydoors.com",
     "Disciplinary Action": "adem@simplydoors.com, paz@simplydoors.com, admin@simplydoors.com",
     "Measure Report": "admin@simplydoors.com",
+    "Delivery Proof": "adem@simplydoors.com, lupes@simplydoors.com",
+    "Vehicle Inspection: when something is Defective": "admin@simplydoors.com",
 }
 
 

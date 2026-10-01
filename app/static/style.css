@@ -28,11 +28,11 @@ h2 { font-size: 18px; margin: 28px 0 6px; }
 .banner button { margin-left: 8px; }
 
 label { display: block; font-weight: 600; margin: 18px 0 6px; }
-input[type=text], input[type=password], select, textarea {
+input[type=text], input[type=password], input[type=date], input[type=time], select, textarea {
   width: 100%; font: inherit; padding: 13px 12px; min-height: 50px; border: 1.5px solid var(--line);
   border-radius: 10px; background: #fff; color: var(--ink); }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--green); box-shadow: 0 0 0 3px rgba(118,192,67,.25); }
-#location_custom { margin-top: 8px; }
+input.other { margin-top: 8px; }
 textarea { resize: vertical; }
 fieldset { border: 0; padding: 0; margin: 22px 0 0; }
 legend { font-weight: 600; margin-bottom: 6px; }
@@ -103,3 +103,34 @@ ul.plain { padding-left: 20px; } ul.plain li { margin: 6px 0; }
 .result.wait { border-color: #e0b44a; }
 .result .big { font-size: 22px; font-weight: 800; margin: 6px 0; }
 .result .receipt { font-size: 28px; font-weight: 800; letter-spacing: 1px; color: var(--green-dark); }
+
+/* ---- Stage 2: forms built from the server's list ---- */
+.card.admin { border-color: #9aa5b1; border-style: dashed; }
+.pillnote { display: inline-block; vertical-align: middle; font-size: 12px; font-weight: 700; color: var(--amber);
+  background: var(--amber-bg); border-radius: 999px; padding: 2px 8px; margin-left: 6px; }
+h3 { font-size: 15px; margin: 18px 0 4px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.choice { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+.choice label { margin: 0; }
+.choice input, .okbtns input { position: absolute; opacity: 0; pointer-events: none; }
+.choice span { display: flex; align-items: center; justify-content: center; text-align: center; min-height: 52px;
+  padding: 8px; border: 2px solid var(--line); border-radius: 12px; background: #fff; font-weight: 700; cursor: pointer; }
+.choice input:checked + span { background: var(--green); border-color: var(--green); color: #fff; }
+.choice input:focus-visible + span, .okbtns input:focus-visible + span { box-shadow: 0 0 0 3px rgba(118,192,67,.4); }
+.okdef-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 22px 0 4px; }
+.okrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: #fff;
+  border: 1.5px solid var(--line); border-radius: 10px; padding: 8px 10px; margin: 6px 0; }
+.okrow > span { font-weight: 500; flex: 1; min-width: 0; }
+.okbtns { display: flex; gap: 6px; flex-shrink: 0; }
+.okbtns label { margin: 0; }
+.okbtns span { display: inline-flex; align-items: center; justify-content: center; min-width: 64px; min-height: 44px;
+  padding: 0 10px; border: 2px solid var(--line); border-radius: 10px; font-size: 14px; font-weight: 700; cursor: pointer; background: #fff; }
+.okbtns input:checked + span { background: var(--green); border-color: var(--green); color: #fff; }
+.okbtns .bad input:checked + span { background: var(--red); border-color: var(--red); color: #fff; }
+.sigwrap { background: #fff; border: 2px dashed #b9c2ca; border-radius: 12px; padding: 6px; }
+.sigpad { display: block; width: 100%; height: 170px; touch-action: none; cursor: crosshair; background: #fff; border-radius: 8px; }
+.sigwrap .link { margin-top: 4px; }
+.fld.invalid input, .fld.invalid select, .fld.invalid textarea, .fld.invalid .sigwrap,
+.fld.invalid .choice span, .fld.invalid .photos .tile { border-color: var(--red); }
+label.check.invalid, .okrow.invalid { border-color: var(--red); background: var(--red-bg); }
+@media (max-width: 380px) { .okrow { flex-wrap: wrap; } .okbtns { width: 100%; } .okbtns label, .okbtns span { flex: 1; } }
+.choice label, .okbtns label { position: relative; }

@@ -19,7 +19,7 @@ def set_pin(name: str) -> int:
         print(f"No staff member named '{name}'.")
         return 1
     for _ in range(3):
-        pin = getpass.getpass(f"New PIN for {name} (4-8 digits, hidden): ").strip()
+        pin = getpass.getpass(f"New PIN for {name} (6-8 digits, hidden): ").strip()
         again = getpass.getpass("Type it again: ").strip()
         if pin != again:
             print("They didn't match. Try again.")

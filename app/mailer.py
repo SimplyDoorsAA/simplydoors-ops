@@ -54,9 +54,14 @@ def _body_html(r, data) -> str:
         f"<td style='padding:8px 12px;border:1px solid #e0e0e0'>{escape(str(b))}</td></tr>"
         for a, b in [("Submitted by", r["staff_name"]), ("Received", local_time(r["submitted_at"]))]
         + display_rows(r["form_type"], data))
+    from .forms import FORMS
+    confidential = bool(FORMS.get(r["form_type"], {}).get("confidential"))
+    alarm = confidential or bool(data.get("defective"))
+    head = "#b3261e" if alarm else "#2f6f1f"
+    tag = " — CONFIDENTIAL" if confidential else (" — DEFECTIVE" if data.get("defective") else "")
     return f"""<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #ddd;border-radius:8px;overflow:hidden">
 <div style="background:#f8d7da;color:#721c24;padding:8px;text-align:center;font-size:12px;font-weight:bold">AUTOMATED MESSAGE — DO NOT REPLY</div>
-<div style="background:#2f6f1f;color:#ffffff;padding:16px 20px"><h2 style="margin:0;color:#ffffff">{escape(r['form_type'])}</h2>
+<div style="background:{head};color:#ffffff;padding:16px 20px"><h2 style="margin:0;color:#ffffff">{escape(r['form_type'])}{tag}</h2>
 <div style="font-size:13px;color:#ffffff">Receipt {escape(r['receipt'])}</div></div>
 <div style="padding:20px"><table style="border-collapse:collapse;width:100%;font-size:14px">{rows}</table>
 <p style="font-size:12px;color:#666;margin-top:20px">The full report with every photo is attached as a PDF.</p></div></div>"""

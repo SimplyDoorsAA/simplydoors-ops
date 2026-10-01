@@ -23,6 +23,7 @@
       <button data-tab="log">Activity log</button>
       <button data-tab="staff">Staff &amp; PINs</button>
       <button data-tab="rules">Email lists</button>
+      <button data-tab="lists">Forms &amp; lists</button>
       <button data-tab="status">Status</button>
     </nav>
 
@@ -66,6 +67,16 @@
     <section data-panel="rules" class="hidden">
       <p class="muted small">Who gets emailed for each report. Separate addresses with commas.</p>
       <div id="rulesList"></div>
+    </section>
+
+    <section data-panel="lists" class="hidden">
+      <h3>Forms staff can see</h3>
+      <p class="muted small">Admins always see every form. Turn a form on here when you're ready for staff to use it instead of the old portal.</p>
+      <div id="formsSwitches"></div>
+      <button class="mini primary" id="saveForms" type="button">Save forms</button>
+      <h3>Pick lists</h3>
+      <p class="muted small">The choices staff pick from. One per line.</p>
+      <div id="pickLists"></div>
     </section>
 
     <section data-panel="status" class="hidden"><div id="statusBox"></div></section>

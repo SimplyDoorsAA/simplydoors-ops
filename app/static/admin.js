@@ -37,13 +37,14 @@
     admin_denied: "Blocked from admin page", audit_exported: "Exported the activity log",
     audit_viewed: "Looked at the activity log", photo_viewed: "Opened a photo",
     app_started: "App started", staff_seeded: "Staff list created",
+    list_changed: "Changed a pick list", forms_switched: "Changed which forms staff see",
   };
 
   // ------------------------------------------------------------ tabs
   function tab(name) {
     $$(".tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
     $$("[data-panel]").forEach(p => p.classList.toggle("hidden", p.dataset.panel !== name));
-    ({ reports: loadReports, log: () => loadLog(true), staff: loadStaff, rules: loadRules, status: loadStatus })[name]();
+    ({ reports: loadReports, log: () => loadLog(true), staff: loadStaff, rules: loadRules, lists: loadLists, status: loadStatus })[name]();
   }
   $$(".tabs button").forEach(b => b.onclick = () => tab(b.dataset.tab));
 
@@ -77,8 +78,8 @@
         <table class="kv">${r.rows.map(([a, b]) => `<tr><td>${esc(a)}</td><td>${esc(b)}</td></tr>`).join("")}</table>
         <h3>Photos (${r.photos.length})</h3>
         <div class="gallery">${r.photos.map(p => `<div><a href="api/admin/photos/${p.id}" target="_blank" rel="noopener"><img loading="lazy" src="api/admin/photos/${p.id}" alt=""></a>
-          <span><b>${esc(p.label)}</b>${p.located ? "" : ' <span class="badge warn">no location</span>'}</span>
-          ${p.lines.map(l => `<span>${esc(l)}</span>`).join("")}
+          <span><b>${esc(p.label)}</b>${p.signature || p.located ? "" : ' <span class="badge warn">no location</span>'}</span>
+          ${p.signature ? "" : p.lines.map(l => `<span>${esc(l)}</span>`).join("")}
           ${p.map ? `<a class="maplink" href="${esc(p.map)}" target="_blank" rel="noopener">View on map</a>` : ""}</div>`).join("") || '<p class="muted">None</p>'}</div>
         <h3>Emails</h3>
         ${r.emails.map(e => `<div class="rule"><b>${emailBadge(e.status)}</b> ${esc(e.subject)}<div class="det">To: ${esc(e.recipients)}
@@ -247,6 +248,31 @@
       });
     } catch (e) { fail(e); }
   }
+
+  // ------------------------------------------------------------ forms on/off + pick lists
+  async function loadLists() {
+    try {
+      const d = await api("api/admin/lists");
+      $("#formsSwitches").innerHTML = d.forms.map(f => `<label class="switch"><input type="checkbox" value="${esc(f.type)}"
+          ${f.enabled && !f.admin_only ? "checked" : ""}${f.admin_only ? " disabled" : ""}>
+          <span>${esc(f.type)}${f.admin_only ? ' <span class="badge">admins only</span>' : ""}</span></label>`).join("");
+      $("#pickLists").innerHTML = d.lists.map(l => `<div class="rule"><h3>${esc(l.label)}</h3>
+          <textarea data-list="${esc(l.name)}" aria-label="${esc(l.label)}, one per line">${esc(l.values.join("\n"))}</textarea>
+          <button class="mini primary" data-savelist="${esc(l.name)}" type="button">Save</button></div>`).join("");
+      $$("#pickLists textarea").forEach(ta => { ta.style.height = "auto"; ta.style.height = (ta.scrollHeight + 4) + "px"; });
+      $$("[data-savelist]").forEach(b => b.onclick = async () => {
+        const ta = $(`textarea[data-list="${b.dataset.savelist}"]`);
+        const values = ta.value.split("\n").map(v => v.trim()).filter(Boolean);
+        try { await api(`api/admin/lists/${b.dataset.savelist}`, { method: "PUT", json: { values } }); toast("Saved. Phones pick it up next time a form opens."); loadLists(); }
+        catch (e) { fail(e); }
+      });
+    } catch (e) { fail(e); }
+  }
+  $("#saveForms").onclick = async () => {
+    const forms = $$("#formsSwitches input:checked").map(i => i.value);
+    if (!confirm(forms.length ? `Staff will see: ${forms.join(", ")}. Save?` : "Staff will see no forms at all. Save?")) return;
+    try { await api("api/admin/forms-enabled", { method: "PUT", json: { forms } }); toast("Saved"); loadLists(); } catch (e) { fail(e); }
+  };
 
   // ------------------------------------------------------------ status
   async function loadStatus() {
