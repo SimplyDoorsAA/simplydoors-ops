@@ -156,8 +156,8 @@
   const iosBrowser = !isIOS ? null : /CriOS/.test(navigator.userAgent) ? "Chrome"
     : /FxiOS/.test(navigator.userAgent) ? "Firefox" : /EdgiOS/.test(navigator.userAgent) ? "Edge" : "Safari";
   function fixSteps() {
-    if (iosBrowser === "Safari") return "Settings → Apps → Safari → Location → Allow";
-    if (iosBrowser) return `Settings → Apps → ${iosBrowser} → Location → While Using the App`;
+    if (iosBrowser === "Safari") return "Settings → Privacy & Security → Location Services (on) → Safari Websites → While Using the App, and Settings → Apps → Safari → Location → Allow";
+    if (iosBrowser) return `Settings → Privacy & Security → Location Services (on) → ${iosBrowser} → While Using the App`;
     return "your browser's site settings for this page → Location → Allow";
   }
   let lastFix = null;                          // reused for 2 minutes so the phone isn't asked twice in a row
