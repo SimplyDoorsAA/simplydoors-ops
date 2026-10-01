@@ -40,7 +40,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 60 * 1024 * 1024
-APP_VERSION = "stage1-4"
+APP_VERSION = "stage1-5"
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -180,6 +180,60 @@ def login(request: Request, body: LoginBody):
     if not row:
         raise HTTPException(401, msg)
     token, max_age = auth.create_session(row, client_ip(request), ua(request))
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie(COOKIE, token, max_age=max_age, httponly=True, secure=COOKIE_SECURE, samesite="lax",
+                    path=(BASE_PATH or "") + "/")
+    return resp
+
+
+# ---------------------------------------------------------------- first-time setup (invite link)
+class SetupBody(BaseModel):
+    code: str = ""
+    pin: str = ""
+
+
+def _setup_fail(request: Request, what: str):
+    conn().execute("INSERT INTO ip_failures(ip, at) VALUES (?,?)", (client_ip(request), now_iso()))
+    audit(None, "unknown", "setup_code_rejected", None, {"step": what}, client_ip(request), ua(request))
+    raise HTTPException(400, "That setup link or code isn't valid. It may have expired or already been used. "
+                             "Ask Adem or Paz for a new one.")
+
+
+@app.post("/api/setup/check")
+def setup_check(request: Request, body: SetupBody):
+    require_app_header(request)
+    if auth.ip_blocked(client_ip(request)):
+        raise HTTPException(429, "Too many tries from this connection. Wait 15 minutes.")
+    inv = auth.find_invite(body.code[:40])
+    if not inv:
+        _setup_fail(request, "check")
+    return {"name": inv["name"], "expires_at": inv["expires_at"]}
+
+
+@app.post("/api/setup/complete")
+def setup_complete(request: Request, body: SetupBody):
+    require_app_header(request)
+    if auth.ip_blocked(client_ip(request)):
+        raise HTTPException(429, "Too many tries from this connection. Wait 15 minutes.")
+    inv = auth.find_invite(body.code[:40])
+    if not inv:
+        _setup_fail(request, "complete")
+    pin = body.pin.strip()
+    if not auth.valid_pin_format(pin):
+        raise HTTPException(422, "Your PIN must be 6 to 8 digits.")
+    if auth.weak_pin(pin):
+        raise HTTPException(422, "That PIN is too easy to guess. Avoid repeats and runs like 111111 or 123456.")
+    c = conn()
+    cur = c.execute("UPDATE invites SET used_at=? WHERE id=? AND used_at IS NULL", (now_iso(), inv["id"]))
+    if cur.rowcount != 1:
+        _setup_fail(request, "complete-race")
+    auth.set_pin(inv["staff_id"], pin, "self")
+    auth.end_all_sessions(inv["staff_id"])
+    audit(inv["staff_id"], inv["name"], "pin_created_by_staff", inv["name"], {"invite_from": inv["created_by"]},
+          client_ip(request), ua(request))
+    row = c.execute("SELECT * FROM staff WHERE id=?", (inv["staff_id"],)).fetchone()
+    token, max_age = auth.create_session(row, client_ip(request), ua(request))
+    audit(row["id"], row["name"], "login_ok", row["name"], {"via": "setup"}, client_ip(request), ua(request))
     resp = JSONResponse({"ok": True})
     resp.set_cookie(COOKIE, token, max_age=max_age, httponly=True, secure=COOKIE_SECURE, samesite="lax",
                     path=(BASE_PATH or "") + "/")
@@ -495,9 +549,16 @@ def admin_retry_email(eid: int, request: Request, admin=Depends(current_admin)):
 # ---------------------------------------------------------------- admin: staff
 def _staff_out(r):
     locked = bool(r["locked_until"] and r["locked_until"] > now_iso())
+    inv = conn().execute("SELECT expires_at, used_at, revoked_at FROM invites WHERE staff_id=? ORDER BY id DESC LIMIT 1",
+                         (r["id"],)).fetchone()
+    invite = None
+    if inv:
+        invite = ("used" if inv["used_at"] else "replaced" if inv["revoked_at"]
+                  else "expired" if inv["expires_at"] < now_iso() else "waiting")
     return {"id": r["id"], "name": r["name"], "dept": r["dept"], "email": r["email"], "is_admin": bool(r["is_admin"]),
             "sales_notify": bool(r["sales_notify"]), "active": bool(r["active"]), "has_pin": bool(r["pin_hash"]),
-            "pin_set_at": r["pin_set_at"], "pin_source": r["pin_source"], "locked": locked}
+            "pin_set_at": r["pin_set_at"], "pin_source": r["pin_source"], "locked": locked, "invite": invite,
+            "invite_expires": inv["expires_at"] if inv else None}
 
 
 @app.get("/api/admin/staff")
@@ -590,6 +651,23 @@ async def admin_set_pin(sid: int, request: Request, admin=Depends(current_admin)
     audit(admin["id"], admin["name"], "pin_reset", row["name"], None, client_ip(request), ua(request))
     alerts.push("Ops app: PIN reset", f"{admin['name']} reset the PIN for {row['name']}.", "high")
     return {"ok": True}
+
+
+@app.post("/api/admin/staff/{sid}/invite")
+def admin_invite(sid: int, request: Request, admin=Depends(current_admin)):
+    c = conn()
+    row = c.execute("SELECT name, is_admin, active FROM staff WHERE id=?", (sid,)).fetchone()
+    if not row:
+        raise HTTPException(404)
+    if not row["active"]:
+        raise HTTPException(422, "Turn this person's account back on first.")
+    if row["is_admin"] and sid != admin["id"]:
+        raise HTTPException(422, "Another admin's PIN can only be reset from the server console.")
+    code, expires = auth.new_invite(sid, admin["name"])
+    audit(admin["id"], admin["name"], "invite_created", row["name"], {"expires": expires}, client_ip(request), ua(request))
+    alerts.push("Ops app: setup link created", f"{admin['name']} created a setup link for {row['name']}.")
+    pretty = code[:4] + "-" + code[4:]
+    return {"name": row["name"], "code": pretty, "expires_at": expires}
 
 
 @app.post("/api/admin/staff/{sid}/unlock")

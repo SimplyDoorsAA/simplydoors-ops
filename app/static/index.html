@@ -39,6 +39,66 @@
       <p class="error hidden" id="loginError" role="alert"></p>
       <button class="btn" id="loginBtn" type="submit">Sign in</button>
     </form>
+    <p class="first-time">First time, or forgot your PIN? <button type="button" class="link" id="haveCode">Use a setup code</button></p>
+  </section>
+
+  <!-- FIRST-TIME SETUP: CODE + PIN -->
+  <section id="viewSetup" class="view hidden">
+    <div class="steps" aria-hidden="true"><span class="on"></span><span></span><span></span><span></span></div>
+    <h1 id="setupHello">Set up your account</h1>
+    <form id="setupForm" autocomplete="off" novalidate>
+      <div id="codeBox">
+        <p class="muted">Enter the setup code Adem or Paz sent you.</p>
+        <label for="setupCode">Setup code</label>
+        <input id="setupCode" type="text" autocapitalize="characters" autocomplete="one-time-code" maxlength="12" placeholder="ABCD-EFGH">
+      </div>
+      <div id="pinBox" class="hidden">
+        <p>Make a PIN you'll use to sign in. <b>6 to 8 numbers</b>, nothing easy like 111111 or 123456. Don't share it.</p>
+        <label for="newPin">New PIN</label>
+        <input id="newPin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="new-password">
+        <label for="newPin2">Type it again</label>
+        <input id="newPin2" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="new-password">
+      </div>
+      <p class="error hidden" id="setupError" role="alert"></p>
+      <button class="btn" id="setupBtn" type="submit">Next</button>
+      <button class="link center" id="setupBack" type="button">Back to sign in</button>
+    </form>
+  </section>
+
+  <!-- FIRST-TIME SETUP: WALKTHROUGH -->
+  <section id="viewOnboard" class="view hidden">
+    <div class="steps" aria-hidden="true"><span class="on"></span><span class="on" id="dot2"></span><span id="dot3"></span><span id="dot4"></span></div>
+
+    <div id="obLocation">
+      <h1>Photo location</h1>
+      <p>Photos you add are stamped with the <b>time</b> and <b>where you were</b>, so the office can see deliveries were checked in the right place.</p>
+      <ul class="plain">
+        <li>Used <b>only at the moment you add a photo</b>.</li>
+        <li><b>Never</b> tracked in the background or when the app is closed.</li>
+      </ul>
+      <div class="tip" id="obLocSteps"></div>
+      <div class="result-line hidden" id="obLocResult" role="status"></div>
+      <button class="btn" id="obLocTest" type="button">Turn on &amp; test my location</button>
+      <button class="link center" id="obLocSkip" type="button">Skip for now</button>
+    </div>
+
+    <div id="obHomeScreen" class="hidden">
+      <h1>Put it on your home screen</h1>
+      <p>So you can open it like an app, without typing the address.</p>
+      <div class="tip" id="obHomeSteps"></div>
+      <button class="btn hidden" id="obInstall" type="button">Add to home screen</button>
+      <button class="btn" id="obHomeNext" type="button">Done, next</button>
+    </div>
+
+    <div id="obSafety" class="hidden">
+      <h1>Last thing</h1>
+      <div class="tip safety">
+        <p><b>Only fill out reports and take photos when you're parked or stopped.</b> Never while driving.</p>
+        <p>If you lose signal, keep going: your report is saved on this phone and sends by itself when you're back online.</p>
+        <p>Forgot your PIN? Ask Adem or Paz for a new setup link.</p>
+      </div>
+      <button class="btn" id="obFinish" type="button">Got it, start using the app</button>
+    </div>
   </section>
 
   <!-- ONE-TIME LOCATION SCREEN -->

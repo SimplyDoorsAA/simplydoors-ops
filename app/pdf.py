@@ -92,7 +92,7 @@ def build_pdf(report, staff_name: str, data: dict, photos: list) -> bytes:
             if not os.path.exists(p["path"]):
                 story.append(Paragraph(f"(missing file for {escape(p['slot'])})", small))
                 continue
-            story.append(KeepTogether([_img(p["path"], 7.2 * inch, 4.4 * inch),
+            story.append(KeepTogether([_img(p["path"], 7.2 * inch, 5.6 * inch),
                                        Paragraph(_caption(p, labels, report["submitted_at"]), small), Spacer(1, 8)]))
 
     def footer(canvas, d):

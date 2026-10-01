@@ -56,8 +56,8 @@ def _body_html(r, data) -> str:
         + display_rows(r["form_type"], data))
     return f"""<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #ddd;border-radius:8px;overflow:hidden">
 <div style="background:#f8d7da;color:#721c24;padding:8px;text-align:center;font-size:12px;font-weight:bold">AUTOMATED MESSAGE — DO NOT REPLY</div>
-<div style="background:#76c043;color:#fff;padding:16px 20px"><h2 style="margin:0">{escape(r['form_type'])}</h2>
-<div style="font-size:13px">Receipt {escape(r['receipt'])}</div></div>
+<div style="background:#2f6f1f;color:#ffffff;padding:16px 20px"><h2 style="margin:0;color:#ffffff">{escape(r['form_type'])}</h2>
+<div style="font-size:13px;color:#ffffff">Receipt {escape(r['receipt'])}</div></div>
 <div style="padding:20px"><table style="border-collapse:collapse;width:100%;font-size:14px">{rows}</table>
 <p style="font-size:12px;color:#666;margin-top:20px">The full report with every photo is attached as a PDF.</p></div></div>"""
 

@@ -30,6 +30,11 @@
 .gallery span { display: block; font-size: 12px; color: var(--muted); }
 .gallery .maplink { display: inline-block; font-size: 13px; font-weight: 700; color: var(--green-dark); margin-top: 2px; min-height: 32px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.codebig { font-size: 34px; font-weight: 800; letter-spacing: 4px; text-align: center; background: var(--green-bg);
+  border-radius: 12px; padding: 14px; margin: 12px 0; color: var(--green-dark); }
+.actions a.mini { display: inline-flex; align-items: center; text-decoration: none; color: inherit; }
+.actions a.mini.primary { color: #fff; }
+td.btns { white-space: nowrap; } td.btns .mini { margin: 2px 0; }
 .addbox { margin-top: 18px; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
 .addbox summary { font-weight: 700; cursor: pointer; min-height: 32px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 4px 14px; align-items: end; }
@@ -45,3 +50,8 @@ label.inline input { width: 22px; height: 22px; accent-color: var(--green); }
 .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff;
   padding: 12px 18px; border-radius: 10px; font-weight: 600; z-index: 60; max-width: 90vw; }
 @media (max-width: 700px) { .rows .hide-sm { display: none; } }
+/* wide tables scroll inside their own box on phones, so the page (and pop-ups) never get wider than the screen */
+#repList, #logList, #staffList { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+html, body { overflow-x: hidden; }
+.sheet-box { max-width: min(760px, calc(100vw - 24px)); }
+@media (max-width: 700px) { .staff-dept { display: none; } }

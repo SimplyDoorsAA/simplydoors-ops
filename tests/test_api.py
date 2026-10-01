@@ -296,3 +296,33 @@ def test_snapshot_and_offsite_status(client):
     assert st["configured"] and st["ok"] is False and st["last_ok"] == "2026-09-30T07:30:00Z"
     login(client, "Adem Atis", "246810")
     assert client.get("/ops/api/admin/status").json()["offsite"]["error"] == "boom"
+
+
+def test_setup_link_flow(client):
+    from app import auth as a
+    assert a.weak_pin("111111") and a.weak_pin("123456") and a.weak_pin("987654") and a.weak_pin("121212")
+    assert not a.weak_pin("482916")
+    login(client, "Adem Atis", "246810")
+    gid = conn().execute("SELECT id FROM staff WHERE name='Gerardo Zuniga'").fetchone()[0]
+    paz = conn().execute("SELECT id FROM staff WHERE name='Paz Galambos'").fetchone()[0]
+    assert client.post(f"/ops/api/admin/staff/{paz}/invite", headers=H).status_code == 422   # other admin: console only
+    r1 = client.post(f"/ops/api/admin/staff/{gid}/invite", headers=H).json()
+    r2 = client.post(f"/ops/api/admin/staff/{gid}/invite", headers=H).json()             # replaces the first
+    assert len(r2["code"]) == 9 and r2["code"][4] == "-"
+    staff = {s["name"]: s for s in client.get("/ops/api/admin/staff").json()}
+    assert staff["Gerardo Zuniga"]["invite"] == "waiting"
+    c = TestClient(app)
+    assert c.post("/ops/api/setup/check", json={"code": r1["code"]}, headers=H).status_code == 400   # replaced
+    assert c.post("/ops/api/setup/check", json={"code": "ZZZZ-ZZZZ"}, headers=H).status_code == 400
+    assert c.post("/ops/api/setup/check", json={"code": r2["code"].lower().replace("-", "")}, headers=H).json()["name"] == "Gerardo Zuniga"
+    assert c.post("/ops/api/setup/complete", json={"code": r2["code"], "pin": "123456"}, headers=H).status_code == 422
+    assert c.post("/ops/api/setup/complete", json={"code": r2["code"], "pin": "12"}, headers=H).status_code == 422
+    r = c.post("/ops/api/setup/complete", json={"code": r2["code"], "pin": "482916"}, headers=H)
+    assert r.status_code == 200
+    assert c.get("/ops/api/me").json()["name"] == "Gerardo Zuniga"                       # signed in straight away
+    assert c.post("/ops/api/setup/complete", json={"code": r2["code"], "pin": "593817"}, headers=H).status_code == 400  # used once only
+    c2 = TestClient(app)
+    assert c2.post("/ops/api/login", json={"name": "Gerardo Zuniga", "pin": "482916"}, headers=H).status_code == 200
+    acts = {x["action"] for x in client.get("/ops/api/admin/audit?limit=100").json()["rows"]}
+    assert {"invite_created", "pin_created_by_staff", "setup_code_rejected"} <= acts
+    conn().execute("DELETE FROM ip_failures")

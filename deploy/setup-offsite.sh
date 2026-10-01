@@ -18,6 +18,13 @@ cd "$STACK"
 
 if grep -qE '^[[:space:]]+opsapp-offsite:' "$OVERRIDE"; then
   say "Off-site backup is already set up; making sure it's running"
+  if grep -q './opsapp-offsite/rclone.conf:/config/rclone.conf' "$OVERRIDE"; then
+    # older install mounted the single file, which stops rclone saving refreshed logins; mount the folder instead
+    cp "$OVERRIDE" "$OVERRIDE.bak-$(date +%Y%m%d-%H%M%S)"
+    sed -i 's#\./opsapp-offsite/rclone\.conf:/config/rclone\.conf#./opsapp-offsite:/config#' "$OVERRIDE"
+    docker compose config -q || { cp "$(ls -t "$OVERRIDE".bak-* | head -n 1)" "$OVERRIDE"; warn "Couldn't update the backup service; left it as it was."; }
+    docker compose up -d --force-recreate opsapp-offsite
+  fi
   docker compose up -d opsapp-offsite
   exit 0
 fi
@@ -127,7 +134,7 @@ block = f"""{indent}opsapp-offsite:   # nightly copy of opsapp data to Google Dr
 {i3}- NTFY_URL=http://host.docker.internal:8080/adem-alerts
 {i2}volumes:
 {i3}- ./opsapp-data:/data
-{i3}- ./opsapp-offsite/rclone.conf:/config/rclone.conf
+{i3}- ./opsapp-offsite:/config
 {i3}- ./opsapp/deploy/offsite.sh:/offsite.sh:ro
 {i2}extra_hosts:
 {i3}- "host.docker.internal:host-gateway"

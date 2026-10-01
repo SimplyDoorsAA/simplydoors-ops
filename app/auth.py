@@ -43,6 +43,54 @@ def check_pin(pin: str, stored: str | None) -> bool:
         return False
 
 
+INVITE_DAYS = 7
+_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"   # no 0/O, 1/I/L mix-ups
+
+
+def weak_pin(pin: str) -> bool:
+    """Refuse PINs anyone would guess first."""
+    if len(set(pin)) == 1:
+        return True
+    steps = {int(b) - int(a) for a, b in zip(pin, pin[1:])}
+    if steps in ({1}, {-1}):
+        return True
+    half = len(pin) // 2
+    if len(pin) % 2 == 0 and pin[:half] == pin[half:] and len(set(pin[:half])) <= 2:
+        return True
+    if len(pin) % 3 == 0 and pin == pin[:3] * (len(pin) // 3):
+        return True
+    return pin in {"123123", "121212", "112233", "696969", "000000", "123321", "654321", "102030",
+                   "147258", "159753", "789456", "456789", "202020", "101010", "131313", "123654"}
+
+
+def new_invite(staff_id: int, created_by: str) -> tuple[str, str]:
+    """Returns (code, expires_at). Any earlier unused invite for this person stops working."""
+    code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(8))
+    now = datetime.now(timezone.utc)
+    c = conn()
+    c.execute("UPDATE invites SET revoked_at=? WHERE staff_id=? AND used_at IS NULL AND revoked_at IS NULL",
+              (_iso(now), staff_id))
+    expires = _iso(now + timedelta(days=INVITE_DAYS))
+    c.execute("INSERT INTO invites(staff_id, code_hash, created_by, created_at, expires_at) VALUES (?,?,?,?,?)",
+              (staff_id, _token_hash(normalize_code(code)), created_by, _iso(now), expires))
+    return code, expires
+
+
+def normalize_code(code: str) -> str:
+    return "".join(ch for ch in code.upper() if ch.isalnum())
+
+
+def find_invite(code: str):
+    """Valid, unused, unexpired invite + the person it's for, or None."""
+    norm = normalize_code(code)
+    if len(norm) != 8:
+        return None
+    return conn().execute(
+        "SELECT i.*, s.name, s.active, s.is_admin FROM invites i JOIN staff s ON s.id=i.staff_id"
+        " WHERE i.code_hash=? AND i.used_at IS NULL AND i.revoked_at IS NULL AND i.expires_at>? AND s.active=1",
+        (_token_hash(norm), now_iso())).fetchone()
+
+
 def valid_pin_format(pin: str) -> bool:
     return pin.isdigit() and 6 <= len(pin) <= 8
 

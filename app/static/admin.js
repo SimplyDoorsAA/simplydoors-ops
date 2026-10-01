@@ -32,6 +32,7 @@
     email_failed: "Email failed", email_skipped_no_recipients: "Email skipped (nobody on the list)",
     email_resend_requested: "Asked to resend email", email_retry_requested: "Asked to retry email",
     staff_added: "Added a person", staff_changed: "Changed a person", pin_reset: "Reset a PIN",
+    invite_created: "Made a setup link", pin_created_by_staff: "Made their own PIN", setup_code_rejected: "Wrong or expired setup code",
     pin_set_console: "PIN set on the server", pins_imported: "PINs imported", email_rule_changed: "Changed an email list",
     admin_denied: "Blocked from admin page", audit_exported: "Exported the activity log",
     audit_viewed: "Looked at the activity log", photo_viewed: "Opened a photo",
@@ -138,16 +139,55 @@
     try {
       const rows = await api("api/admin/staff");
       $("#depts").innerHTML = [...new Set(rows.map(r => r.dept))].map(d => `<option>${esc(d)}</option>`).join("");
-      $("#staffList").innerHTML = `<table class="rows"><thead><tr><th>Name</th><th>Dept</th><th class="hide-sm">Email</th><th>PIN</th><th></th></tr></thead><tbody>` +
+      $("#staffList").innerHTML = `<table class="rows"><thead><tr><th>Name</th><th class="hide-sm">Dept</th><th class="hide-sm">Email</th><th>PIN</th><th></th></tr></thead><tbody>` +
         rows.map(r => `<tr${r.active ? "" : ' style="opacity:.5"'}><td><b>${esc(r.name)}</b>
           ${r.is_admin ? ' <span class="badge ok">admin</span>' : ""}${r.sales_notify ? ' <span class="badge">sales list</span>' : ""}
           ${r.active ? "" : ' <span class="badge">turned off</span>'}${r.locked ? ' <span class="badge bad">locked</span>' : ""}</td>
-          <td>${esc(r.dept)}</td><td class="hide-sm">${esc(r.email)}</td>
-          <td>${r.has_pin ? `<span class="badge ok">set</span><div class="det">${esc(r.pin_source || "")}</div>` : '<span class="badge bad">none</span>'}</td>
-          <td><button class="mini" data-edit="${r.id}" type="button">Edit</button></td></tr>`).join("") + `</tbody></table>`;
+          <td class="hide-sm">${esc(r.dept)}</td><td class="hide-sm">${esc(r.email)}</td>
+          <td>${r.has_pin ? `<span class="badge ok">set</span><div class="det">${esc(PIN_SRC[r.pin_source] || r.pin_source || "")}</div>` : '<span class="badge bad">none</span>'}
+            ${r.invite === "waiting" ? `<div class="det">setup link sent, expires ${esc(shortDate(r.invite_expires))}</div>`
+              : r.invite === "expired" ? '<div class="det">setup link expired</div>' : ""}</td>
+          <td class="btns">${r.active && (!r.is_admin || r.id === myId)
+              ? `<button class="mini primary" data-invite="${r.id}" type="button">${r.has_pin ? "New link" : "Invite"}</button>` : ""}
+            <button class="mini" data-edit="${r.id}" type="button">Edit</button></td></tr>`).join("") + `</tbody></table>`;
+      $$("[data-invite]").forEach(b => b.onclick = () => invite(rows.find(r => r.id == b.dataset.invite)));
       $$("[data-edit]").forEach(b => b.onclick = () => editStaff(rows.find(r => r.id == b.dataset.edit)));
     } catch (e) { fail(e); }
   }
+  const PIN_SRC = { self: "made by them", admin: "set by admin", install: "set on server", import: "imported" };
+  const shortDate = (iso) => iso ? new Date(iso).toLocaleDateString([], { timeZone: TZ, month: "short", day: "numeric" }) : "";
+  let myId = null;
+
+  async function invite(r) {
+    const msg = r.has_pin
+      ? `Make a new setup link for ${r.name}? Their current PIN keeps working until they use the link to make a new one.`
+      : `Make a setup link for ${r.name}?`;
+    if (!confirm(msg)) return;
+    let d;
+    try { d = await api(`api/admin/staff/${r.id}/invite`, { method: "POST" }); } catch (e) { return fail(e); }
+    const link = new URL("./", document.baseURI).href + "#setup=" + d.code.replace("-", "");
+    const first = d.name.split(" ")[0];
+    const text = `Hi ${first}, here's your link to set up the SimplyDoors app: ${link}\n` +
+      `Open it on your phone, make your PIN, and follow the steps. It works once and expires ${shortDate(d.expires_at)}. ` +
+      `If the link doesn't open, go to ${new URL("./", document.baseURI).href} and use setup code ${d.code}.`;
+    sheet(`<h2>Setup link for ${esc(d.name)}</h2>
+      <p class="muted small">Works once, only for ${esc(first)}, until ${esc(shortDate(d.expires_at))}. Making a new one cancels this one.</p>
+      <div class="codebig">${esc(d.code)}</div>
+      <div class="actions">
+        <a class="mini primary" id="smsIt" href="sms:?&body=${encodeURIComponent(text)}">Text it</a>
+        <button class="mini" id="copyMsg" type="button">Copy message</button>
+        <button class="mini" id="copyLink" type="button">Copy link only</button>
+      </div>
+      <p class="det">In person? Read them the code. They tap “Use a setup code” on the sign-in screen.</p>`);
+    const copy = async (t) => {
+      try { await navigator.clipboard.writeText(t); toast("Copied"); }
+      catch (e) { $("#sheetBody").insertAdjacentHTML("beforeend", `<textarea readonly style="width:100%;min-height:120px">${esc(t)}</textarea>`); toast("Select the text below and copy it"); }
+    };
+    $("#copyMsg").onclick = () => copy(text);
+    $("#copyLink").onclick = () => copy(link);
+    loadStaff();
+  }
+
   function editStaff(r) {
     sheet(`<h2>${esc(r.name)}</h2>
       <form id="editForm" class="grid">
@@ -188,7 +228,7 @@
     try {
       await api("api/admin/staff", { method: "POST", json: { name: f.elements.name.value, dept: f.elements.dept.value, email: f.elements.email.value,
         sales_notify: f.elements.sales_notify.checked, is_admin: f.elements.is_admin.checked } });
-      toast("Added. Now set their PIN."); f.reset(); loadStaff();
+      toast("Added. Now tap Invite to send them a setup link."); f.reset(); loadStaff();
     } catch (e) { fail(e); }
   };
 
@@ -252,6 +292,7 @@
       const me = await api("api/me");
       if (!me.is_admin) throw Object.assign(new Error("no"), { status: 403 });
       $("#who").textContent = me.name;
+      myId = me.id;
       me.forms.forEach(f => $("#repForm").insertAdjacentHTML("beforeend", `<option>${esc(f.type)}</option>`));
       $("#ui").classList.remove("hidden");
       tab("reports");

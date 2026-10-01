@@ -58,7 +58,23 @@ Running it again updates the app and keeps all data. The script:
 - Sets up the nightly off-site copy to Google Drive and runs the first one.
 - Checks that the Sign app answers exactly as it did before.
 
-## One-time PIN import from the old Google Sheet
+## Giving people access (setup links)
+
+Each person makes their own PIN. Nobody reads or types anyone else's PIN.
+
+1. Go to Admin → Staff & PINs and tap **Invite** next to a name.
+2. Send them the link: **Text it** opens Messages with it filled in, or use **Copy message**.
+   - The link works once, only for that person, and expires after 7 days. Making a new link cancels the old one.
+3. They open it on their phone. A guided setup walks them through:
+   - making their PIN (6–8 digits; obvious ones like 111111 or 123456 are refused);
+   - turning on photo location, with a test that shows a ✓ when it works;
+   - adding the app to their home screen;
+   - "only when parked".
+4. Forgot their PIN? Tap **New link** next to their name. Their old PIN keeps working until they set a new one.
+
+Another admin's PIN can only be reset on the server: `docker exec -it opsapp python -m app.cli set-pin "Name"`.
+
+## (Optional) One-time PIN import from the old Google Sheet
 
 1. In the Sheet, open the **PINs** tab and choose File → Download → CSV.
 2. Copy the file to the OptiPlex home folder as `pins.csv`. **Don't send it through chat or email.**

@@ -82,7 +82,7 @@ def describe(geo: dict) -> list[str]:
 def stamp(im: Image.Image, geo: dict, receipt: str, who: str) -> Image.Image:
     """Print the stamp in a dark bar along the bottom of the photo."""
     w, h = im.size
-    size = max(14, w // 48)
+    size = max(18, max(w, h) // 42)   # sized from the long side so upright photos get a readable stamp
     font = ImageFont.load_default(size=size)
     lines = describe(geo) + [f"SimplyDoors {receipt} · {who}"]
     pad = size // 2

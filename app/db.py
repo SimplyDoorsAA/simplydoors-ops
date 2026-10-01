@@ -59,6 +59,17 @@ CREATE TABLE IF NOT EXISTS sessions (
     ip TEXT, user_agent TEXT
 );
 
+CREATE TABLE IF NOT EXISTS invites (
+    id INTEGER PRIMARY KEY,
+    staff_id INTEGER NOT NULL REFERENCES staff(id),
+    code_hash TEXT NOT NULL UNIQUE,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    revoked_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS ip_failures (
     ip TEXT NOT NULL,
     at TEXT NOT NULL

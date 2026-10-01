@@ -219,6 +219,132 @@
     if (again) again.onclick = () => { localStorage.removeItem(GEO_KEY); maybeShowLocationScreen(); };
   }
 
+  // ------------------------------------------------------------ first-time setup (invite link) + walkthrough
+  let setupCode = null, setupStage = "code";
+  function readLinkCode() {
+    const m = location.hash.match(/^#setup=([A-Za-z0-9-]+)/);
+    if (!m) return null;
+    history.replaceState(null, "", location.pathname + location.search);   // don't leave the code in the address bar
+    return m[1];
+  }
+  function setupError(msg) { const e = $("#setupError"); e.textContent = msg; e.classList.toggle("hidden", !msg); }
+  async function openSetup(code) {
+    me = null; setUser();
+    setupStage = "code"; setupCode = null;
+    $("#setupHello").textContent = "Set up your account";
+    $("#codeBox").classList.remove("hidden"); $("#pinBox").classList.add("hidden");
+    $("#newPin").value = ""; $("#newPin2").value = "";
+    $("#setupCode").value = code || "";
+    $("#setupBtn").textContent = "Next";
+    setupError("");
+    show("viewSetup");
+    if (code) await checkCode(code);
+  }
+  async function checkCode(code) {
+    const btn = $("#setupBtn"); btn.disabled = true;
+    try {
+      const r = await api("api/setup/check", { method: "POST", json: { code } });
+      setupCode = code; setupStage = "pin";
+      $("#setupHello").textContent = `Hi ${r.name.split(" ")[0]}!`;
+      $("#codeBox").classList.add("hidden"); $("#pinBox").classList.remove("hidden");
+      btn.textContent = "Create my PIN"; setupError("");
+      setTimeout(() => $("#newPin").focus(), 50);
+    } catch (e) {
+      setupError(e.status === 0 ? "No connection. Check your signal and try again." : e.message);
+    } finally { btn.disabled = false; }
+  }
+  $("#setupForm").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    if (setupStage === "code") {
+      const code = $("#setupCode").value.trim();
+      if (!code) return setupError("Type the setup code from your text.");
+      return checkCode(code);
+    }
+    const p1 = $("#newPin").value.trim(), p2 = $("#newPin2").value.trim();
+    if (!/^[0-9]{6,8}$/.test(p1)) return setupError("Your PIN must be 6 to 8 numbers.");
+    if (p1 !== p2) return setupError("The two PINs don't match. Type them again.");
+    const btn = $("#setupBtn"); btn.disabled = true; btn.textContent = "Saving…";
+    try {
+      await api("api/setup/complete", { method: "POST", json: { code: setupCode, pin: p1 } });
+      $("#newPin").value = ""; $("#newPin2").value = "";
+      me = await api("api/me");
+      localStorage.setItem("sdops_me", JSON.stringify(me));
+      localStorage.removeItem(GEO_KEY);          // new person on this phone: walk them through it
+      setUser(); startOnboard(); flushOutbox();
+    } catch (e) {
+      setupError(e.status === 0 ? "No connection. Check your signal and try again." : e.message);
+      if (e.status === 400) { setupStage = "code"; $("#codeBox").classList.remove("hidden"); $("#pinBox").classList.add("hidden"); }
+    } finally { btn.disabled = false; btn.textContent = setupStage === "pin" ? "Create my PIN" : "Next"; }
+  });
+  $("#haveCode").addEventListener("click", () => openSetup(null));
+  $("#setupBack").addEventListener("click", () => showLogin());
+
+  const isStandalone = () => window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  const isAndroid = /Android/.test(navigator.userAgent);
+  let installPrompt = null;
+  window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installPrompt = e; $("#obInstall").classList.remove("hidden"); });
+
+  function obStep(n) {
+    ["obLocation", "obHomeScreen", "obSafety"].forEach((id, i) => $("#" + id).classList.toggle("hidden", i !== n));
+    $("#dot3").classList.toggle("on", n >= 1); $("#dot4").classList.toggle("on", n >= 2);
+    window.scrollTo(0, 0);
+  }
+  function startOnboard() {
+    let steps;
+    if (iosBrowser === "Safari") steps = `<b>On this iPhone:</b><ol>
+        <li>Open <b>Settings</b> → <b>Privacy &amp; Security</b> → <b>Location Services</b>. Make sure it's <b>On</b>.</li>
+        <li>Scroll down to <b>Safari Websites</b>. Choose <b>While Using the App</b> and turn on <b>Precise Location</b>.</li>
+        <li>Go back to <b>Settings</b> → <b>Apps</b> → <b>Safari</b> → <b>Location</b> → <b>Allow</b> (so it doesn't ask every day).</li>
+        <li>Come back here and tap the green button.</li></ol>`;
+    else if (iosBrowser) steps = `<b>On this iPhone:</b><ol>
+        <li>Open <b>Settings</b> → <b>Privacy &amp; Security</b> → <b>Location Services</b>. Make sure it's <b>On</b>.</li>
+        <li>Scroll down to <b>${iosBrowser}</b>. Choose <b>While Using the App</b> and turn on <b>Precise Location</b>.</li>
+        <li>Come back here, tap the green button, then tap <b>Allow</b> when asked.</li></ol>`;
+    else steps = `Tap the green button. When your phone asks, choose <b>Allow</b> (or <b>While using the app</b>).`;
+    $("#obLocSteps").innerHTML = steps;
+    $("#obLocResult").className = "result-line hidden";
+    $("#obLocTest").textContent = "Turn on & test my location";
+    $("#obLocTest").dataset.done = "";
+
+    let home;
+    if (iosBrowser === "Safari") home = `<ol><li>Tap the <b>Share</b> button (square with an arrow) at the bottom of the screen.</li>
+        <li>Scroll down and tap <b>Add to Home Screen</b>, then <b>Add</b>.</li></ol>`;
+    else if (iosBrowser) home = `<ol><li>Tap the <b>Share</b> button (square with an arrow) next to the address bar.</li>
+        <li>Tap <b>Add to Home Screen</b>, then <b>Add</b>.</li></ol>`;
+    else if (isAndroid) home = `<ol><li>Tap the <b>⋮</b> menu at the top right.</li><li>Tap <b>Add to Home screen</b> or <b>Install app</b>.</li></ol>`;
+    else home = `On a computer this is optional. You can bookmark this page instead.`;
+    $("#obHomeSteps").innerHTML = home;
+    show("viewOnboard"); obStep(0);
+  }
+  $("#obLocTest").addEventListener("click", async () => {
+    const btn = $("#obLocTest"), out = $("#obLocResult");
+    if (btn.dataset.done) return obStep(isStandalone() ? 2 : 1);
+    btn.disabled = true; btn.textContent = "Checking with your phone…";
+    lastFix = null;
+    const fix = await getFix(15000);
+    btn.disabled = false;
+    if (fix.status === "ok") {
+      localStorage.setItem(GEO_KEY, "yes");
+      out.className = "result-line ok";
+      out.textContent = `✓ Location works (accurate to about ${fix.acc} m).` + (fix.acc > 200 ? " Turn on Precise Location for a better stamp." : "");
+      btn.textContent = "Next"; btn.dataset.done = "1";
+    } else {
+      out.className = "result-line bad";
+      out.textContent = fix.status === "denied"
+        ? `Location is blocked. Follow the steps above, then tap Try again.`
+        : `Couldn't get a location (${fix.status === "timeout" ? "took too long" : "no GPS signal"}). Step outside or near a window and tap Try again.`;
+      btn.textContent = "Try again";
+    }
+  });
+  $("#obLocSkip").addEventListener("click", () => { localStorage.setItem(GEO_KEY, "no"); obStep(isStandalone() ? 2 : 1); });
+  $("#obInstall").addEventListener("click", async () => {
+    if (!installPrompt) return;
+    installPrompt.prompt(); await installPrompt.userChoice.catch(() => {}); installPrompt = null;
+    $("#obInstall").classList.add("hidden");
+  });
+  $("#obHomeNext").addEventListener("click", () => obStep(2));
+  $("#obFinish").addEventListener("click", () => showHome());
+
   // ------------------------------------------------------------ home
   async function showHome() {
     show("viewHome");
@@ -574,5 +700,6 @@
   // ------------------------------------------------------------ start
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-  loadMe().then(updateBanner);
+  const linkCode = readLinkCode();
+  (linkCode ? openSetup(linkCode) : loadMe()).then(updateBanner);
 })();
