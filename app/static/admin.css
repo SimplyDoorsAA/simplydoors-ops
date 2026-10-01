@@ -5,6 +5,8 @@
 .tabs button.active { color: var(--ink); border-bottom-color: var(--green); }
 .filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .filters input, .filters select { width: auto; flex: 1 1 160px; min-height: 44px; padding: 8px 10px; font-size: 15px; }
+.filters .datebox { flex: 1 1 140px; margin: 0; font-size: 13px; font-weight: 600; color: var(--muted); }
+.filters .datebox input { width: 100%; display: block; margin-top: 2px; }
 .mini { min-height: 44px; padding: 8px 14px; border-radius: 10px; border: 1.5px solid var(--line); background: #fff;
   font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }
 .mini.primary { background: var(--green); border-color: var(--green); color: #fff; }

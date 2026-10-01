@@ -152,6 +152,14 @@
   const GEO_KEY = "sdops_geo_choice";          // "yes" | "no"
   const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  // Which iPhone browser is this? Each keeps its own location setting.
+  const iosBrowser = !isIOS ? null : /CriOS/.test(navigator.userAgent) ? "Chrome"
+    : /FxiOS/.test(navigator.userAgent) ? "Firefox" : /EdgiOS/.test(navigator.userAgent) ? "Edge" : "Safari";
+  function fixSteps() {
+    if (iosBrowser === "Safari") return "Settings → Apps → Safari → Location → Allow";
+    if (iosBrowser) return `Settings → Apps → ${iosBrowser} → Location → While Using the App`;
+    return "your browser's site settings for this page → Location → Allow";
+  }
   let lastFix = null;                          // reused for 2 minutes so the phone isn't asked twice in a row
 
   async function geoPermission() {
@@ -185,7 +193,7 @@
     const perm = await geoPermission();
     if (perm === "granted") { localStorage.setItem(GEO_KEY, "yes"); return false; }
     if (perm === "unsupported" || perm === "denied") { localStorage.setItem(GEO_KEY, "no"); return false; }
-    $("#iosTip").classList.toggle("hidden", !isIOS);
+    $("#iosTip").classList.toggle("hidden", iosBrowser !== "Safari");   // only Safari re-asks every day
     show("viewLocation");
     return true;
   }
@@ -204,8 +212,7 @@
     const off = perm === "denied" || (perm !== "granted" && localStorage.getItem(GEO_KEY) === "no");
     if (!off) { note.classList.add("hidden"); return; }
     note.innerHTML = perm === "denied"
-      ? (isIOS ? "Photo location is blocked on this phone, so photos are marked “No location”. To turn it on: Settings → Apps → Safari → Location → Allow."
-               : "Photo location is blocked on this phone, so photos are marked “No location”. Turn it on in your browser's site settings for this app.")
+      ? `Photo location is blocked${iosBrowser ? ` for ${iosBrowser}` : ""} on this phone, so photos are marked “No location”. To turn it on: ${fixSteps()}. Then come back and reload this page.`
       : `Photo location is off, so photos are marked “No location”. <button type="button" class="link" id="geoAgain">Turn it on</button>`;
     note.classList.remove("hidden");
     const again = $("#geoAgain");

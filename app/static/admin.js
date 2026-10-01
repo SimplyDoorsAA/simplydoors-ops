@@ -199,6 +199,7 @@
       $("#rulesList").innerHTML = rows.map((r, i) => `<div class="rule"><h3>${esc(r.form_type)} ${r.live ? '<span class="badge ok">live</span>' : '<span class="badge">coming later</span>'}</h3>
         <textarea data-form="${esc(r.form_type)}" aria-label="Recipients for ${esc(r.form_type)}">${esc(r.recipients)}</textarea>
         ${r.extra ? `<div class="det">${esc(r.extra)}</div>` : ""}<button class="mini primary" data-save="${i}" type="button">Save</button></div>`).join("");
+      $$("#rulesList textarea").forEach(ta => { ta.style.height = "auto"; ta.style.height = (ta.scrollHeight + 4) + "px"; });
       $$("[data-save]").forEach(b => b.onclick = async () => {
         const ta = b.parentElement.querySelector("textarea");
         try { await api("api/admin/email-rules", { method: "PUT", json: { form_type: ta.dataset.form, recipients: ta.value } }); toast("Saved"); loadRules(); }
