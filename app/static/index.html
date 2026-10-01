@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<base href="{{BASE}}">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#76c043">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="SD Ops">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="static/icon-192.png">
+<link rel="icon" href="static/icon-192.png">
+<link rel="stylesheet" href="static/style.css?v={{VERSION}}">
+<title>SimplyDoors Operations</title>
+</head>
+<body>
+<header class="bar">
+  <img src="static/logo.png" alt="SimplyDoors" class="bar-logo">
+  <div class="bar-right hidden" id="userBox">
+    <span id="userName"></span>
+    <a class="link hidden" id="adminLink" href="admin">Admin</a>
+    <button class="link" id="logoutBtn" type="button">Sign out</button>
+  </div>
+</header>
+
+<div class="banner hidden" id="outboxBanner" role="status"></div>
+
+<main class="wrap">
+  <!-- SIGN IN -->
+  <section id="viewLogin" class="view hidden">
+    <h1>Sign in</h1>
+    <p class="muted">Pick your department, then your name.</p>
+    <div class="pills" id="deptPills"></div>
+    <form id="loginForm" class="hidden" autocomplete="off">
+      <label for="loginName">Your name</label>
+      <select id="loginName" required></select>
+      <label for="loginPin">PIN</label>
+      <input id="loginPin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="off" enterkeyhint="go" required>
+      <p class="error hidden" id="loginError" role="alert"></p>
+      <button class="btn" id="loginBtn" type="submit">Sign in</button>
+    </form>
+  </section>
+
+  <!-- HOME -->
+  <section id="viewHome" class="view hidden">
+    <h1>What are you doing?</h1>
+    <button class="card" type="button" data-open="receiving">
+      <span class="card-title">Receiving Report</span>
+      <span class="card-sub">Log a delivery: tickets, product photos, location.</span>
+    </button>
+    <p class="note">During the test run, End of Shift, vehicle and incident forms are still in the old portal.</p>
+    <h2>Your recent reports</h2>
+    <ul class="receipts" id="recentList"><li class="muted">Loading…</li></ul>
+  </section>
+
+  <!-- RECEIVING REPORT -->
+  <section id="viewReceiving" class="view hidden">
+    <div class="topline"><button class="back" type="button" data-home>‹ Back</button><span class="muted small" id="draftNote"></span></div>
+    <h1>Receiving Report</h1>
+    <form id="receivingForm" novalidate>
+      <label for="po">Job / PO number *</label>
+      <input id="po" name="po" type="text" autocomplete="off" maxlength="200" required>
+
+      <label for="customer">Customer name *</label>
+      <input id="customer" name="customer" type="text" autocomplete="off" maxlength="200" required>
+
+      <label for="location">Where did you put it? *</label>
+      <select id="location" name="location" required></select>
+      <input id="location_custom" name="location_custom" type="text" class="hidden" maxlength="200" placeholder="Type the location">
+
+      <label for="sales_notify">Notify a sales rep (optional)</label>
+      <select id="sales_notify" name="sales_notify"></select>
+
+      <fieldset>
+        <legend>Check each one *</legend>
+        <label class="check"><input type="checkbox" name="sop_unloaded"><span>I safely unloaded the goods from the truck.</span></label>
+        <label class="check"><input type="checkbox" name="sop_inspected"><span>I checked for damage, counted everything and checked quality.</span></label>
+        <label class="check"><input type="checkbox" name="sop_entered"><span>I entered the items into the system (or will right away).</span></label>
+      </fieldset>
+
+      <h2>Receiving tickets</h2>
+      <p class="muted small">Bill of lading, packing slips or delivery tickets.</p>
+      <div class="photos" data-group="ticket"></div>
+
+      <h2>Product condition</h2>
+      <p class="muted small">Photos of the product as it arrived.</p>
+      <div class="photos" data-group="product"></div>
+
+      <label for="remarks">Remarks / notes</label>
+      <textarea id="remarks" name="remarks" rows="4" maxlength="4000" placeholder="Missing items, crushed boxes, anything unusual…"></textarea>
+
+      <p class="error hidden" id="formError" role="alert"></p>
+      <button class="btn" id="submitBtn" type="submit">Submit Receiving Report</button>
+      <button class="link danger" id="clearBtn" type="button">Clear this form</button>
+    </form>
+  </section>
+
+  <!-- RESULT -->
+  <section id="viewDone" class="view hidden">
+    <div class="result" id="resultBox"></div>
+    <button class="btn" type="button" data-open="receiving">Start another Receiving Report</button>
+    <button class="btn secondary" type="button" data-home>Done</button>
+  </section>
+</main>
+
+<input type="file" id="photoPicker" accept="image/*" class="hidden">
+<script src="static/app.js?v={{VERSION}}"></script>
+</body>
+</html>
