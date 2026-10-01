@@ -42,7 +42,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 60 * 1024 * 1024
-APP_VERSION = "stage2-1"
+APP_VERSION = "stage2-2"
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 

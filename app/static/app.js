@@ -423,8 +423,12 @@
   function photosHTML() {
     return spec.photos.map(g => g.signature
       ? `<div class="fld"><h2>${esc(g.title)}</h2>${g.help ? `<p class="muted small">${esc(g.help)}</p>` : ""}
-          <div class="sigwrap"><canvas class="sigpad" data-slot="${esc(g.signature)}"></canvas>
-          <button type="button" class="link" data-sigclear="${esc(g.signature)}">Clear signature</button></div></div>`
+          <div class="sigwrap" data-sigslot="${esc(g.signature)}">
+            <button type="button" class="sigopen" data-sigopen="${esc(g.signature)}"><span class="sigpen" aria-hidden="true">✍</span> Tap to sign</button>
+            <div class="sigdone hidden"><img alt="Signature"><div class="sigacts">
+              <button type="button" class="link" data-sigopen="${esc(g.signature)}">Sign again</button>
+              <button type="button" class="link danger" data-sigclear="${esc(g.signature)}">Remove</button></div></div>
+          </div></div>`
       : `<div class="fld"><h2>${esc(g.title)}${g.min ? ` <span class="muted small">(at least ${g.min})</span>` : ""}</h2>
           ${g.help ? `<p class="muted small">${esc(g.help)}</p>` : ""}<div class="photos" data-group="${esc(g.group)}"></div></div>`).join("");
   }
@@ -473,33 +477,100 @@
     renderTiles(); saveDraftSoon();
   }
 
-  // ---- signature pad (finger or mouse); saved as an image like a photo, but never location-stamped
-  function setupSignatures() {
-    $$(".sigpad", form).forEach(cv => {
-      const slot = cv.dataset.slot;
-      const ratio = window.devicePixelRatio || 1;
-      const w = cv.clientWidth || 320, h = 180;
-      cv.width = w * ratio; cv.height = h * ratio; cv.style.height = h + "px";
-      const ctx = cv.getContext("2d");
-      ctx.scale(ratio, ratio); ctx.lineWidth = 2.5; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.strokeStyle = "#111";
-      let drawing = false, last = null, inked = false;
-      const pos = (e) => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
-      if (photos[slot]) {
-        const img = new Image(); img.onload = () => ctx.drawImage(img, 0, 0, w, h); img.src = URL.createObjectURL(photos[slot]); inked = true;
-      }
-      cv.addEventListener("pointerdown", (e) => { drawing = true; last = pos(e); cv.setPointerCapture(e.pointerId); e.preventDefault(); });
-      cv.addEventListener("pointermove", (e) => {
-        if (!drawing) return; const p = pos(e);
-        ctx.beginPath(); ctx.moveTo(last[0], last[1]); ctx.lineTo(p[0], p[1]); ctx.stroke(); last = p; inked = true; e.preventDefault();
-      });
-      const end = () => {
-        if (!drawing) return; drawing = false;
-        if (inked) cv.toBlob(b => { if (b) { photos[slot] = b; saveDraftSoon(); } }, "image/png");
-      };
-      cv.addEventListener("pointerup", end); cv.addEventListener("pointercancel", end); cv.addEventListener("pointerleave", end);
-      $(`[data-sigclear="${slot}"]`, form).onclick = () => { ctx.clearRect(0, 0, w, h); inked = false; delete photos[slot]; saveDraftSoon(); };
+  // ---- signature pad: opens full screen so the customer has room to sign; saved as an image, never location-stamped
+  const sigPreviews = {};
+  function renderSignatures() {
+    $$(".sigwrap[data-sigslot]", form).forEach(w => {
+      const slot = w.dataset.sigslot, blob = photos[slot];
+      $(".sigopen", w).classList.toggle("hidden", !!blob);
+      $(".sigdone", w).classList.toggle("hidden", !blob);
+      if (sigPreviews[slot]) { URL.revokeObjectURL(sigPreviews[slot]); delete sigPreviews[slot]; }
+      if (blob) { sigPreviews[slot] = URL.createObjectURL(blob); $(".sigdone img", w).src = sigPreviews[slot]; }
     });
   }
+  function setupSignatures() {
+    $$("[data-sigopen]", form).forEach(b => b.onclick = () => openSigPad(b.dataset.sigopen));
+    $$("[data-sigclear]", form).forEach(b => b.onclick = () => {
+      if (!confirm("Remove this signature?")) return;
+      delete photos[b.dataset.sigclear]; renderSignatures(); saveDraftSoon();
+    });
+    renderSignatures();
+  }
+
+  const sig = { slot: null, strokes: [], cur: null, scrollY: 0 };
+  const sigCv = $("#sigCanvas"), sigBox = $("#sigOverlay");
+  function sigSize() {
+    const r = sigCv.parentElement.getBoundingClientRect(), ratio = window.devicePixelRatio || 1;
+    sigCv.width = Math.round(r.width * ratio); sigCv.height = Math.round(r.height * ratio);
+    sigCv.style.width = r.width + "px"; sigCv.style.height = r.height + "px";
+    sigDraw();
+  }
+  function sigDraw() {
+    // strokes are kept as fractions of the pad, so turning the phone sideways keeps the signature
+    const ctx = sigCv.getContext("2d"), w = sigCv.width, h = sigCv.height, ratio = window.devicePixelRatio || 1;
+    ctx.clearRect(0, 0, w, h);
+    ctx.lineWidth = 3 * ratio; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.strokeStyle = "#111";
+    for (const st of sig.strokes) {
+      ctx.beginPath(); ctx.moveTo(st[0][0] * w, st[0][1] * h);
+      if (st.length === 1) ctx.lineTo(st[0][0] * w + 0.1, st[0][1] * h);
+      for (const [x, y] of st.slice(1)) ctx.lineTo(x * w, y * h);
+      ctx.stroke();
+    }
+    $("#sigDone").disabled = !sig.strokes.length;
+    $("#sigHint").classList.toggle("hidden", sig.strokes.length > 0);
+  }
+  const sigPt = (e) => { const r = sigCv.getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]; };
+  sigCv.addEventListener("pointerdown", (e) => { e.preventDefault(); sigCv.setPointerCapture(e.pointerId); sig.cur = [sigPt(e)]; sig.strokes.push(sig.cur); sigDraw(); });
+  sigCv.addEventListener("pointermove", (e) => {
+    if (!sig.cur) return; e.preventDefault();
+    for (const ev of (e.getCoalescedEvents ? e.getCoalescedEvents() : [e])) sig.cur.push(sigPt(ev));
+    sigDraw();
+  });
+  const sigEnd = () => { sig.cur = null; };
+  sigCv.addEventListener("pointerup", sigEnd); sigCv.addEventListener("pointercancel", sigEnd);
+  // stop the page behind from scrolling or bouncing while someone signs
+  sigBox.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
+
+  function openSigPad(slot) {
+    sig.slot = slot; sig.strokes = []; sig.cur = null; sig.scrollY = window.scrollY;
+    const who = form.elements.received_by && form.elements.received_by.value.trim();
+    $("#sigWho").textContent = who ? `Signing as ${who}` : "";
+    sigBox.classList.remove("hidden");
+    document.documentElement.classList.add("sigopen-lock");
+    requestAnimationFrame(sigSize);
+  }
+  function closeSigPad() {
+    sigBox.classList.add("hidden");
+    document.documentElement.classList.remove("sigopen-lock");
+    window.scrollTo(0, sig.scrollY);
+    const w = $(`.sigwrap[data-sigslot="${sig.slot}"]`, form); if (w) w.scrollIntoView({ block: "center" });
+  }
+  window.addEventListener("resize", () => { if (!sigBox.classList.contains("hidden")) sigSize(); });
+  $("#sigCancel").onclick = closeSigPad;
+  $("#sigClear").onclick = () => { sig.strokes = []; sigDraw(); };
+  $("#sigDone").onclick = () => {
+    if (!sig.strokes.length) return;
+    // crop to the ink, on white, at a fixed wide shape so every signature looks the same in the PDF
+    const pw = sigCv.width, ph = sigCv.height;
+    let x0 = 1, y0 = 1, x1 = 0, y1 = 0;
+    for (const st of sig.strokes) for (const [x, y] of st) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+    const bw = Math.max((x1 - x0) * pw, 40), bh = Math.max((y1 - y0) * ph, 20);
+    const W = 1200, H = 400, pad = 40, scale = Math.min((W - pad * 2) / bw, (H - pad * 2) / bh, 3);
+    const out = document.createElement("canvas"); out.width = W; out.height = H;
+    const c = out.getContext("2d");
+    c.fillStyle = "#fff"; c.fillRect(0, 0, W, H);
+    c.lineWidth = Math.max(4, 3 * (window.devicePixelRatio || 1) * scale * 0.6); c.lineCap = "round"; c.lineJoin = "round"; c.strokeStyle = "#111";
+    const ox = (W - bw * scale) / 2, oy = (H - bh * scale) / 2;
+    const map = ([x, y]) => [ox + (x - x0) * pw * scale, oy + (y - y0) * ph * scale];
+    for (const st of sig.strokes) {
+      c.beginPath(); const [sx, sy] = map(st[0]); c.moveTo(sx, sy);
+      if (st.length === 1) c.lineTo(sx + 0.1, sy);
+      for (const p of st.slice(1)) { const [x, y] = map(p); c.lineTo(x, y); }
+      c.stroke();
+    }
+    const slot = sig.slot;
+    out.toBlob(b => { if (b) { photos[slot] = b; renderSignatures(); saveDraftSoon(); } closeSigPad(); }, "image/png");
+  };
 
   // Shrink a phone photo to a reasonable size. Fails loudly instead of hanging.
   function compress(file) {

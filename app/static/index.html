@@ -148,6 +148,24 @@
 </main>
 
 <input type="file" id="photoPicker" accept="image/*" class="hidden">
+
+<!-- full-screen signing pad -->
+<div id="sigOverlay" class="sigover hidden" role="dialog" aria-modal="true" aria-labelledby="sigTitle">
+  <div class="sigtop">
+    <div><b id="sigTitle">Sign below</b> <span class="muted small" id="sigWho"></span></div>
+    <span class="muted small sigturn">Tip: turn the phone sideways for more room</span>
+  </div>
+  <div class="sigarea">
+    <canvas id="sigCanvas" aria-label="Signature area. Sign with your finger."></canvas>
+    <div class="sigline" aria-hidden="true"><span>✕</span></div>
+    <div class="sighint" id="sigHint" aria-hidden="true">Sign here with your finger</div>
+  </div>
+  <div class="sigbtns">
+    <button type="button" class="btn secondary" id="sigCancel">Cancel</button>
+    <button type="button" class="btn secondary" id="sigClear">Clear</button>
+    <button type="button" class="btn" id="sigDone" disabled>Done</button>
+  </div>
+</div>
 <script src="static/app.js?v={{VERSION}}"></script>
 </body>
 </html>

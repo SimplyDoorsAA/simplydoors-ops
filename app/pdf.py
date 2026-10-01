@@ -31,7 +31,7 @@ def _img(path, max_w, max_h):
     return Image(path, width=w * s, height=h * s)
 
 
-def _caption(p, labels, fallback_time) -> str:
+def _caption(p, labels, fallback_time, data=None) -> str:
     from . import geo
     keys = p.keys()
     g = {"status": (p["geo_status"] if "geo_status" in keys else None) or "missing",
@@ -40,7 +40,9 @@ def _caption(p, labels, fallback_time) -> str:
          "taken_at": (p["taken_at"] if "taken_at" in keys else None) or fallback_time,
          "file_age": p["file_age"] if "file_age" in keys else None}
     if g["status"] == "signature":
-        return "<b>" + escape(labels.get(p["slot"], p["slot"])) + "</b>"
+        who = str((data or {}).get("received_by") or "").strip()
+        return "<b>" + escape(labels.get(p["slot"], p["slot"])) + "</b>" + (f" · Signed by {escape(who)}" if who else "") \
+            + " · " + escape(geo.local(g["taken_at"]))
     text = "<b>" + escape(labels.get(p["slot"], p["slot"])) + "</b> · " + " · ".join(escape(x) for x in geo.describe(g))
     if g["status"] == "ok":
         text += f' · <a href="{geo.map_url(g["lat"], g["lon"])}" color="#2a7ab0">View on map</a>'
@@ -101,7 +103,7 @@ def build_pdf(report, staff_name: str, data: dict, photos: list) -> bytes:
                 continue
             is_sig = slots.get(p["slot"], {}).get("signature")
             story.append(KeepTogether([_img(p["path"], 3.2 * inch if is_sig else 7.2 * inch, 1.4 * inch if is_sig else 5.6 * inch),
-                                       Paragraph(_caption(p, labels, report["submitted_at"]), small), Spacer(1, 8)]))
+                                       Paragraph(_caption(p, labels, report["submitted_at"], data), small), Spacer(1, 8)]))
 
     def footer(canvas, d):
         canvas.saveState()
