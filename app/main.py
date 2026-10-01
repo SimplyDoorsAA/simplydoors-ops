@@ -41,8 +41,8 @@ COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "1") == "1"
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
-MAX_REQUEST_BYTES = 60 * 1024 * 1024
-APP_VERSION = "stage2-2"
+MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
+APP_VERSION = "stage3-1"
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -318,9 +318,12 @@ async def submit_report(slug: str, request: Request, staff=Depends(current_staff
 
     raw = {k: v for k, v in form.items() if isinstance(v, str)}
     data, errors = clean(form_type, raw)
+    kept = []
+    if spec.get("kind") == "measure":
+        _measure_people(c, staff, data, str(form.get("revision_of") or "").strip(), errors)
 
     photo_blobs = []
-    for ps in photo_slots(form_type):
+    for ps in photo_slots(form_type, data):
         slot, _label = ps["slot"], ps["label"]
         f = form.get(slot)
         if f is None or isinstance(f, str):
@@ -340,6 +343,8 @@ async def submit_report(slug: str, request: Request, staff=Depends(current_staff
         g = None if ps["signature"] else geo.parse_geo(str(form.get(f"geo_{slot}") or ""), now_iso())
         photo_blobs.append((slot, b, g))
     got = {s for s, _, _ in photo_blobs}
+    if spec.get("kind") == "measure":
+        kept = _kept_photos(c, staff, form.get("keep"), {p["slot"] for p in photo_slots(form_type, data)} - got, errors)
     for title, slots, need in photo_minimums(form_type):
         have = len(got.intersection(slots))
         if have < need:
@@ -350,10 +355,10 @@ async def submit_report(slug: str, request: Request, staff=Depends(current_staff
     started_at = str(form.get("started_at", ""))[:40] or None
     queued = 1 if str(form.get("queued", "")) == "1" else 0
     return await run_in_threadpool(_store_report, form_type, spec, staff, submission_id, data, photo_blobs,
-                                   started_at, queued, client_ip(request), ua(request))
+                                   started_at, queued, client_ip(request), ua(request), kept)
 
 
-def _store_report(form_type, spec, staff, submission_id, data, photo_blobs, started_at, queued, ip, agent):
+def _store_report(form_type, spec, staff, submission_id, data, photo_blobs, started_at, queued, ip, agent, kept=()):
     c = conn()
     rid = None
     try:
@@ -380,10 +385,21 @@ def _store_report(form_type, spec, staff, submission_id, data, photo_blobs, star
             c.execute("INSERT INTO photos(report_id, slot, path, bytes, taken_at, lat, lon, acc, geo_status, file_age)"
                       " VALUES (?,?,?,?,?,?,?,?,?,?)",
                       (rid, slot, dest, size, g["taken_at"], g["lat"], g["lon"], g["acc"], g["status"], g["file_age"]))
+        for slot, src in kept:     # revised measure: photos carried over from the earlier version, stamps unchanged
+            dest = os.path.join(folder, f"{slot}.jpg")
+            shutil.copyfile(src["path"], dest)
+            c.execute("INSERT INTO photos(report_id, slot, path, bytes, taken_at, lat, lon, acc, geo_status, file_age)"
+                      " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                      (rid, slot, dest, os.path.getsize(dest), src["taken_at"], src["lat"], src["lon"], src["acc"],
+                       src["geo_status"], src["file_age"]))
         no_loc = sum(1 for _, _, g in photo_blobs if g is not None and g["status"] != "ok")
-        audit(staff["id"], staff["name"], "report_submitted", f"report:{rid}",
-              {"form": form_type, "receipt": receipt, "photos": len(photo_blobs), "photos_without_location": no_loc,
-               "queued_on_phone": bool(queued)}, ip, agent)
+        details = {"form": form_type, "receipt": receipt, "photos": len(photo_blobs), "photos_without_location": no_loc,
+                   "queued_on_phone": bool(queued)}
+        if kept:
+            details["photos_carried_over"] = len(kept)
+        if data.get("revision_of"):
+            details["revision_of"] = data["revision_of"]
+        audit(staff["id"], staff["name"], "report_submitted", f"report:{rid}", details, ip, agent)
         mailer.queue_report_email(rid, recipients_for(form_type, data),
                                   subject_for(form_type, data, staff["name"], receipt))
         c.execute("COMMIT")
@@ -400,6 +416,115 @@ def _store_report(form_type, spec, staff, submission_id, data, photo_blobs, star
         raise
     mailer._wake.set()
     return {"ok": True, "receipt": receipt, "duplicate": False}
+
+
+# ---------------------------------------------------------------- measures: who measured, revisions, reopening
+def _can_open_measure(staff, report) -> bool:
+    if staff["is_admin"] or report["staff_id"] == staff["id"]:
+        return True
+    try:
+        return json.loads(report["data"]).get("measured_by_id") == staff["id"]
+    except Exception:
+        return False
+
+
+def _measure_people(c, staff, data, revision_of, errors):
+    """Who measured stays with the job through revisions; whoever fixes someone else's measure is 'Revised by'."""
+    if revision_of:
+        orig = c.execute("SELECT * FROM reports WHERE receipt=? AND form_type='Measure Report'", (revision_of,)).fetchone()
+        if not orig or not _can_open_measure(staff, orig):
+            errors.append(f"The measure being revised ({revision_of[:20]}) couldn't be found.")
+            return
+        od = json.loads(orig["data"])
+        data["revision_of"] = orig["receipt"]
+        data["measured_by"] = od.get("measured_by") or staff["name"]
+        data["measured_by_id"] = od.get("measured_by_id", staff["id"])
+        data["measured_by_email"] = od.get("measured_by_email") or ""
+        if data["measured_by_id"] != staff["id"]:
+            data["revised_by"], data["revised_by_email"] = staff["name"], staff["email"] or ""
+        return
+    data["measured_by"], data["measured_by_id"], data["measured_by_email"] = staff["name"], staff["id"], staff["email"] or ""
+
+
+def _kept_photos(c, staff, raw, open_slots, errors) -> list:
+    """Photos the phone asked to carry over from an earlier version: [(slot, photo row)]."""
+    try:
+        keep = json.loads(str(raw or "{}"))
+    except Exception:
+        keep = None
+    if not isinstance(keep, dict):
+        errors.append("The kept photos list couldn't be read.")
+        return []
+    out = []
+    for slot, pid in list(keep.items())[:400]:
+        if slot not in open_slots:
+            continue
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            continue
+        row = c.execute("SELECT p.*, r.staff_id, r.data, r.form_type FROM photos p JOIN reports r ON r.id=p.report_id"
+                        " WHERE p.id=?", (pid,)).fetchone()
+        if not row or row["form_type"] != "Measure Report" or not _can_open_measure(staff, row) \
+                or not os.path.isfile(row["path"]):
+            errors.append("An earlier photo couldn't be found. Take it again or remove it.")
+            continue
+        out.append((slot, row))
+    return out
+
+
+def _measure_allowed(staff):
+    if "Measure Report" not in visible_forms(staff):
+        raise HTTPException(403, "Measure isn't switched on yet. Ask Adem or Paz.")
+
+
+@app.get("/api/measures")
+def list_measures(staff=Depends(current_staff)):
+    _measure_allowed(staff)
+    c = conn()
+    q = ("SELECT r.id, r.receipt, r.submitted_at, r.staff_id, r.data, s.name AS staff_name FROM reports r"
+         " JOIN staff s ON s.id=r.staff_id WHERE r.form_type='Measure Report'")
+    args: list = []
+    if not staff["is_admin"]:
+        q += " AND (r.staff_id=? OR json_extract(r.data, '$.measured_by_id')=?)"
+        args += [staff["id"], staff["id"]]
+    rows = c.execute(q + " ORDER BY r.id DESC LIMIT 150", args).fetchall()
+    replaced = {}
+    for x in c.execute("SELECT receipt, json_extract(data, '$.revision_of') AS of FROM reports"
+                       " WHERE form_type='Measure Report' AND json_extract(data, '$.revision_of') IS NOT NULL ORDER BY id"):
+        replaced[x["of"]] = x["receipt"]
+    out = []
+    for r in rows:
+        d = json.loads(r["data"])
+        out.append({"id": r["id"], "receipt": r["receipt"], "submitted_at": r["submitted_at"],
+                    "customer": d.get("customer"), "po": d.get("po"), "date": d.get("date"),
+                    "measured_by": d.get("measured_by") or r["staff_name"], "doors": d.get("doors", 0),
+                    "windows": d.get("windows", 0), "revision_of": d.get("revision_of"),
+                    "replaced_by": replaced.get(r["receipt"])})
+    return out
+
+
+@app.get("/api/measures/{rid}")
+def open_measure(rid: int, request: Request, staff=Depends(current_staff)):
+    _measure_allowed(staff)
+    c = conn()
+    r = c.execute("SELECT * FROM reports WHERE id=? AND form_type='Measure Report'", (rid,)).fetchone()
+    if not r or not _can_open_measure(staff, r):
+        raise HTTPException(404, "That measure couldn't be found.")
+    photos = c.execute("SELECT id, slot FROM photos WHERE report_id=? ORDER BY id", (rid,)).fetchall()
+    audit(staff["id"], staff["name"], "measure_reopened", f"report:{rid}", {"receipt": r["receipt"]},
+          client_ip(request), ua(request))
+    return {"id": r["id"], "receipt": r["receipt"], "data": json.loads(r["data"]),
+            "photos": [{"id": p["id"], "slot": p["slot"]} for p in photos]}
+
+
+@app.get("/api/measure-photos/{pid}")
+def measure_photo(pid: int, request: Request, staff=Depends(current_staff)):
+    p = conn().execute("SELECT p.path, r.staff_id, r.data, r.form_type FROM photos p JOIN reports r ON r.id=p.report_id"
+                       " WHERE p.id=?", (pid,)).fetchone()
+    if not p or p["form_type"] != "Measure Report" or not _can_open_measure(staff, p) or not os.path.isfile(p["path"]):
+        raise HTTPException(404)
+    return FileResponse(p["path"], media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
 
 
 @app.get("/api/my-reports")
@@ -507,7 +632,7 @@ def admin_report(rid: int, request: Request, admin=Depends(current_admin)):
           "form": r["form_type"]}, client_ip(request), ua(request))
     if r["form_type"] == "Disciplinary Action":
         alerts.push("Ops app: disciplinary record opened", f"{admin['name']} opened {r['receipt']}.", "high")
-    labels = {p["slot"]: p["label"] for p in photo_slots(r["form_type"])}
+    labels = {p["slot"]: p["label"] for p in photo_slots(r["form_type"], data)}
     return {
         "id": r["id"], "receipt": r["receipt"], "form_type": r["form_type"], "staff_name": r["staff_name"],
         "submitted_at": r["submitted_at"], "started_at": r["started_at"], "queued_on_phone": r["queued_on_phone"],
@@ -715,7 +840,7 @@ def admin_rules(admin=Depends(current_admin)):
         "Vehicle Inspection": "Plus the list below when anything is marked Defective.",
         "Vehicle Inspection: when something is Defective": "Added to the Vehicle Inspection email only when an item is Defective.",
         "Disciplinary Action": "Plus the employee being written up.",
-        "Measure Report": "Plus the person who measured (Stage 3).",
+        "Measure Report": "Plus the person who measured (and whoever revised it).",
     }
     live = set(FORMS) | set(EXTRA_RULES)
     return [{"form_type": r["form_type"], "recipients": r["recipients"], "extra": extra.get(r["form_type"], ""),

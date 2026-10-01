@@ -15,6 +15,7 @@ Fields can have show_if={"field": key, "in": [values]}: hidden and not required 
 import json
 import re
 
+from . import measure as M
 from .db import conn, get_setting, set_setting
 
 DEFAULT_LISTS = {
@@ -207,6 +208,11 @@ FORMS = {
         "photos": [],
         "summary": ["target", "level"],
     },
+    "Measure Report": {
+        "slug": "measure", "prefix": "MSR", "order": 8, "kind": "measure",
+        "blurb": "Measure doors and windows on site: sizes, trim, labor, photos. Reopen and fix later.",
+        "fields": [], "photos": [],
+    },
 }
 
 FORM_BY_SLUG = {v["slug"]: k for k, v in FORMS.items()}
@@ -295,9 +301,12 @@ def public_spec(form_type: str) -> dict:
         if f["type"] == "okdef":
             out["groups"] = f["groups"]
         fields.append(out)
-    return {"type": form_type, "slug": spec["slug"], "blurb": spec["blurb"], "fields": fields,
-            "photos": spec["photos"], "admin_only": bool(spec.get("admin_only")),
-            "staff_can_see": form_type in enabled_forms() and not spec.get("admin_only")}
+    out = {"type": form_type, "slug": spec["slug"], "blurb": spec["blurb"], "fields": fields,
+           "photos": spec["photos"], "admin_only": bool(spec.get("admin_only")), "kind": spec.get("kind", "form"),
+           "staff_can_see": form_type in enabled_forms() and not spec.get("admin_only")}
+    if spec.get("kind") == "measure":
+        out["measure"] = M.public()
+    return out
 
 
 # ------------------------------------------------------------------ validation
@@ -317,6 +326,8 @@ def _slug(s: str) -> str:
 def clean(form_type: str, raw: dict) -> tuple[dict, list[str]]:
     """Validate submitted fields against the form definition. Returns (data, errors)."""
     spec = FORMS[form_type]
+    if spec.get("kind") == "measure":
+        return M.clean(raw)
     data, errors = {}, []
     any_defective = False
     for f in spec["fields"]:
@@ -407,6 +418,8 @@ def clean(form_type: str, raw: dict) -> tuple[dict, list[str]]:
 
 # ------------------------------------------------------------------ PDF / email / admin
 def display_rows(form_type: str, data: dict) -> list[tuple[str, str]]:
+    if FORMS.get(form_type, {}).get("kind") == "measure":
+        return M.display_rows(data)
     rows = []
     for f in FORMS[form_type]["fields"]:
         key, t = f["key"], f["type"]
@@ -433,6 +446,9 @@ def display_rows(form_type: str, data: dict) -> list[tuple[str, str]]:
 
 
 def summary(form_type: str, data: dict) -> str:
+    if FORMS.get(form_type, {}).get("kind") == "measure":
+        return " · ".join(x for x in (data.get("customer"), data.get("po"),
+                                     f"revises {data['revision_of']}" if data.get("revision_of") else "") if x)
     keys = FORMS.get(form_type, {}).get("summary", [])
     return " · ".join(str(data.get(k)) for k in keys if data.get(k))
 
@@ -447,7 +463,11 @@ def subject_for(form_type: str, data: dict, staff_name: str, receipt: str) -> st
         "Vehicle Incident": f"URGENT: Vehicle Incident - {d.get('vehicle')} ({staff_name})",
         "Employee Incident": f"URGENT: Employee Incident - {staff_name}",
         "Disciplinary Action": f"CONFIDENTIAL: Disciplinary Action - {d.get('target')}",
+        "Measure Report": f"{'REVISED ' if d.get('revision_of') else ''}Measure Report: {d.get('customer')}"
+                          f"{' - PO ' + d['po'] if d.get('po') else ''} ({d.get('measured_by') or staff_name})",
     }.get(form_type, f"{form_type}: {staff_name}")
+    if form_type == "Measure Report" and d.get("revision_of"):
+        s += f" replaces {d['revision_of']}"
     return " ".join(f"{s} [{receipt}]".split())[:200]
 
 
@@ -463,6 +483,8 @@ def recipients_for(form_type: str, data: dict) -> list[str]:
             rcpts.append(data[f["key"] + "_email"])
     if form_type == "Vehicle Inspection" and data.get("defective"):
         rcpts += _rule("Vehicle Inspection: when something is Defective")
+    if form_type == "Measure Report":
+        rcpts += [e for e in (data.get("measured_by_email"), data.get("revised_by_email")) if e]
     seen, out = set(), []
     for r in rcpts:
         if r.lower() not in seen:
@@ -471,8 +493,11 @@ def recipients_for(form_type: str, data: dict) -> list[str]:
     return out
 
 
-def photo_slots(form_type: str) -> list[dict]:
-    """Every photo/signature slot of a form: slot, label, group title, signature?"""
+def photo_slots(form_type: str, data: dict | None = None) -> list[dict]:
+    """Every photo/signature slot of a form: slot, label, group title, signature?
+    Measure slots depend on how many cards the report has, so pass its data."""
+    if FORMS.get(form_type, {}).get("kind") == "measure":
+        return M.photo_slots(data)
     out = []
     for g in FORMS[form_type]["photos"]:
         if g.get("signature"):

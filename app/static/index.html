@@ -139,6 +139,47 @@
     </form>
   </section>
 
+  <!-- MEASURES: list + start -->
+  <section id="viewMeasures" class="view hidden">
+    <div class="topline"><button class="back" type="button" data-home>‹ Back</button></div>
+    <h1>Measures</h1>
+    <div id="mDraftBox"></div>
+    <button class="btn" id="mNew" type="button">Start a new measure</button>
+    <h2>Past measures</h2>
+    <p class="muted small">Reopen one to fix it or add to it. Sending it again makes a revised copy for the office.</p>
+    <input type="search" id="mSearch" class="hidden" placeholder="Search customer, PO or receipt" aria-label="Search measures">
+    <ul class="mlist" id="mList"><li class="muted">Loading…</li></ul>
+  </section>
+
+  <!-- MEASURE EDITOR -->
+  <section id="viewMeasure" class="view hidden">
+    <div class="topline"><button class="back" type="button" id="mBack">‹ Measures</button><span class="muted small" id="mDraftNote"></span></div>
+    <h1 id="mTitle">New measure</h1>
+    <p class="note revnote hidden" id="mRevNote"></p>
+    <form id="mForm" novalidate autocomplete="off">
+      <div class="mjob">
+        <label for="m_customer">Customer name *</label>
+        <input id="m_customer" type="text" maxlength="200">
+        <div class="mgrid">
+          <div class="mf"><label for="m_po">PO / Reference #</label><input id="m_po" type="text" maxlength="120"></div>
+          <div class="mf"><label for="m_date">Date</label><input id="m_date" type="date"></div>
+        </div>
+        <label for="m_by">Measured by</label>
+        <input id="m_by" type="text" readonly tabindex="-1">
+      </div>
+      <div id="mCards"></div>
+      <p class="note center" id="mEmpty">No doors or windows yet. Add the first one below.</p>
+      <div class="maddbar">
+        <button type="button" class="btn secondary" data-madd="door">+ Door</button>
+        <button type="button" class="btn secondary" data-madd="window">+ Window</button>
+        <button type="button" class="btn secondary" id="mCopy">Copy last</button>
+      </div>
+      <p class="error hidden" id="mError" role="alert"></p>
+      <button class="btn" id="mSubmit" type="submit">Send measure</button>
+      <button class="link danger" id="mClear" type="button">Discard this measure</button>
+    </form>
+  </section>
+
   <!-- RESULT -->
   <section id="viewDone" class="view hidden">
     <div class="result" id="resultBox"></div>

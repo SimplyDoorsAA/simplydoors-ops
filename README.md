@@ -6,7 +6,24 @@ GitHub Pages portal + Google Apps Script, one form at a time.
 - **Staff app:** https://optiplex-ai.tailf0af63.ts.net:10000/ops/
 - **Admin (Adem, Paz):** https://optiplex-ai.tailf0af63.ts.net:10000/ops/admin
 
-## Stage 2 (this version): every portal form
+## Stage 3 (this version): Measure
+
+- **Measure** form on the phone: one job (customer, PO, date), then any number of **door** and **window** cards. Field names and choices are copied from the old Measure App.
+  - Each card has up to 3 stamped photos.
+  - Windows can have several W × H measurements.
+  - The app has "Copy last" and collapsible cards, and keeps the draft on the phone if the signal drops.
+- Sizes are kept exactly as typed: whole inches plus a fraction, never converted.
+- Every door needs a width and height, and every window needs at least one W × H. (The old app only required the customer name.)
+- **Reopen and revise.** "Past measures" lists your own measures (admins see everyone's).
+  - Reopening one and sending it again creates a new receipt marked **REVISED, replaces MSR-…**.
+  - The old version stays on file, shown as "Replaced by".
+  - Photos carry over without uploading them again.
+  - "Measured by" stays the original person. Whoever revises someone else's measure is listed as "Revised by".
+- Email goes to the Measure list (admin@) plus whoever measured, and whoever revised it.
+- The PDF has a summary table of every opening for ordering, then one section per door or window with its photos.
+- Measure starts **switched off for staff**. Turn it on in Admin → Forms & lists.
+
+## Stage 2: every portal form
 
 - Seven forms on the phone: Receiving Report, **Delivery Proof** (new: site photos + customer signature), End of Shift, Vehicle Inspection, Vehicle Incident, Employee Incident, Disciplinary Action (admins only, marked CONFIDENTIAL).
 - Forms are described once in `app/forms.py`. That one description drives the phone screen, the server's checks, the PDF and the email.

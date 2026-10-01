@@ -13,6 +13,7 @@
   let startedAt = null;
   let pickSlot = null;
   let flushing = false;
+  let lastSlug = null;      // the form most recently opened ("Start another")
 
   // ------------------------------------------------------------ storage (IndexedDB)
   let dbp = null;
@@ -363,7 +364,10 @@
 
   document.addEventListener("click", (ev) => {
     const open = ev.target.closest("[data-open]");
-    if (open) openForm(open.dataset.open === "again" ? spec.slug : open.dataset.open);
+    if (open) {
+      const slug = open.dataset.open === "again" ? lastSlug : open.dataset.open;
+      slug === "measure" ? openMeasures() : openForm(slug);
+    }
     if (ev.target.closest("[data-home]")) showHome();
   });
 
@@ -445,30 +449,41 @@
     });
   }
 
+  // one photo tile; photos[slot] is a Blob (new) or {keep: id} (carried over from an earlier version of a measure)
+  function makeTile(slot, label) {
+    const t = document.createElement("div");
+    const v = photos[slot];
+    t.className = "tile" + (v ? " filled" : "");
+    t.dataset.slot = slot;
+    t.setAttribute("role", "button"); t.tabIndex = 0;
+    t.setAttribute("aria-label", v ? `${label} added` : `Add ${label}`);
+    if (v) {
+      let badge = "", src;
+      if (v instanceof Blob) {
+        if (!previews[slot]) previews[slot] = URL.createObjectURL(v);
+        src = previews[slot];
+        const m = photoMeta[slot] || {};
+        badge = m.status === "ok" ? (m.acc > 200 ? `<span class="geo warn">📍 ±${m.acc} m</span>` : `<span class="geo">📍 Located</span>`)
+          : m.status ? `<span class="geo warn">No location</span>` : "";
+      } else {
+        src = `api/measure-photos/${encodeURIComponent(v.keep)}`;
+        badge = `<span class="geo">Earlier photo</span>`;
+      }
+      t.innerHTML = `<img src="${src}" alt="">${badge}<button type="button" class="remove" aria-label="Remove photo">×</button>`;
+      t.querySelector(".remove").onclick = (e) => { e.stopPropagation(); removePhoto(slot); };
+    } else {
+      t.innerHTML = `<span><span class="plus">+</span>${esc(label)}</span>`;
+    }
+    t.onclick = () => { pickSlot = slot; $("#photoPicker").value = ""; $("#photoPicker").click(); };
+    t.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); t.click(); } };
+    return t;
+  }
   function renderTiles() {
+    if (spec && spec.kind === "measure") return mRenderTiles();
     spec.photos.filter(g => !g.signature).forEach(g => {
       const box = $(`.photos[data-group="${g.group}"]`, form);
       box.innerHTML = "";
-      g.slots.forEach(([slot, label]) => {
-        const t = document.createElement("div");
-        t.className = "tile" + (photos[slot] ? " filled" : "");
-        t.dataset.slot = slot;
-        t.setAttribute("role", "button"); t.tabIndex = 0;
-        t.setAttribute("aria-label", photos[slot] ? `${label} added` : `Add ${label}`);
-        if (photos[slot]) {
-          if (!previews[slot]) previews[slot] = URL.createObjectURL(photos[slot]);
-          const m = photoMeta[slot] || {};
-          const badge = m.status === "ok" ? (m.acc > 200 ? `<span class="geo warn">📍 ±${m.acc} m</span>` : `<span class="geo">📍 Located</span>`)
-            : m.status ? `<span class="geo warn">No location</span>` : "";
-          t.innerHTML = `<img src="${previews[slot]}" alt="">${badge}<button type="button" class="remove" aria-label="Remove photo">×</button>`;
-          t.querySelector(".remove").onclick = (e) => { e.stopPropagation(); removePhoto(slot); };
-        } else {
-          t.innerHTML = `<span><span class="plus">+</span>${esc(label)}</span>`;
-        }
-        t.onclick = () => { pickSlot = slot; $("#photoPicker").value = ""; $("#photoPicker").click(); };
-        t.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); t.click(); } };
-        box.appendChild(t);
-      });
+      g.slots.forEach(([slot, label]) => box.appendChild(makeTile(slot, label)));
     });
   }
   function removePhoto(slot) {
@@ -655,6 +670,7 @@
 
   let draftTimer = null;
   function saveDraftSoon() {
+    if (spec && spec.kind === "measure") return mSaveDraftSoon();
     clearTimeout(draftTimer);
     const slug = spec && spec.slug;
     if (!slug) return;
@@ -682,7 +698,7 @@
   async function openForm(slug, prefill) {
     const s = (me.forms || []).find(f => f.slug === slug);
     if (!s) { alert("This form isn't available."); return; }
-    spec = s;
+    spec = s; lastSlug = slug;
     Object.values(previews).forEach(u => URL.revokeObjectURL(u));
     photos = {}; previews = {}; photoMeta = {};
     $("#formTitle").textContent = spec.type;
@@ -791,16 +807,17 @@
 
   function showResult(result, entry) {
     const box = $("#resultBox");
-    $("#againBtn").textContent = "Start another " + entry.type;
+    $("#againBtn").textContent = entry.slug === "measure" ? "Back to Measures" : "Start another " + entry.type;
     if (result.ok) {
       box.className = "result";
       box.innerHTML = `<div class="big">Received ✓</div><div class="muted">Your receipt number</div>
         <div class="receipt">${esc(result.receipt)}</div><p class="muted small">The office will be emailed a copy.</p>`;
     } else if (result.fix) {
       // The server rejected something; put it straight back in the form. Save it as the draft first, then take it out of the queue.
-      const back = { fields: entry.fields, photos: entry.photos, photoMeta: entry.photoMeta, startedAt: entry.startedAt };
+      const back = entry.slug === "measure" ? entryToMeasure(entry)
+        : { fields: entry.fields, photos: entry.photos, photoMeta: entry.photoMeta, startedAt: entry.startedAt };
       draftPut(entry.slug, back).then(() => outboxDel(entry.id)).then(updateBanner).catch(() => {});
-      openForm(entry.slug, back).then(() => { $("#formError").textContent = result.message; $("#formError").classList.remove("hidden"); });
+      openAny(entry.slug, back, result.message);
       return;
     } else {
       box.className = "result wait";
@@ -810,6 +827,406 @@
         <p class="muted small">If you close the app, open it again later so it can send.</p>`;
     }
     show("viewDone");
+  }
+
+  // ------------------------------------------------------------ MEASURE: one job, any number of door / window cards
+  const mForm = $("#mForm");
+  let MS = null;                          // the measure spec from the server
+  let mJob = null;                        // {revision_of, measured_by}
+  let mDraftTimer = null;
+  const TYPE = { door: "Door", window: "Window" };
+  const cardId = () => "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  const mFields = (t) => MS.measure[t];
+  const blankSize = () => ({ w: "", f: "" });
+  const blankPoint = () => ({ w: blankSize(), h: blankSize() });
+  const fmtSize = (s) => s && s.w ? `${s.w}${s.f ? " " + s.f : ""}"` : "";
+
+  function blankCard(type) {
+    const c = { id: cardId(), type, open: true };
+    mFields(type).forEach(f => {
+      c[f.key] = f.type === "size" ? blankSize() : f.type === "points" ? [blankPoint()] : f.type === "labor" ? []
+        : f.type === "toggle" ? false : (f.default || "");
+    });
+    return c;
+  }
+
+  function sizeCell(v, label, attrs, req) {
+    v = v || blankSize();
+    return `<div class="sz"><span class="szl">${esc(label)}${req ? " *" : ""}</span><div class="szrow">
+      <input type="text" inputmode="decimal" ${attrs} data-part="w" value="${esc(v.w)}" maxlength="8" placeholder="in" aria-label="${esc(label)} inches">
+      <select ${attrs} data-part="f" aria-label="${esc(label)} fraction">${MS.measure.fractions.map(x =>
+        `<option value="${x}"${x === (v.f || "") ? " selected" : ""}>${x || "+0"}</option>`).join("")}</select></div></div>`;
+  }
+  function pointRow(p, i) {
+    return `<div class="mpt"><span class="ptn">${i + 1}</span>${sizeCell(p.w, "W", 'data-pt="w"', true)}<span class="x">×</span>
+      ${sizeCell(p.h, "H", 'data-pt="h"', true)}<button type="button" class="ptdel" data-delpt aria-label="Remove size ${i + 1}">×</button></div>`;
+  }
+  function mFieldHTML(f, c) {
+    const v = c[f.key], k = esc(f.key), lab = esc(f.label);
+    switch (f.type) {
+      case "text": return `<div class="mf wide"><label>${lab}</label><input type="text" data-k="${k}" maxlength="200" value="${esc(v)}"${f.placeholder ? ` placeholder="${esc(f.placeholder)}"` : ""}></div>`;
+      case "textarea": return `<div class="mf wide"><label>${lab}</label><textarea data-k="${k}" rows="2" maxlength="2000">${esc(v)}</textarea></div>`;
+      case "qty": return `<div class="mf"><label>${lab}</label><input type="text" inputmode="numeric" data-k="${k}" maxlength="2" value="${esc(v)}"></div>`;
+      case "toggle": return `<div class="mf"><label class="tog"><input type="checkbox" data-k="${k}"${v ? " checked" : ""}><span>${lab}</span></label></div>`;
+      case "size": return `<div class="mf">${sizeCell(v, f.label, `data-sz="${k}"`, f.required)}</div>`;
+      case "labor": return `<div class="mf wide"><span class="szl">${lab}</span><div class="mlabor">${f.options.map(o =>
+        `<label class="check"><input type="checkbox" data-labor value="${esc(o)}"${(v || []).includes(o) ? " checked" : ""}><span>${esc(o)}</span></label>`).join("")}</div></div>`;
+      case "points": return `<div class="mf wide"><span class="szl">${lab} *</span><div class="mpts">${(v && v.length ? v : [blankPoint()]).map(pointRow).join("")}</div>
+        <button type="button" class="link" data-addpt>+ Add another size</button></div>`;
+      case "select": {
+        const custom = f.custom && v && !f.options.includes(v) || c[f.key + "__custom"];
+        const opts = (f.default ? "" : `<option value="">Pick…</option>`) + f.options.map(o =>
+          `<option value="${esc(o)}"${!custom && o === v ? " selected" : ""}>${esc(o)}</option>`).join("") +
+          (f.custom ? `<option value="Custom"${custom ? " selected" : ""}>Custom (type it)</option>` : "");
+        return `<div class="mf"><label>${lab}</label><select data-k="${k}">${opts}</select>` +
+          (f.custom ? `<input type="text" class="other${custom ? "" : " hidden"}" data-kc="${k}" maxlength="120" placeholder="Type it" value="${esc(custom ? v : "")}">` : "") + `</div>`;
+      }
+    }
+    return "";
+  }
+  function cardSummary(c) {
+    if (c.type === "door") return [fmtSize(c.w) && fmtSize(c.h) ? `${fmtSize(c.w)} × ${fmtSize(c.h)}` : "", c.config, c.handing].filter(Boolean).join(" · ");
+    const pts = (c.points || []).filter(p => p.w.w || p.h.w).map(p => `${fmtSize(p.w)} × ${fmtSize(p.h)}`);
+    return [c.qty && c.qty !== "1" ? `Qty ${c.qty}` : "", pts.join(", "), c.tempered ? "TEMPERED" : ""].filter(Boolean).join(" · ");
+  }
+  function cardHTML(c, n) {
+    const name = `${TYPE[c.type]} #${n}`;
+    return `<section class="mcard${c.open === false ? " closed" : ""}" data-id="${esc(c.id)}" data-type="${esc(c.type)}">
+      <div class="mhead"><button type="button" class="mtoggle" aria-expanded="${c.open !== false}">
+        <span class="mname">${name}</span><span class="mloc">${esc(c.loc || "")}</span><span class="msum">${esc(cardSummary(c))}</span></button>
+        <button type="button" class="mdel" aria-label="Remove ${name}">Remove</button></div>
+      <div class="mbody"><div class="mgrid">${mFields(c.type).map(f => mFieldHTML(f, c)).join("")}</div>
+        <span class="szl">Photos</span><div class="photos" data-mphotos="${esc(c.id)}"></div></div></section>`;
+  }
+
+  function readSize(root, attr) {
+    return { w: ($(`[${attr}][data-part="w"]`, root) || {}).value?.trim() || "", f: ($(`[${attr}][data-part="f"]`, root) || {}).value || "" };
+  }
+  function readCard(el) {
+    const c = { id: el.dataset.id, type: el.dataset.type, open: !el.classList.contains("closed") };
+    mFields(c.type).forEach(f => {
+      const k = f.key;
+      if (f.type === "size") c[k] = readSize(el, `data-sz="${k}"`);
+      else if (f.type === "points") c[k] = $$(".mpt", el).map(r => ({ w: readSize(r, 'data-pt="w"'), h: readSize(r, 'data-pt="h"') }));
+      else if (f.type === "labor") c[k] = $$("[data-labor]", el).filter(x => x.checked).map(x => x.value);
+      else if (f.type === "toggle") c[k] = $(`[data-k="${k}"]`, el).checked;
+      else if (f.type === "select" && f.custom) {
+        const sel = $(`[data-k="${k}"]`, el);
+        c[k + "__custom"] = sel.value === "Custom";
+        c[k] = sel.value === "Custom" ? $(`[data-kc="${k}"]`, el).value.trim() : sel.value;
+      } else c[k] = $(`[data-k="${k}"]`, el).value;
+    });
+    return c;
+  }
+  const readCards = () => $$(".mcard", mForm).map(readCard);
+  const readJob = () => ({ customer: $("#m_customer").value.trim(), po: $("#m_po").value.trim(), date: $("#m_date").value });
+
+  function renderCards(cards) {
+    const counts = { door: 0, window: 0 };
+    $("#mCards").innerHTML = cards.map(c => cardHTML(c, ++counts[c.type])).join("");
+    $("#mEmpty").classList.toggle("hidden", cards.length > 0);
+    $("#mCopy").disabled = !cards.length;
+    mRenderTiles();
+  }
+  function mRenderTiles() {
+    $$(".mcard", mForm).forEach(el => {
+      const box = $(`[data-mphotos]`, el); box.innerHTML = "";
+      for (let k = 1; k <= MS.measure.photos_per_item; k++) box.appendChild(makeTile(`${el.dataset.id}:${k}`, `Photo ${k}`));
+    });
+  }
+  function mState() {
+    return { job: readJob(), cards: readCards(), photos: { ...photos }, photoMeta: { ...photoMeta }, startedAt,
+      revision_of: mJob.revision_of || "", measured_by: mJob.measured_by || "" };
+  }
+  function mSaveDraftSoon(now) {
+    clearTimeout(mDraftTimer);
+    const run = async () => {
+      try { await draftPut("measure", mState()); $("#mDraftNote").textContent = "Saved on this phone"; } catch (e) { /* storage full */ }
+    };
+    if (now) return run();
+    mDraftTimer = setTimeout(run, 500);
+  }
+
+  async function openMeasures() {
+    MS = (me.forms || []).find(f => f.slug === "measure");
+    if (!MS) { alert("Measure isn't available."); return; }
+    spec = null; lastSlug = "measure";
+    show("viewMeasures");
+    const draft = await draftGet("measure").catch(() => null);
+    const box = $("#mDraftBox");
+    if (draft && draft.cards) {
+      const n = draft.cards.length;
+      box.innerHTML = `<button class="card" type="button" id="mContinue"><span class="card-title">Continue: ${esc(draft.job.customer || "unnamed job")}</span>
+        <span class="card-sub">${n} item${n === 1 ? "" : "s"}${draft.revision_of ? ` · revising ${esc(draft.revision_of)}` : ""} · not sent yet</span></button>`;
+      $("#mContinue").onclick = () => openMeasureEditor(draft);
+    } else box.innerHTML = "";
+    const list = $("#mList");
+    list.innerHTML = `<li class="muted">Loading…</li>`;
+    try {
+      const rows = await api("api/measures");
+      mListRows = rows;
+      $("#mSearch").classList.toggle("hidden", rows.length < 8);
+      drawMeasureList();
+    } catch (e) {
+      list.innerHTML = `<li class="muted">${e.status === 0 ? "No signal, so past measures can't load right now. You can still start a new one." : esc(e.message)}</li>`;
+    }
+  }
+  let mListRows = [];
+  function drawMeasureList() {
+    const q = $("#mSearch").value.trim().toLowerCase();
+    const rows = mListRows.filter(r => !q || [r.customer, r.po, r.receipt, r.measured_by].join(" ").toLowerCase().includes(q));
+    $("#mList").innerHTML = rows.map(r => {
+      const parts = [r.date || fmtTime(r.submitted_at), [r.doors ? `${r.doors} door${r.doors > 1 ? "s" : ""}` : "", r.windows ? `${r.windows} window${r.windows > 1 ? "s" : ""}` : ""].filter(Boolean).join(", "), r.receipt];
+      if (me.is_admin || r.measured_by !== me.name) parts.push(r.measured_by);
+      return `<li class="mitem${r.replaced_by ? " old" : ""}"><div class="mtext"><b>${esc(r.customer)}</b>${r.po ? ` <span class="muted">· PO ${esc(r.po)}</span>` : ""}
+        <div class="muted small">${parts.filter(Boolean).map(esc).join(" · ")}${r.revision_of ? ` · revises ${esc(r.revision_of)}` : ""}</div>
+        ${r.replaced_by ? `<div class="small">Replaced by ${esc(r.replaced_by)}</div>` : ""}</div>
+        ${r.replaced_by ? "" : `<button type="button" class="mini" data-reopen="${r.id}">Reopen</button>`}</li>`;
+    }).join("") || `<li class="muted">${q ? "Nothing matches." : "No measures yet."}</li>`;
+    $$("[data-reopen]", $("#mList")).forEach(b => b.onclick = () => reopenMeasure(b.dataset.reopen, b));
+  }
+  $("#mSearch").addEventListener("input", drawMeasureList);
+
+  async function confirmReplaceDraft() {
+    const d = await draftGet("measure").catch(() => null);
+    return !d || !d.cards || confirm(`Throw away the unfinished measure for ${d.job.customer || "an unnamed job"}? It hasn't been sent.`);
+  }
+  $("#mNew").addEventListener("click", async () => {
+    if (!(await confirmReplaceDraft())) return;
+    await draftDel("measure").catch(() => {});
+    openMeasureEditor(null);
+  });
+  async function reopenMeasure(id, btn) {
+    if (!(await confirmReplaceDraft())) return;
+    btn.disabled = true; btn.textContent = "Opening…";
+    try {
+      const m = await api(`api/measures/${encodeURIComponent(id)}`);
+      const cards = (m.data.items || []).map(it => ({ ...it, id: cardId(), open: false }));
+      const ph = {};
+      m.photos.forEach(p => {
+        const x = /^i(\d+)p(\d+)$/.exec(p.slot);
+        if (x && cards[x[1] - 1]) ph[`${cards[x[1] - 1].id}:${x[2]}`] = { keep: p.id };
+      });
+      await openMeasureEditor({ job: { customer: m.data.customer, po: m.data.po, date: m.data.date }, cards, photos: ph, photoMeta: {},
+        startedAt: new Date().toISOString(), revision_of: m.receipt, measured_by: m.data.measured_by, fresh: true });
+      mSaveDraftSoon(true);
+    } catch (e) {
+      btn.disabled = false; btn.textContent = "Reopen";
+      alert(e.status === 0 ? "No signal. Try again when you have a connection." : e.message);
+    }
+  }
+
+  async function openMeasureEditor(state) {
+    MS = (me.forms || []).find(f => f.slug === "measure");
+    spec = MS; lastSlug = "measure";
+    Object.values(previews).forEach(u => URL.revokeObjectURL(u));
+    photos = { ...((state && state.photos) || {}) }; photoMeta = { ...((state && state.photoMeta) || {}) }; previews = {};
+    startedAt = (state && state.startedAt) || new Date().toISOString();
+    mJob = { revision_of: (state && state.revision_of) || "", measured_by: (state && state.measured_by) || me.name };
+    const job = (state && state.job) || { customer: "", po: "", date: todayISO() };
+    $("#m_customer").value = job.customer || ""; $("#m_po").value = job.po || ""; $("#m_date").value = job.date || todayISO();
+    $("#m_by").value = mJob.measured_by;
+    const rn = $("#mRevNote");
+    rn.textContent = mJob.revision_of ? `Revising ${mJob.revision_of}. Sending makes a new copy marked REVISED; the old one stays on file.` : "";
+    rn.classList.toggle("hidden", !mJob.revision_of);
+    $("#mTitle").textContent = mJob.revision_of ? "Revise measure" : "New measure";
+    $("#mError").classList.add("hidden");
+    $$(".invalid", mForm).forEach(x => x.classList.remove("invalid"));
+    $("#mDraftNote").textContent = state && !state.fresh ? "Picked up where you left off" : "";
+    if (state) delete state.fresh;
+    renderCards((state && state.cards) || []);
+    show("viewMeasure");
+  }
+
+  // editing
+  function updateHead(card) {
+    const c = readCard(card);
+    $(".mloc", card).textContent = c.loc || "";
+    $(".msum", card).textContent = cardSummary(c);
+  }
+  mForm.addEventListener("input", (e) => {
+    e.target.classList.remove("invalid");
+    const card = e.target.closest(".mcard");
+    if (card) { card.classList.remove("invalid"); updateHead(card); }
+    mSaveDraftSoon();
+  });
+  // tapping a number box selects what's there, so typing replaces it (qty "1" doesn't become "12")
+  mForm.addEventListener("focusin", (e) => {
+    if (e.target.matches('[data-k="qty"], [data-part="w"]')) setTimeout(() => { try { e.target.select(); } catch (x) { /* ok */ } }, 0);
+  });
+  mForm.addEventListener("change", (e) => {
+    const t = e.target;
+    if (t.matches("select[data-k]")) {
+      const other = t.parentElement.querySelector(`[data-kc="${t.dataset.k}"]`);
+      if (other) { other.classList.toggle("hidden", t.value !== "Custom"); if (t.value === "Custom") other.focus(); }
+    }
+    const card = t.closest(".mcard"); if (card) updateHead(card);
+    mSaveDraftSoon();
+  });
+  mForm.addEventListener("click", (e) => {
+    const add = e.target.closest("[data-madd]");
+    if (add) {
+      const cards = readCards().map(c => ({ ...c, open: false }));
+      const c = blankCard(add.dataset.madd);
+      cards.push(c); renderCards(cards); mSaveDraftSoon();
+      const el = $(`.mcard[data-id="${c.id}"]`, mForm); el.scrollIntoView({ block: "start" });
+      return;
+    }
+    if (e.target.closest("#mCopy")) {
+      const cards = readCards();
+      if (!cards.length) return;
+      const last = cards[cards.length - 1];
+      const c = { ...JSON.parse(JSON.stringify(last)), id: cardId(), open: true, loc: "", notes: "" };
+      if (c.type === "door") { c.w = blankSize(); c.h = blankSize(); } else c.points = [blankPoint()];
+      cards.forEach(x => x.open = false);
+      cards.push(c); renderCards(cards); mSaveDraftSoon();
+      const el = $(`.mcard[data-id="${c.id}"]`, mForm); el.scrollIntoView({ block: "start" });
+      const loc = $('[data-k="loc"]', el); if (loc) loc.focus({ preventScroll: true });
+      return;
+    }
+    const card = e.target.closest(".mcard");
+    if (!card) return;
+    if (e.target.closest(".mtoggle")) {
+      const closed = card.classList.toggle("closed");
+      $(".mtoggle", card).setAttribute("aria-expanded", String(!closed));
+      mSaveDraftSoon(); return;
+    }
+    if (e.target.closest(".mdel")) {
+      const name = $(".mname", card).textContent, loc = $(".mloc", card).textContent;
+      if (!confirm(`Remove ${name}${loc ? " (" + loc + ")" : ""}? Its photos go too.`)) return;
+      Object.keys(photos).filter(k => k.startsWith(card.dataset.id + ":")).forEach(k => {
+        if (previews[k]) URL.revokeObjectURL(previews[k]); delete previews[k]; delete photos[k]; delete photoMeta[k];
+      });
+      renderCards(readCards().filter(c => c.id !== card.dataset.id)); mSaveDraftSoon(); return;
+    }
+    if (e.target.closest("[data-addpt]")) {
+      const c = readCard(card); c.points.push(blankPoint());
+      $(".mpts", card).innerHTML = c.points.map(pointRow).join(""); mSaveDraftSoon(); return;
+    }
+    if (e.target.closest("[data-delpt]")) {
+      const rows = $$(".mpt", card), row = e.target.closest(".mpt");
+      if (rows.length === 1) { $$("input", row).forEach(i => i.value = ""); $$("select", row).forEach(s => s.value = ""); }
+      else row.remove();
+      $$(".mpt .ptn", card).forEach((n, i) => n.textContent = i + 1);
+      updateHead(card); mSaveDraftSoon();
+    }
+  });
+  $("#mBack").addEventListener("click", async () => { await mSaveDraftSoon(true); openMeasures(); });
+  $("#mClear").addEventListener("click", async () => {
+    if (!confirm(mJob.revision_of ? "Stop revising? Your changes are thrown away; the sent measure stays as it was."
+                                  : "Throw away this whole measure, including photos? It hasn't been sent.")) return;
+    clearTimeout(mDraftTimer);
+    await draftDel("measure").catch(() => {});
+    openMeasures();
+  });
+
+  function mValidate(job, cards) {
+    const problems = [];
+    $$(".invalid", mForm).forEach(x => x.classList.remove("invalid"));
+    if (!job.customer) { $("#m_customer").classList.add("invalid"); problems.push("Customer name"); }
+    if (!cards.length) problems.push("at least one door or window");
+    const counts = { door: 0, window: 0 };
+    cards.forEach(c => {
+      const name = `${TYPE[c.type]} #${++counts[c.type]}`;
+      const el = $(`.mcard[data-id="${c.id}"]`, mForm);
+      const bad = (sel) => { $$(sel, el).forEach(x => x.classList.add("invalid")); };
+      const num = (v) => !v || /^\d{1,4}(\.\d{1,3})?$/.test(v);
+      let miss = [];
+      if (c.type === "door") {
+        if (!c.w.w || !num(c.w.w)) { miss.push("width"); bad('[data-sz="w"][data-part="w"]'); }
+        if (!c.h.w || !num(c.h.w)) { miss.push("height"); bad('[data-sz="h"][data-part="w"]'); }
+      } else {
+        const filled = c.points.filter(p => p.w.w || p.h.w);
+        if (!filled.length) { miss.push("a width × height"); bad('.mpt [data-part="w"]'); }
+        c.points.forEach((p, i) => {
+          if ((p.w.w || p.h.w) && !(p.w.w && p.h.w && num(p.w.w) && num(p.h.w))) {
+            miss.push(`size ${i + 1}`); $$('[data-part="w"]', $$(".mpt", el)[i]).forEach(x => x.classList.add("invalid"));
+          }
+        });
+        if (!/^\d{1,2}$/.test(c.qty) || +c.qty < 1) { miss.push("qty"); bad('[data-k="qty"]'); }
+      }
+      if (c.sill && c.sill.w && !num(c.sill.w)) { miss.push("sill (numbers only)"); bad('[data-sz="sill"][data-part="w"]'); }
+      if (miss.length) {
+        el.classList.add("invalid"); el.classList.remove("closed");
+        problems.push(`${name}: ${miss.join(", ")}`);
+      }
+    });
+    return problems;
+  }
+
+  mForm.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const btn = $("#mSubmit");
+    if (btn.disabled) return;
+    const job = readJob(), cards = readCards();
+    const err = $("#mError");
+    const problems = mValidate(job, cards);
+    if (problems.length) {
+      err.textContent = "Still needed: " + problems.join("; ") + ".";
+      err.classList.remove("hidden");
+      const first = $(".invalid", mForm); if (first) first.scrollIntoView({ block: "center" });
+      return;
+    }
+    err.classList.add("hidden");
+    const items = cards.map(c => {
+      const o = { ...c }; delete o.id; delete o.open;
+      Object.keys(o).filter(k => k.endsWith("__custom")).forEach(k => delete o[k]);
+      return o;
+    });
+    const ph = {}, meta = {}, keep = {};
+    cards.forEach((c, i) => {
+      for (let k = 1; k <= MS.measure.photos_per_item; k++) {
+        const v = photos[`${c.id}:${k}`], slot = `i${i + 1}p${k}`;
+        if (v instanceof Blob) { ph[slot] = v; meta[slot] = photoMeta[`${c.id}:${k}`] || { status: "missing" }; }
+        else if (v && v.keep) keep[slot] = v.keep;
+      }
+    });
+    btn.disabled = true; btn.textContent = "Saving…";
+    clearTimeout(mDraftTimer);
+    const entry = { id: newId(), slug: "measure", type: MS.type, userId: me.id, user: me.name,
+      fields: { ...job, items: JSON.stringify(items), keep: JSON.stringify(keep), revision_of: mJob.revision_of || "" },
+      photos: ph, photoMeta: meta, measured_by: mJob.measured_by, startedAt, createdAt: new Date().toISOString(), tries: 0 };
+    try {
+      await outboxPut(entry);
+      await draftDel("measure").catch(() => {});
+    } catch (e) {
+      btn.disabled = false; btn.textContent = "Send measure";
+      err.textContent = "This phone couldn't save the measure (storage full?). Don't close this page; free up space and try again.";
+      err.classList.remove("hidden");
+      return;
+    }
+    btn.textContent = "Sending…";
+    const result = await sendEntry(entry);
+    btn.disabled = false; btn.textContent = "Send measure";
+    showResult(result, entry);
+    updateBanner();
+  });
+
+  // a measure that came back from the server (or the outbox) needing a fix goes back into the editor as it was sent
+  function entryToMeasure(entry) {
+    let items = [], keep = {};
+    try { items = JSON.parse(entry.fields.items || "[]"); keep = JSON.parse(entry.fields.keep || "{}"); } catch (e) { /* leave empty */ }
+    const cards = items.map(it => ({ ...it, id: cardId(), open: true }));
+    const ph = {}, meta = {};
+    cards.forEach((c, i) => {
+      for (let k = 1; k <= 3; k++) {
+        const slot = `i${i + 1}p${k}`;
+        if (entry.photos && entry.photos[slot]) { ph[`${c.id}:${k}`] = entry.photos[slot]; meta[`${c.id}:${k}`] = (entry.photoMeta || {})[slot]; }
+        else if (keep[slot]) ph[`${c.id}:${k}`] = { keep: keep[slot] };
+      }
+    });
+    return { job: { customer: entry.fields.customer, po: entry.fields.po, date: entry.fields.date }, cards, photos: ph, photoMeta: meta,
+      startedAt: entry.startedAt, revision_of: entry.fields.revision_of || "", measured_by: entry.measured_by || me.name };
+  }
+  async function openAny(slug, back, message) {
+    if (slug === "measure") {
+      if (back) { await draftPut("measure", back).catch(() => {}); await openMeasureEditor(back); }
+      else return openMeasures();
+      if (message) { $("#mError").textContent = message; $("#mError").classList.remove("hidden"); }
+      return;
+    }
+    await openForm(slug, back);
+    if (message) { $("#formError").textContent = message; $("#formError").classList.remove("hidden"); }
   }
 
   // ------------------------------------------------------------ sending + outbox
@@ -869,13 +1286,13 @@
     const e = (await outboxAll()).find(x => x.id === id);
     if (!e) return;
     const existing = await draftGet(e.slug).catch(() => null);
-    if (existing && !confirm(`You have an unfinished ${e.type} open. Replace it with the one that needs fixing?`)) return;
-    const back = { fields: e.fields, photos: e.photos, photoMeta: e.photoMeta, startedAt: e.startedAt };
+    if (existing && (e.slug !== "measure" || existing.cards) &&
+        !confirm(`You have an unfinished ${e.type} open. Replace it with the one that needs fixing?`)) return;
+    const back = e.slug === "measure" ? entryToMeasure(e)
+      : { fields: e.fields, photos: e.photos, photoMeta: e.photoMeta, startedAt: e.startedAt };
     await draftPut(e.slug, back);
     await outboxDel(e.id);
-    await openForm(e.slug, back);
-    $("#formError").textContent = "Fix this, then submit again: " + e.error;
-    $("#formError").classList.remove("hidden");
+    await openAny(e.slug, back, "Fix this, then send again: " + e.error);
     updateBanner();
   }
 

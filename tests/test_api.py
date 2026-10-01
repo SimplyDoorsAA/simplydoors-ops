@@ -352,7 +352,7 @@ def test_staff_only_see_enabled_forms(client):
     assert r.status_code == 403
     login(client, "Adem Atis", "246810")
     slugs = [f["slug"] for f in client.get("/ops/api/me").json()["forms"]]
-    assert slugs == ["receiving", "delivery", "eos", "inspection", "vincident", "incident", "disciplinary"]
+    assert slugs == ["receiving", "delivery", "eos", "inspection", "vincident", "incident", "disciplinary", "measure"]
     r = client.put("/ops/api/admin/forms-enabled", json={"forms": ["Receiving Report", "End of Shift", "Disciplinary Action"]}, headers=H)
     assert r.json()["forms"] == ["Receiving Report", "End of Shift"]  # admin-only form can't be switched on for staff
     login(client, "Jaime Mendoza", "135790")
@@ -441,3 +441,107 @@ def test_delivery_signature_and_lists(client):
     spec = next(f for f in client.get("/ops/api/me").json()["forms"] if f["slug"] == "inspection")
     assert [o[0] for o in next(x for x in spec["fields"] if x["key"] == "vehicle")["options"]] == ["Van 1", "Van 2"]
     assert client.put("/ops/api/admin/lists/nope", json={"values": ["x"]}, headers=H).status_code == 404
+
+
+# ---------------------------------------------------------------- Stage 3: measure
+def _door(**over):
+    d = {"type": "door", "loc": "Front Entry", "config": "Single", "handing": "Left Hand Inswing", "dim_type": "Rough Opening",
+         "w": {"w": "38", "f": "1/2"}, "h": {"w": "82", "f": ""}, "jamb": "6 9/16", "bore": "Single Bore",
+         "ext": "Brickmould", "int": "Custom 4in mitered", "labor": ["Cut Tile", "Bogus"], "custom_labor": "", "notes": "Sill rotted"}
+    d.update(over)
+    return d
+
+
+def _window(**over):
+    w = {"type": "window", "loc": "Kitchen W1", "floor": "2nd", "qty": "2", "m_type": "Rough Opening",
+         "points": [{"w": {"w": "35", "f": "1/2"}, "h": {"w": "59", "f": "3/4"}}, {"w": {"w": "", "f": ""}, "h": {"w": "", "f": ""}}],
+         "sill": {"w": "42", "f": ""}, "tempered": True, "wall": "4 9/16", "mat": "Wood Stud", "frame": '4-1/2"',
+         "ext": "1x4 Vinyl", "int": "Drywall Return", "labor": ["Stucco Removal"], "custom_labor": "", "notes": ""}
+    w.update(over)
+    return w
+
+
+def _measure(c, sub, items, files=None, **over):
+    data = {"submission_id": sub, "customer": "Garcia", "po": "PO-55", "date": "2026-10-01", "items": json.dumps(items)}
+    data.update(over)
+    return c.post("/ops/api/reports/measure", data=data, files=files or {}, headers=H)
+
+
+def test_measure_submit_validate_and_email(client):
+    login(client, "Jaime Mendoza", "135790")
+    assert _measure(client, "sub-msr-staff", [_door()]).status_code == 403          # switched off for staff
+    assert client.get("/ops/api/measures", headers=H).status_code == 403
+    login(client, "Adem Atis", "246810")
+    client.put("/ops/api/admin/forms-enabled", json={"forms": ["Receiving Report", "Measure Report"]}, headers=H)
+    login(client, "Jaime Mendoza", "135790")
+    r = _measure(client, "sub-msr-0001", [])
+    assert r.status_code == 422 and "at least one" in r.json()["detail"]
+    r = _measure(client, "sub-msr-0002", [_door(w={"w": "", "f": ""})])
+    assert r.status_code == 422 and "Door #1 width" in r.json()["detail"]
+    r = _measure(client, "sub-msr-0003", [_door(w={"w": "3x", "f": "1/9"})])
+    assert r.status_code == 422
+    r = _measure(client, "sub-msr-0004", [_window(points=[])])
+    assert r.status_code == 422 and "Window #1" in r.json()["detail"]
+    files = {"i1p1": ("a.jpg", jpeg(), "image/jpeg"), "i2p2": ("b.jpg", jpeg((0, 90, 0)), "image/jpeg"),
+             "i9p1": ("x.jpg", jpeg(), "image/jpeg")}                                 # no card 9: ignored
+    r = _measure(client, "sub-msr-0005", [_door(), _window(), _door(loc="Back")], files)
+    assert r.status_code == 200, r.text
+    rec = r.json()["receipt"]
+    assert rec == "MSR-00001"
+    row = conn().execute("SELECT id, data FROM reports WHERE receipt=?", (rec,)).fetchone()
+    d = json.loads(row[1])
+    assert d["measured_by"] == "Jaime Mendoza" and d["doors"] == 2 and d["windows"] == 1
+    assert d["items"][0]["labor"] == ["Cut Tile"] and d["items"][0]["int"] == "Custom 4in mitered"
+    assert len(d["items"][1]["points"]) == 1 and d["items"][1]["tempered"] is True
+    slots = {p[0] for p in conn().execute("SELECT slot FROM photos WHERE report_id=?", (row[0],))}
+    assert slots == {"i1p1", "i2p2"}
+    e = conn().execute("SELECT subject, recipients FROM emails ORDER BY id DESC LIMIT 1").fetchone()
+    assert e[0].startswith("Measure Report: Garcia - PO PO-55 (Jaime Mendoza)")
+    assert {x.strip() for x in e[1].split(",")} == {"admin@simplydoors.com", "jaime@simplydoors.com"} or "admin@simplydoors.com" in e[1]
+    login(client, "Adem Atis", "246810")
+    pdf = client.get(f"/ops/api/admin/reports/{row[0]}/pdf")
+    assert pdf.status_code == 200 and pdf.content[:4] == b"%PDF"
+    det = client.get(f"/ops/api/admin/reports/{row[0]}", headers=H).json()
+    assert any("Door #1" in lab for lab in [p["label"] for p in det["photos"]])
+    assert any(a == "Window #1 — Kitchen W1" for a, _ in det["rows"])
+
+
+def test_measure_reopen_and_revise(client):
+    login(client, "Jaime Mendoza", "135790")
+    lst = client.get("/ops/api/measures", headers=H).json()
+    first = next(m for m in lst if m["receipt"] == "MSR-00001")
+    got = client.get(f"/ops/api/measures/{first['id']}", headers=H).json()
+    pids = {p["slot"]: p["id"] for p in got["photos"]}
+    assert client.get(f"/ops/api/measure-photos/{pids['i1p1']}").status_code == 200
+    # Paz (admin) revises Jaime's measure: drops the first door, so the window becomes card 1; keeps its photo
+    login(client, "Paz Galambos", "112233")
+    items = got["data"]["items"][1:]
+    keep = {"i1p2": pids["i2p2"]}
+    r = _measure(client, "sub-msr-0006", items, {"i2p1": ("c.jpg", jpeg((9, 9, 200)), "image/jpeg")},
+                 revision_of="MSR-00001", keep=json.dumps(keep))
+    assert r.status_code == 200, r.text
+    rec2 = r.json()["receipt"]
+    row = conn().execute("SELECT id, data FROM reports WHERE receipt=?", (rec2,)).fetchone()
+    d = json.loads(row[1])
+    assert d["revision_of"] == "MSR-00001" and d["measured_by"] == "Jaime Mendoza" and d["revised_by"] == "Paz Galambos"
+    slots = {p[0] for p in conn().execute("SELECT slot FROM photos WHERE report_id=?", (row[0],))}
+    assert slots == {"i1p2", "i2p1"}
+    e = conn().execute("SELECT subject, recipients FROM emails ORDER BY id DESC LIMIT 1").fetchone()
+    assert e[0].startswith("REVISED Measure Report") and "replaces MSR-00001" in e[0]
+    assert "paz@simplydoors.com" in e[1]
+    # the list shows the old one as replaced
+    login(client, "Jaime Mendoza", "135790")
+    lst = client.get("/ops/api/measures", headers=H).json()
+    assert next(m for m in lst if m["receipt"] == "MSR-00001")["replaced_by"] == rec2
+    assert any(m["receipt"] == rec2 for m in lst)          # Jaime still sees it: he measured it
+    # someone else can't open it, can't steal its photos, can't revise it
+    for name in ("Steven Chandler",):
+        sid = conn().execute("SELECT id FROM staff WHERE name=?", (name,)).fetchone()[0]
+        auth.set_pin(sid, "975310", "install")
+        login(client, name, "975310")
+        assert client.get(f"/ops/api/measures/{first['id']}", headers=H).status_code == 404
+        assert client.get(f"/ops/api/measure-photos/{pids['i1p1']}").status_code == 404
+        r = _measure(client, "sub-msr-0007", items, revision_of="MSR-00001")
+        assert r.status_code == 422
+        r = _measure(client, "sub-msr-0008", items, keep=json.dumps({"i1p1": pids["i1p1"]}))
+        assert r.status_code == 422

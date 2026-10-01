@@ -37,7 +37,7 @@
     admin_denied: "Blocked from admin page", audit_exported: "Exported the activity log",
     audit_viewed: "Looked at the activity log", photo_viewed: "Opened a photo",
     app_started: "App started", staff_seeded: "Staff list created",
-    list_changed: "Changed a pick list", forms_switched: "Changed which forms staff see",
+    list_changed: "Changed a pick list", forms_switched: "Changed which forms staff see", measure_reopened: "Reopened a measure",
   };
 
   // ------------------------------------------------------------ tabs
