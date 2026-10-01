@@ -279,3 +279,20 @@ def test_photo_location_stamp(client):
     lst = next(x for x in client.get("/ops/api/admin/reports").json() if x["id"] == rid)
     assert lst["no_geo"] == 1
     assert client.get(f"/ops/api/admin/reports/{rid}/pdf").content[:4] == b"%PDF"
+
+
+def test_snapshot_and_offsite_status(client):
+    from app import main as m
+    m.snapshot_db("2026-10-01")
+    snap = os.path.join(TMP, "backups", "ops-2026-10-01.db")
+    assert os.path.exists(snap) and not os.path.exists(snap + ".part")
+    assert sqlite3.connect(snap).execute("SELECT COUNT(*) FROM reports").fetchone()[0] >= 1
+    assert m.offsite_status() == {"configured": False}
+    with open(os.path.join(TMP, "offsite-status.json"), "w") as f:
+        f.write('{"ok":false,"finished":"2026-10-01T19:50:03Z","dest":"gdrive:x","error":"boom"}')
+    with open(os.path.join(TMP, ".offsite-lastok"), "w") as f:
+        f.write("2026-09-30T07:30:00Z\n")
+    st = m.offsite_status()
+    assert st["configured"] and st["ok"] is False and st["last_ok"] == "2026-09-30T07:30:00Z"
+    login(client, "Adem Atis", "246810")
+    assert client.get("/ops/api/admin/status").json()["offsite"]["error"] == "boom"

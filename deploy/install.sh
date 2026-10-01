@@ -8,7 +8,8 @@
 #   3. Adds an "opsapp" service to docker-compose.override.yml (backup made first)
 #   4. Builds and starts it on 127.0.0.1:8010 (not reachable from the network directly)
 #   5. Sets your admin PIN the first time
-#   6. Publishes it at https://optiplex-ai.tailf0af63.ts.net:10000/ops/ (its own public port, kept
+#   6. Sets up a nightly off-site copy to Google Drive, reusing your existing backup's Drive connection
+#   7. Publishes it at https://optiplex-ai.tailf0af63.ts.net:10000/ops/ (its own public port, kept
 #      separate from the Sign app on the normal address) and checks the Sign app is still up
 set -euo pipefail
 
@@ -137,7 +138,7 @@ curl -sf "http://127.0.0.1:$PORT/ops/healthz" >/dev/null || { docker logs --tail
 echo "App is running: $(curl -s http://127.0.0.1:$PORT/ops/healthz)"
 
 if ! docker exec opsapp python -c "from app.db import conn;import sys;sys.exit(0 if conn().execute('select 1 from staff where is_admin=1 and pin_hash is not null').fetchone() else 1)"; then
-  say "Choose YOUR admin PIN for the new app (4-8 digits)"
+  say "Choose YOUR admin PIN for the new app (6-8 digits)"
   docker exec -it opsapp python -m app.cli set-pin "Adem Atis"
 fi
 
@@ -166,6 +167,8 @@ if [ "$SIGN_BEFORE" != "$SIGN_AFTER" ]; then
 fi
 case "$OPS_AFTER" in *'"ok":true'*) ;; *) warn "Couldn't reach $OPS from here yet; it can take a minute. Try it on your phone." ;; esac
 
+bash "$APPDIR/deploy/setup-offsite.sh" || warn "Off-site backup setup hit a problem; everything else is installed. Re-run: bash $APPDIR/deploy/setup-offsite.sh"
+
 say "Sending a test alert to your phone"
 docker exec opsapp python -c "
 import os,urllib.request
@@ -181,6 +184,7 @@ Staff app:   $OPS/
 Admin:       $OPS/admin
 Settings:    $APPDIR/.env   (email password lives here; never shared)
 Data:        $DATADIR       (database, photos, daily database snapshots)
+Off-site:    copied nightly at 2:30 AM to Google Drive (see Admin > Status)
 Log of this install: $LOG
 To undo:     bash $APPDIR/deploy/uninstall.sh
 EOF

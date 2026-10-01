@@ -55,6 +55,7 @@ Running it again updates the app and keeps all data. The script:
 - Adds an `opsapp` service to `~/ai-server/docker-compose.override.yml`, after making a backup.
 - Builds the container, bound to `127.0.0.1:8010`.
 - Publishes it through Tailscale Funnel on public port **10000**, which keeps it separate from the Sign app on 443.
+- Sets up the nightly off-site copy to Google Drive and runs the first one.
 - Checks that the Sign app answers exactly as it did before.
 
 ## One-time PIN import from the old Google Sheet
@@ -78,7 +79,14 @@ This takes the app off the internet, removes the container, and restores the com
 - `~/ai-server/opsapp/` holds the app code and `.env`, which contains email settings (the Gmail app password is here, permissions 600).
 - `~/ai-server/opsapp-data/ops.db` is the database: reports, staff, activity log.
 - `~/ai-server/opsapp-data/photos/<report id>/` holds the photos.
-- `~/ai-server/opsapp-data/backups/` holds daily database snapshots (kept 14 days). **These are on the same disk.** Add `opsapp-data` to the nightly off-site backup.
+- `~/ai-server/opsapp-data/backups/` holds daily database snapshots, taken at 2:00 AM and kept 14 days on the server.
+- **Off-site copy:** the `opsapp-offsite` container copies the snapshots and every photo to Google Drive each night at 2:30 AM.
+  - It reuses your existing nightly backup's Drive connection, as its own copy in `~/ai-server/opsapp-offsite/`, and saves to `<remote>:optiplex-backups/opsapp/` by default.
+  - It only ever copies and never deletes off-site, so a broken disk here can't wipe the backup.
+  - Admin → Status shows the last successful copy. Your phone gets an alert if a copy fails, or if a day passes with no successful copy.
+  - To force a copy now: `touch ~/ai-server/opsapp-data/.offsite-now && docker restart opsapp-offsite`
+  - To set it up again: `bash ~/ai-server/opsapp/deploy/setup-offsite.sh`
+- **Restore:** download the newest `ops-YYYY-MM-DD.db` from Drive into `~/ai-server/opsapp-data/ops.db`, and the `photos` folder into `~/ai-server/opsapp-data/photos/`. Then `docker restart opsapp`.
 
 ## Console commands
 

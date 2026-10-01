@@ -40,7 +40,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 60 * 1024 * 1024
-APP_VERSION = "stage1-2"
+APP_VERSION = "stage1-3"
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -656,6 +656,7 @@ def admin_status(admin=Depends(current_admin)):
         "db_mb": round(os.path.getsize(DB_PATH) / 1e6, 2) if os.path.exists(DB_PATH) else 0,
         "reports": c.execute("SELECT COUNT(*) FROM reports").fetchone()[0],
         "last_backup": _last_backup(),
+        "offsite": offsite_status(),
     }
 
 
@@ -666,32 +667,71 @@ BACKUP_DIR = os.path.join(DATA_DIR, "backups")
 def _last_backup():
     if not os.path.isdir(BACKUP_DIR):
         return None
-    files = sorted(f for f in os.listdir(BACKUP_DIR) if f.endswith(".db"))
+    files = sorted(f for f in os.listdir(BACKUP_DIR) if f.endswith(".db") and not f.endswith(".part"))
     return files[-1] if files else None
 
 
+SNAPSHOT_HOUR = 2          # local time; the off-site copy runs at 2:30, so it always has that night's snapshot
+
+
+def snapshot_db(day: str) -> None:
+    """Consistent copy of the live database, written under a temp name and renamed when complete."""
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    dest = os.path.join(BACKUP_DIR, f"ops-{day}.db")
+    tmp = dest + ".part"
+    src = sqlite3.connect(DB_PATH)
+    dst = sqlite3.connect(tmp)
+    src.backup(dst)
+    dst.close()
+    src.close()
+    os.replace(tmp, dest)
+    for f in sorted(x for x in os.listdir(BACKUP_DIR) if x.endswith(".db"))[:-14]:
+        os.remove(os.path.join(BACKUP_DIR, f))
+
+
+def offsite_status() -> dict:
+    try:
+        with open(os.path.join(DATA_DIR, "offsite-status.json")) as f:
+            st = json.load(f)
+    except Exception:
+        return {"configured": False}
+    try:
+        with open(os.path.join(DATA_DIR, ".offsite-lastok")) as f:
+            st["last_ok"] = f.read().strip()
+    except Exception:
+        st["last_ok"] = None
+    st["configured"] = True
+    return st
+
+
 def nightly():
-    """Daily: snapshot the database next to the photos (picked up by off-site backup), tidy old rows."""
+    """Every 10 min: nightly database snapshot (picked up by the off-site copy), stale-backup alert, tidy-up."""
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo(os.environ.get("TZ_DISPLAY", "America/Chicago"))
     while True:
         try:
-            os.makedirs(BACKUP_DIR, exist_ok=True)
-            day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            dest = os.path.join(BACKUP_DIR, f"ops-{day}.db")
-            if not os.path.exists(dest):
-                src = sqlite3.connect(DB_PATH)
-                dst = sqlite3.connect(dest)
-                src.backup(dst)
-                dst.close()
-                src.close()
-                for f in sorted(x for x in os.listdir(BACKUP_DIR) if x.endswith(".db"))[:-14]:
-                    os.remove(os.path.join(BACKUP_DIR, f))
+            local_now = datetime.now(tz)
+            day = local_now.strftime("%Y-%m-%d")
+            have_any = os.path.isdir(BACKUP_DIR) and any(f.endswith(".db") for f in os.listdir(BACKUP_DIR))
+            if (local_now.hour >= SNAPSHOT_HOUR or not have_any) and \
+                    not os.path.exists(os.path.join(BACKUP_DIR, f"ops-{day}.db")):
+                snapshot_db(day)
+            st = offsite_status()
+            if st["configured"]:
+                last = st.get("last_ok")
+                age_h = (datetime.now(timezone.utc) - datetime.strptime(last, "%Y-%m-%dT%H:%M:%SZ").replace(
+                    tzinfo=timezone.utc)).total_seconds() / 3600 if last else 999
+                if age_h > 36:
+                    alerts.push_throttled("offsite-stale", "Ops app: off-site backup is behind",
+                                          "Reports haven't been copied to Google Drive for over a day. Check Admin > Status.",
+                                          "high", every_seconds=12 * 3600)
             cutoff = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
             c = conn()
             c.execute("DELETE FROM ip_failures WHERE at < ?", (cutoff,))
             c.execute("DELETE FROM sessions WHERE expires_at < ?", (now_iso(),))
         except Exception:
             pass
-        time.sleep(3600)
+        time.sleep(600)
 
 
 @app.on_event("startup")
