@@ -672,5 +672,5 @@ def test_installation_completion(client):
     assert e.startswith("NEEDS FOLLOW-UP") and "(not signed)" in e
     # every checklist item must be answered
     bad = {**base, "submission_id": "sub-ins-0005", "cust_present": "No", "no_sign_reason": "x"}
-    bad.pop("checklist:plumb")
+    bad.pop("checklist:operates")
     assert client.post("/ops/api/reports/install", data=bad, files=photos, headers=H).status_code == 422

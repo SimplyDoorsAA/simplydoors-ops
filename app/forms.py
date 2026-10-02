@@ -53,16 +53,10 @@ EOS_CHECKS = {
 YES_NO = ["No", "Yes"]
 
 INSTALL_CHECKS = [
-    ("plumb", "Unit is plumb, level and square"),
     ("operates", "Door opens, closes and latches smoothly (no rubbing)"),
-    ("seal", "Weatherstrip and sweep seal; no daylight showing"),
-    ("hardware", "Lockset and deadbolt installed and working; keys handed over"),
-    ("screws", "Hinge screws set, long screws into the framing"),
-    ("threshold", "Threshold adjusted and sealed"),
-    ("exterior", "Exterior trim installed and caulked"),
-    ("interior", "Interior casing / trim installed"),
-    ("cleanup", "Old unit and debris removed; work area clean"),
-    ("walkthrough", "Customer shown how everything works"),
+    ("hardware", "Lockset and deadbolt installed and working"),
+    ("trim", "Exterior and interior trim installed and caulked"),
+    ("cleanup", "Work area cleaned and old material hauled off"),
 ]
 ACCEPT_TEXT = ("By signing, the customer confirms the work listed above was completed and accepts the installation, "
                "except for anything listed on the punch list.")
@@ -138,6 +132,8 @@ FORMS = {
             {"key": "sales_notify", "label": "Sales Rep Notified", "ask": "Notify a sales rep (optional)",
              "type": "select", "options": "sales_reps", "none_label": "Don't notify anyone", "notify": True},
             {"key": "notes", "label": "Notes", "type": "textarea", "placeholder": "Anything the office should know"},
+            {"key": "cust_comments", "label": "Customer comments or concerns", "type": "textarea", "tail": True,
+             "placeholder": "Anything the customer said about the job, good or bad"},
             # customer acceptance: shown after the photos, right above the signature
             {"key": "cust_present", "label": "Customer present to sign", "ask": "Is the customer here to sign off?",
              "type": "choice", "options": ["Yes", "No"], "required": True, "tail": True},
@@ -156,7 +152,7 @@ FORMS = {
              "help": ACCEPT_TEXT},
         ],
         "photo_grid": True,
-        "email_keys": ["po", "customer", "address", "work", "crew", "punch", "punch_items", "signer", "no_sign_reason"],
+        "email_keys": ["po", "customer", "address", "work", "crew", "punch", "punch_items", "cust_comments", "signer", "no_sign_reason"],
         "summary": ["po", "customer"],
     },
     "End of Shift": {
