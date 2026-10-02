@@ -212,3 +212,61 @@ label.tog input { width: 24px; height: 24px; accent-color: var(--red); }
 @media (max-width: 360px) { .mlabor { grid-template-columns: 1fr; } .maddbar .btn { font-size: 14px; } }
 .mf label.check { display: flex; gap: 10px; align-items: center; margin: 4px 0; font-size: 15px; font-weight: 500; padding: 10px; }
 .mf label.tog { display: flex; align-items: center; gap: 10px; margin: 38px 0 0; font-size: 17px; }
+
+/* ---- measure round 2 ---- */
+.sz { margin-bottom: 4px; }
+.sz .szrow { display: flex; align-items: center; gap: 10px; }
+.sz .szrow input { flex: 0 0 120px; width: 120px; font-size: 20px; font-weight: 700; }
+.szval { font-size: 20px; font-weight: 800; color: var(--green-dark); }
+.fracs { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; margin-top: 6px; }
+.frac { min-height: 44px; border: 1.5px solid var(--line); border-radius: 9px; background: #fff; font: inherit; font-size: 14px;
+  font-weight: 700; color: var(--ink); padding: 0; cursor: pointer; }
+.frac.on { background: var(--green); border-color: var(--green); color: #fff; }
+.mpt { display: block; background: #f7f9f8; border: 1px solid var(--line); border-radius: 10px; padding: 4px 10px 10px; }
+.mpthead { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; }
+.mpthead .link { margin: 0; }
+.mpt .sz .szl { margin-top: 6px; }
+.hhelp { margin: 0 0 6px; }
+.hand { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.handopt { display: flex; flex-direction: column; align-items: center; gap: 2px; border: 2px solid var(--line); border-radius: 12px;
+  background: #fff; padding: 6px 4px; font: inherit; font-size: 13px; font-weight: 700; color: var(--ink); cursor: pointer; min-height: 96px; justify-content: center; }
+.handopt svg { width: 100%; max-width: 92px; height: auto; }
+.handopt.on { border-color: var(--green); background: var(--green-bg); box-shadow: 0 0 0 2px var(--green) inset; }
+.handopt .big { font-size: 30px; line-height: 1; color: var(--muted); }
+.hs-t { font-size: 9px; font-weight: 700; fill: #8a949e; text-anchor: middle; letter-spacing: .05em; }
+.hs-wall { stroke: #1f2933; stroke-width: 7; }
+.hs-leaf { stroke: #2f6f1f; stroke-width: 4; stroke-linecap: round; }
+.hs-arc { fill: none; stroke: #76c043; stroke-width: 1.6; stroke-dasharray: 3 3; }
+.hs-arc.solid { stroke-dasharray: none; stroke-width: 2.2; }
+.hs-hinge { fill: #c62828; }
+.mwarnflag { color: var(--amber); margin-left: 6px; }
+.mwarns { list-style: none; margin: 10px 0 0; padding: 10px 12px; background: var(--amber-bg); color: var(--amber); border-radius: 10px;
+  font-size: 15px; font-weight: 600; }
+.mwarns li + li { margin-top: 6px; }
+.mwarns li::before { content: "⚠ "; }
+.mmove { border: 0; border-left: 1px solid var(--line); background: none; width: 46px; font-size: 16px; color: var(--muted); cursor: pointer; }
+.mmove:disabled { opacity: .25; }
+.mfoot { display: flex; justify-content: space-between; margin-top: 10px; }
+.mfoot .link { margin: 0; }
+.mphotos { grid-template-columns: repeat(2, 1fr); }
+.mphotos .tile { aspect-ratio: 4 / 3; }
+.phsheet { background: #111; color: #fff; }
+.phsheet .muted { color: #c9d0d6; }
+.phwrap { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+.phwrap img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 8px; }
+.phbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.phbtns .btn { margin: 0; }
+.danger-text { color: var(--red) !important; }
+.mk { background: #111; }
+.mktools { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mkgroup { display: flex; gap: 6px; }
+.mkb { border: 1.5px solid #3a4148; background: #1f2429; color: #fff; font: inherit; font-size: 15px; font-weight: 700; border-radius: 10px;
+  min-height: 44px; padding: 0 12px; cursor: pointer; }
+.mkb.on { background: #fff; color: #111; }
+.mkb:disabled { opacity: .4; }
+.mkc { width: 40px; height: 40px; border-radius: 50%; border: 3px solid #3a4148; background: var(--c); cursor: pointer; }
+.mkc.on { border-color: #fff; box-shadow: 0 0 0 2px #111 inset; }
+.mkarea { position: relative; flex: 1; min-height: 0; }
+#mkCanvas { position: absolute; inset: 0; touch-action: none; display: block; }
+.mkhint { margin: 0; text-align: center; color: #c9d0d6; font-size: 14px; }
+.mkbtns { grid-template-columns: 1fr 1.4fr; }

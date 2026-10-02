@@ -173,9 +173,12 @@ def _measure_body(story, report, staff_name, data, photos, cell, lab, small, h2)
                  shade=[("TEXTCOLOR", (1, r), (1, r), red) for r, (a, _) in enumerate(M.item_rows(it)) if a == "Tempered"])]
         pics = [p for p in sorted(by_item.get(i, []), key=lambda x: x["slot"]) if os.path.exists(p["path"])]
         if pics:
-            cells = [[_img(p["path"], 2.3 * inch, 2.6 * inch), Paragraph(_caption(p, labels, report["submitted_at"]), small)]
+            cells = [[_img(p["path"], 1.7 * inch, 2.1 * inch), Paragraph(_caption(p, labels, report["submitted_at"]), small)]
                      for p in pics]
-            pt = Table([[c for c in cells] + [""] * (3 - len(cells))], colWidths=[2.43 * inch] * 3)
+            per = 4
+            grid = [cells[i:i + per] for i in range(0, len(cells), per)]
+            grid[-1] += [""] * (per - len(grid[-1]))
+            pt = Table(grid, colWidths=[1.82 * inch] * per)
             pt.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 2),
                                     ("RIGHTPADDING", (0, 0), (-1, -1), 6)]))
             story.append(KeepTogether(block[:2] + [block[2]]))      # title stays with its details

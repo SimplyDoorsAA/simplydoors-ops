@@ -190,6 +190,33 @@
 
 <input type="file" id="photoPicker" accept="image/*" class="hidden">
 
+<!-- photo sheet: view / mark up / replace / remove -->
+<div id="phSheet" class="sigover phsheet hidden" role="dialog" aria-modal="true" aria-labelledby="phTitle">
+  <div class="sigtop"><b id="phTitle">Photo</b></div>
+  <div class="phwrap"><img id="phImg" alt=""></div>
+  <p class="muted small hidden" id="phOld">This photo is from the earlier version. To mark it up, replace it with a new one.</p>
+  <div class="phbtns">
+    <button type="button" class="btn" id="phMark">✎ Mark up</button>
+    <button type="button" class="btn secondary" id="phReplace">Replace</button>
+    <button type="button" class="btn secondary danger-text" id="phRemove">Remove</button>
+    <button type="button" class="btn secondary" id="phClose">Close</button>
+  </div>
+</div>
+
+<!-- mark-up editor -->
+<div id="mkOverlay" class="sigover mk hidden" role="dialog" aria-modal="true" aria-label="Mark up photo">
+  <div class="mktools">
+    <div class="mkgroup"><button type="button" class="mkb on" data-mkmode="pen">✎ Draw</button><button type="button" class="mkb" data-mkmode="text">T Text</button></div>
+    <div class="mkgroup"><button type="button" class="mkc on" data-mkcolor="#ff3b30" style="--c:#ff3b30" aria-label="Red"></button>
+      <button type="button" class="mkc" data-mkcolor="#ffd60a" style="--c:#ffd60a" aria-label="Yellow"></button>
+      <button type="button" class="mkc" data-mkcolor="#111111" style="--c:#111111" aria-label="Black"></button></div>
+    <button type="button" class="mkb" id="mkUndo" disabled>↶ Undo</button>
+  </div>
+  <div class="mkarea"><canvas id="mkCanvas"></canvas></div>
+  <p class="mkhint" id="mkHint">Draw with your finger</p>
+  <div class="sigbtns mkbtns"><button type="button" class="btn secondary" id="mkCancel">Cancel</button><button type="button" class="btn" id="mkDone">Done</button></div>
+</div>
+
 <!-- full-screen signing pad -->
 <div id="sigOverlay" class="sigover hidden" role="dialog" aria-modal="true" aria-labelledby="sigTitle">
   <div class="sigtop">

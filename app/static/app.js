@@ -463,7 +463,7 @@
         if (!previews[slot]) previews[slot] = URL.createObjectURL(v);
         src = previews[slot];
         const m = photoMeta[slot] || {};
-        badge = m.status === "ok" ? (m.acc > 200 ? `<span class="geo warn">📍 ±${m.acc} m</span>` : `<span class="geo">📍 Located</span>`)
+        badge = m.marked ? `<span class="geo">✎ Marked up</span>` : m.status === "ok" ? (m.acc > 200 ? `<span class="geo warn">📍 ±${m.acc} m</span>` : `<span class="geo">📍 Located</span>`)
           : m.status ? `<span class="geo warn">No location</span>` : "";
       } else {
         src = `api/measure-photos/${encodeURIComponent(v.keep)}`;
@@ -474,10 +474,128 @@
     } else {
       t.innerHTML = `<span><span class="plus">+</span>${esc(label)}</span>`;
     }
-    t.onclick = () => { pickSlot = slot; $("#photoPicker").value = ""; $("#photoPicker").click(); };
+    t.onclick = () => { if (photos[slot]) openPhotoSheet(slot, label); else pickPhoto(slot); };
     t.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); t.click(); } };
     return t;
   }
+  function pickPhoto(slot) { pickSlot = slot; $("#photoPicker").value = ""; $("#photoPicker").click(); }
+
+  // ---- tapping a photo: look at it, mark it up, replace or remove it
+  let sheetSlot = null;
+  function openPhotoSheet(slot, label) {
+    sheetSlot = slot;
+    const v = photos[slot], isNew = v instanceof Blob;
+    $("#phTitle").textContent = label;
+    $("#phImg").src = isNew ? (previews[slot] || (previews[slot] = URL.createObjectURL(v))) : `api/measure-photos/${encodeURIComponent(v.keep)}`;
+    $("#phMark").classList.toggle("hidden", !isNew);
+    $("#phOld").classList.toggle("hidden", isNew);
+    $("#phSheet").classList.remove("hidden");
+    document.documentElement.classList.add("sigopen-lock");
+  }
+  function closePhotoSheet() { $("#phSheet").classList.add("hidden"); document.documentElement.classList.remove("sigopen-lock"); }
+  $("#phClose").onclick = closePhotoSheet;
+  $("#phReplace").onclick = () => { const s = sheetSlot; closePhotoSheet(); pickPhoto(s); };
+  $("#phRemove").onclick = () => { const s = sheetSlot; if (!confirm("Remove this photo?")) return; closePhotoSheet(); removePhoto(s); };
+  $("#phMark").onclick = () => { const s = sheetSlot; closePhotoSheet(); openMarkup(s); };
+
+  // ---- mark-up: draw or write on a photo; the marks become part of the photo that's sent
+  const mk = { slot: null, img: null, items: [], cur: null, color: "#ff3b30", mode: "pen", moved: false, down: null };
+  const mkCv = $("#mkCanvas"), mkBox = $("#mkOverlay");
+  function mkRect() {
+    const W = mkCv.clientWidth, H = mkCv.clientHeight, iw = mk.img.naturalWidth, ih = mk.img.naturalHeight;
+    const sc = Math.min(W / iw, H / ih), w = iw * sc, h = ih * sc;
+    return { x: (W - w) / 2, y: (H - h) / 2, w, h };
+  }
+  function mkPaint(ctx, x, y, w, h) {
+    ctx.drawImage(mk.img, x, y, w, h);
+    ctx.lineCap = "round"; ctx.lineJoin = "round";
+    for (const it of mk.items) {
+      if (it.t === "pen") {
+        ctx.strokeStyle = it.c; ctx.lineWidth = it.size * w;
+        ctx.beginPath(); ctx.moveTo(x + it.pts[0][0] * w, y + it.pts[0][1] * h);
+        if (it.pts.length === 1) ctx.lineTo(x + it.pts[0][0] * w + 0.1, y + it.pts[0][1] * h);
+        for (const [px, py] of it.pts.slice(1)) ctx.lineTo(x + px * w, y + py * h);
+        ctx.stroke();
+      } else {
+        const fs = it.size * w;
+        ctx.font = `bold ${fs}px -apple-system, Segoe UI, Roboto, Arial, sans-serif`;
+        ctx.textBaseline = "middle"; ctx.lineWidth = fs * 0.16; ctx.strokeStyle = it.c === "#111111" ? "#ffffff" : "#000000";
+        ctx.strokeText(it.text, x + it.x * w, y + it.y * h); ctx.fillStyle = it.c; ctx.fillText(it.text, x + it.x * w, y + it.y * h);
+      }
+    }
+  }
+  function mkSize() {
+    const r = mkCv.parentElement.getBoundingClientRect(), ratio = window.devicePixelRatio || 1;
+    mkCv.width = Math.round(r.width * ratio); mkCv.height = Math.round(r.height * ratio);
+    mkCv.style.width = r.width + "px"; mkCv.style.height = r.height + "px";
+    mkDraw();
+  }
+  function mkDraw() {
+    if (!mk.img) return;
+    const ctx = mkCv.getContext("2d"), ratio = window.devicePixelRatio || 1;
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.clearRect(0, 0, mkCv.width, mkCv.height);
+    const r = mkRect(); mkPaint(ctx, r.x, r.y, r.w, r.h);
+    $("#mkUndo").disabled = !mk.items.length;
+  }
+  const mkPt = (e) => { const b = mkCv.getBoundingClientRect(), r = mkRect(); return [(e.clientX - b.left - r.x) / r.w, (e.clientY - b.top - r.y) / r.h]; };
+  const inImg = ([x, y]) => x >= 0 && x <= 1 && y >= 0 && y <= 1;
+  mkCv.addEventListener("pointerdown", (e) => {
+    e.preventDefault(); const p = mkPt(e);
+    if (!inImg(p)) return;
+    mkCv.setPointerCapture(e.pointerId); mk.down = p; mk.moved = false;
+    if (mk.mode === "pen") { mk.cur = { t: "pen", c: mk.color, size: 0.008, pts: [p] }; mk.items.push(mk.cur); mkDraw(); }
+  });
+  mkCv.addEventListener("pointermove", (e) => {
+    if (!mk.cur) return; e.preventDefault();
+    for (const ev of (e.getCoalescedEvents ? e.getCoalescedEvents() : [e])) mk.cur.pts.push(mkPt(ev).map(v => Math.min(1, Math.max(0, v))));
+    mk.moved = true; mkDraw();
+  });
+  mkCv.addEventListener("pointerup", () => {
+    const p = mk.down; mk.cur = null; mk.down = null;
+    if (mk.mode === "text" && p) {
+      const text = (prompt("Text to write on the photo (e.g. 36 1/2\")") || "").trim().slice(0, 60);
+      if (text) { mk.items.push({ t: "text", c: mk.color, size: 0.06, x: p[0], y: p[1], text }); mkDraw(); }
+    }
+  });
+  mkCv.addEventListener("pointercancel", () => { mk.cur = null; mk.down = null; });
+  mkBox.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
+  $$("[data-mkcolor]").forEach(b => b.onclick = () => {
+    mk.color = b.dataset.mkcolor; $$("[data-mkcolor]").forEach(x => x.classList.toggle("on", x === b));
+  });
+  $$("[data-mkmode]").forEach(b => b.onclick = () => {
+    mk.mode = b.dataset.mkmode; $$("[data-mkmode]").forEach(x => x.classList.toggle("on", x === b));
+    $("#mkHint").textContent = mk.mode === "pen" ? "Draw with your finger" : "Tap where the text should go";
+  });
+  $("#mkUndo").onclick = () => { mk.items.pop(); mkDraw(); };
+  function openMarkup(slot) {
+    const blob = photos[slot];
+    if (!(blob instanceof Blob)) return;
+    mk.slot = slot; mk.items = []; mk.cur = null;
+    const img = new Image();
+    img.onload = () => { mk.img = img; mkBox.classList.remove("hidden"); document.documentElement.classList.add("sigopen-lock"); requestAnimationFrame(mkSize); };
+    img.src = previews[slot] || (previews[slot] = URL.createObjectURL(blob));
+  }
+  function closeMarkup() { mkBox.classList.add("hidden"); document.documentElement.classList.remove("sigopen-lock"); mk.img = null; }
+  $("#mkCancel").onclick = () => { if (mk.items.length && !confirm("Throw away these marks?")) return; closeMarkup(); };
+  $("#mkDone").onclick = () => {
+    if (!mk.items.length) return closeMarkup();
+    const iw = mk.img.naturalWidth, ih = mk.img.naturalHeight, c = document.createElement("canvas");
+    c.width = iw; c.height = ih;
+    mkPaint(c.getContext("2d"), 0, 0, iw, ih);
+    const slot = mk.slot;
+    c.toBlob(b => {
+      if (b) {
+        if (previews[slot]) { URL.revokeObjectURL(previews[slot]); delete previews[slot]; }
+        photos[slot] = b;
+        photoMeta[slot] = { ...(photoMeta[slot] || {}), marked: true };
+        renderTiles(); saveDraftSoon();
+      }
+      closeMarkup();
+    }, "image/jpeg", 0.88);
+  };
+  window.addEventListener("resize", () => { if (!mkBox.classList.contains("hidden")) mkSize(); });
+
   function renderTiles() {
     if (spec && spec.kind === "measure") return mRenderTiles();
     spec.photos.filter(g => !g.signature).forEach(g => {
@@ -852,15 +970,82 @@
 
   function sizeCell(v, label, attrs, req) {
     v = v || blankSize();
-    return `<div class="sz"><span class="szl">${esc(label)}${req ? " *" : ""}</span><div class="szrow">
-      <input type="text" inputmode="decimal" ${attrs} data-part="w" value="${esc(v.w)}" maxlength="8" placeholder="in" aria-label="${esc(label)} inches">
-      <select ${attrs} data-part="f" aria-label="${esc(label)} fraction">${MS.measure.fractions.map(x =>
-        `<option value="${x}"${x === (v.f || "") ? " selected" : ""}>${x || "+0"}</option>`).join("")}</select></div></div>`;
+    return `<div class="sz"><span class="szl">${esc(label)}${req ? " *" : ""}</span>
+      <div class="szrow"><input type="text" inputmode="decimal" ${attrs} data-part="w" value="${esc(v.w)}" maxlength="8" placeholder="inches" aria-label="${esc(label)} inches">
+        <span class="szval" aria-live="polite">${esc(fmtSize(v))}</span></div>
+      <input type="hidden" ${attrs} data-part="f" value="${esc(v.f || "")}">
+      <div class="fracs" role="group" aria-label="${esc(label)} fraction">${MS.measure.fractions.map(x =>
+        `<button type="button" class="frac${x === (v.f || "") ? " on" : ""}" data-frac="${x}" aria-pressed="${x === (v.f || "")}">${x || "0"}</button>`).join("")}</div></div>`;
   }
   function pointRow(p, i) {
-    return `<div class="mpt"><span class="ptn">${i + 1}</span>${sizeCell(p.w, "W", 'data-pt="w"', true)}<span class="x">×</span>
-      ${sizeCell(p.h, "H", 'data-pt="h"', true)}<button type="button" class="ptdel" data-delpt aria-label="Remove size ${i + 1}">×</button></div>`;
+    return `<div class="mpt"><div class="mpthead"><b>Size ${i + 1}</b><button type="button" class="link danger" data-delpt>Remove</button></div>
+      ${sizeCell(p.w, "Width", 'data-pt="w"', true)}${sizeCell(p.h, "Height", 'data-pt="h"', true)}</div>`;
   }
+  // door handing, drawn from above. Standing OUTSIDE facing the door: hinges on your left = Left Hand.
+  function handSVG(opt) {
+    const left = /^Left/.test(opt), inswing = /Inswing/.test(opt);
+    const hx = left ? 27 : 73, fx = left ? 73 : 27, ty = inswing ? 14 : 106;
+    const sweep = (left === inswing) ? 0 : 1;
+    return `<svg viewBox="0 0 100 120" aria-hidden="true"><text x="50" y="9" class="hs-t">INSIDE</text><text x="50" y="118" class="hs-t">OUTSIDE</text>
+      <line x1="2" y1="60" x2="27" y2="60" class="hs-wall"/><line x1="73" y1="60" x2="98" y2="60" class="hs-wall"/>
+      <path d="M ${fx} 60 A 46 46 0 0 ${sweep} ${hx} ${ty}" class="hs-arc"/><line x1="${hx}" y1="60" x2="${hx}" y2="${ty}" class="hs-leaf"/>
+      <circle cx="${hx}" cy="60" r="3.5" class="hs-hinge"/></svg>`;
+  }
+  function slideSVG() {
+    return `<svg viewBox="0 0 100 120" aria-hidden="true"><text x="50" y="9" class="hs-t">INSIDE</text><text x="50" y="118" class="hs-t">OUTSIDE</text>
+      <line x1="2" y1="60" x2="22" y2="60" class="hs-wall"/><line x1="78" y1="60" x2="98" y2="60" class="hs-wall"/>
+      <line x1="22" y1="56" x2="54" y2="56" class="hs-leaf"/><line x1="46" y1="64" x2="78" y2="64" class="hs-leaf"/>
+      <path d="M 30 44 L 50 44 M 44 38 L 50 44 L 44 50" class="hs-arc solid"/></svg>`;
+  }
+  function handingHTML(f, c) {
+    const v = c[f.key] || "", custom = (v && !f.options.includes(v)) || c[f.key + "__custom"];
+    const short = (o) => o.replace("Left Hand ", "LH ").replace("Right Hand ", "RH ");
+    return `<div class="mf wide"><span class="szl">${esc(f.label)}</span>
+      <p class="muted small hhelp">Stand <b>outside</b>, facing the door. Hinges on your left = Left Hand. Opens away from you = Inswing.</p>
+      <input type="hidden" data-k="${esc(f.key)}" value="${esc(custom ? "Custom" : v)}">
+      <div class="hand" role="radiogroup" aria-label="${esc(f.label)}">${f.options.map(o =>
+        `<button type="button" class="handopt${!custom && o === v ? " on" : ""}" role="radio" aria-checked="${!custom && o === v}" data-hand="${esc(o)}">
+          ${o === "Slider" ? slideSVG() : handSVG(o)}<span>${esc(short(o))}</span></button>`).join("")}
+        <button type="button" class="handopt other-opt${custom ? " on" : ""}" role="radio" aria-checked="${!!custom}" data-hand="Custom"><span class="big">✎</span><span>Other</span></button></div>
+      <input type="text" class="other${custom ? "" : " hidden"}" data-kc="${esc(f.key)}" maxlength="120" placeholder="Type it" value="${esc(custom ? v : "")}"></div>`;
+  }
+
+  // ---- sanity checks: warnings only, never block (the measurer may be right)
+  const inches = (s) => s && s.w ? parseFloat(s.w) + (s.f ? (([a, b]) => a / b)(s.f.split("/").map(Number)) : 0) : 0;
+  function cardWarnings(c) {
+    const out = [], typo = " Typo? For 36 1/2 type 36 and tap 1/2.";
+    const both = (s, what) => { if (s && s.w && s.w.includes(".") && s.f) out.push(`${what} has both a decimal and a fraction (${fmtSize(s)}).`); };
+    if (c.type === "door") {
+      const w = inches(c.w), h = inches(c.h);
+      if (w > 100) out.push(`Width ${fmtSize(c.w)} is over 8 ft.${typo}`);
+      else if (w && w < 18) out.push(`Width ${fmtSize(c.w)} is under 18".`);
+      if (h > 120) out.push(`Height ${fmtSize(c.h)} is over 10 ft.${typo}`);
+      else if (h && h < 66) out.push(`Height ${fmtSize(c.h)} is under 5'6".`);
+      if (w && h && w > h && w <= 100) out.push(`Width is bigger than height. Swapped?`);
+      if (c.config === "Single" && w > 44 && w <= 100) out.push(`${fmtSize(c.w)} is wide for a single door. Double or sidelights?`);
+      if (c.config === "Double" && w && w < 48) out.push(`${fmtSize(c.w)} is narrow for a double door.`);
+      both(c.w, "Width"); both(c.h, "Height");
+    } else {
+      (c.points || []).forEach((p, i) => {
+        const w = inches(p.w), h = inches(p.h), n = (c.points.length > 1 ? `Size ${i + 1} ` : "");
+        if (w > 144 || h > 144) out.push(`${n}${fmtSize(p.w)} × ${fmtSize(p.h)} is over 12 ft.${typo}`);
+        if ((w && w < 8) || (h && h < 8)) out.push(`${n}${fmtSize(p.w)} × ${fmtSize(p.h)} has a side under 8".`);
+        both(p.w, `${n}width`); both(p.h, `${n}height`);
+      });
+      if (+c.qty > 20) out.push(`Qty ${c.qty}. Is that right?`);
+      if (inches(c.sill) > 96) out.push(`Floor to sill ${fmtSize(c.sill)} is over 8 ft.`);
+    }
+    return out;
+  }
+  function showWarnings(card, c) {
+    const list = cardWarnings(c || readCard(card));
+    const box = $(".mwarns", card);
+    box.innerHTML = list.map(w => `<li>${esc(w)}</li>`).join("");
+    box.classList.toggle("hidden", !list.length);
+    $(".mwarnflag", card).classList.toggle("hidden", !list.length);
+    return list;
+  }
+
   function mFieldHTML(f, c) {
     const v = c[f.key], k = esc(f.key), lab = esc(f.label);
     switch (f.type) {
@@ -868,12 +1053,13 @@
       case "textarea": return `<div class="mf wide"><label>${lab}</label><textarea data-k="${k}" rows="2" maxlength="2000">${esc(v)}</textarea></div>`;
       case "qty": return `<div class="mf"><label>${lab}</label><input type="text" inputmode="numeric" data-k="${k}" maxlength="2" value="${esc(v)}"></div>`;
       case "toggle": return `<div class="mf"><label class="tog"><input type="checkbox" data-k="${k}"${v ? " checked" : ""}><span>${lab}</span></label></div>`;
-      case "size": return `<div class="mf">${sizeCell(v, f.label, `data-sz="${k}"`, f.required)}</div>`;
+      case "size": return `<div class="mf wide">${sizeCell(v, f.label, `data-sz="${k}"`, f.required)}</div>`;
       case "labor": return `<div class="mf wide"><span class="szl">${lab}</span><div class="mlabor">${f.options.map(o =>
         `<label class="check"><input type="checkbox" data-labor value="${esc(o)}"${(v || []).includes(o) ? " checked" : ""}><span>${esc(o)}</span></label>`).join("")}</div></div>`;
       case "points": return `<div class="mf wide"><span class="szl">${lab} *</span><div class="mpts">${(v && v.length ? v : [blankPoint()]).map(pointRow).join("")}</div>
         <button type="button" class="link" data-addpt>+ Add another size</button></div>`;
       case "select": {
+        if (f.picker === "handing") return handingHTML(f, c);
         const custom = f.custom && v && !f.options.includes(v) || c[f.key + "__custom"];
         const opts = (f.default ? "" : `<option value="">Pick…</option>`) + f.options.map(o =>
           `<option value="${esc(o)}"${!custom && o === v ? " selected" : ""}>${esc(o)}</option>`).join("") +
@@ -893,10 +1079,14 @@
     const name = `${TYPE[c.type]} #${n}`;
     return `<section class="mcard${c.open === false ? " closed" : ""}" data-id="${esc(c.id)}" data-type="${esc(c.type)}">
       <div class="mhead"><button type="button" class="mtoggle" aria-expanded="${c.open !== false}">
-        <span class="mname">${name}</span><span class="mloc">${esc(c.loc || "")}</span><span class="msum">${esc(cardSummary(c))}</span></button>
-        <button type="button" class="mdel" aria-label="Remove ${name}">Remove</button></div>
-      <div class="mbody"><div class="mgrid">${mFields(c.type).map(f => mFieldHTML(f, c)).join("")}</div>
-        <span class="szl">Photos</span><div class="photos" data-mphotos="${esc(c.id)}"></div></div></section>`;
+        <span class="mname">${name}</span><span class="mloc">${esc(c.loc || "")}</span><span class="mwarnflag hidden" title="Something looks unusual">⚠</span>
+        <span class="msum">${esc(cardSummary(c))}</span></button>
+        <button type="button" class="mmove" data-move="-1" aria-label="Move ${name} up">▲</button>
+        <button type="button" class="mmove" data-move="1" aria-label="Move ${name} down">▼</button></div>
+      <div class="mbody"><ul class="mwarns hidden" role="status"></ul><div class="mgrid">${mFields(c.type).map(f => mFieldHTML(f, c)).join("")}</div>
+        <span class="szl">Photos</span><div class="photos mphotos" data-mphotos="${esc(c.id)}"></div>
+        <div class="mfoot"><button type="button" class="link" data-dup>Duplicate this ${TYPE[c.type].toLowerCase()}</button>
+          <button type="button" class="link danger mdel">Remove</button></div></div></section>`;
   }
 
   function readSize(root, attr) {
@@ -926,12 +1116,18 @@
     $("#mCards").innerHTML = cards.map(c => cardHTML(c, ++counts[c.type])).join("");
     $("#mEmpty").classList.toggle("hidden", cards.length > 0);
     $("#mCopy").disabled = !cards.length;
+    $$(".mcard", mForm).forEach((el, i) => {
+      showWarnings(el, cards[i]);
+      $('[data-move="-1"]', el).disabled = i === 0;
+      $('[data-move="1"]', el).disabled = i === cards.length - 1;
+    });
     mRenderTiles();
   }
   function mRenderTiles() {
     $$(".mcard", mForm).forEach(el => {
       const box = $(`[data-mphotos]`, el); box.innerHTML = "";
-      for (let k = 1; k <= MS.measure.photos_per_item; k++) box.appendChild(makeTile(`${el.dataset.id}:${k}`, `Photo ${k}`));
+      const labels = MS.measure.photo_labels[el.dataset.type];
+      for (let k = 1; k <= MS.measure.photos_per_item; k++) box.appendChild(makeTile(`${el.dataset.id}:${k}`, labels[k - 1]));
     });
   }
   function mState() {
@@ -1043,9 +1239,12 @@
     const c = readCard(card);
     $(".mloc", card).textContent = c.loc || "";
     $(".msum", card).textContent = cardSummary(c);
+    showWarnings(card, c);
   }
   mForm.addEventListener("input", (e) => {
     e.target.classList.remove("invalid");
+    const sz = e.target.closest(".sz");
+    if (sz) { const w = $('[data-part="w"]', sz).value.trim(), f = $('[data-part="f"]', sz).value; $(".szval", sz).textContent = fmtSize({ w, f }); }
     const card = e.target.closest(".mcard");
     if (card) { card.classList.remove("invalid"); updateHead(card); }
     mSaveDraftSoon();
@@ -1086,6 +1285,43 @@
     }
     const card = e.target.closest(".mcard");
     if (!card) return;
+    const fr = e.target.closest("[data-frac]");
+    if (fr) {
+      const sz = fr.closest(".sz"), hid = $('input[type=hidden][data-part="f"]', sz);
+      hid.value = fr.dataset.frac;
+      $$(".frac", sz).forEach(b => { b.classList.toggle("on", b === fr); b.setAttribute("aria-pressed", String(b === fr)); });
+      $(".szval", sz).textContent = fmtSize({ w: $('[data-part="w"]', sz).value.trim(), f: hid.value });
+      updateHead(card); mSaveDraftSoon(); return;
+    }
+    const ho = e.target.closest("[data-hand]");
+    if (ho) {
+      const wrap = ho.closest(".mf"), hid = $("input[type=hidden][data-k]", wrap), other = $("[data-kc]", wrap);
+      hid.value = ho.dataset.hand;
+      $$(".handopt", wrap).forEach(b => { b.classList.toggle("on", b === ho); b.setAttribute("aria-checked", String(b === ho)); });
+      other.classList.toggle("hidden", ho.dataset.hand !== "Custom");
+      if (ho.dataset.hand === "Custom") other.focus();
+      updateHead(card); mSaveDraftSoon(); return;
+    }
+    const mv = e.target.closest("[data-move]");
+    if (mv) {
+      const cards = readCards(), i = cards.findIndex(c => c.id === card.dataset.id), j = i + Number(mv.dataset.move);
+      if (j < 0 || j >= cards.length) return;
+      [cards[i], cards[j]] = [cards[j], cards[i]];
+      renderCards(cards); mSaveDraftSoon();
+      const el = $(`.mcard[data-id="${card.dataset.id}"]`, mForm);
+      $(`[data-move="${mv.dataset.move}"]`, el).focus({ preventScroll: true });
+      el.scrollIntoView({ block: "nearest" });
+      return;
+    }
+    if (e.target.closest("[data-dup]")) {
+      const cards = readCards(), i = cards.findIndex(c => c.id === card.dataset.id);
+      const copy = { ...JSON.parse(JSON.stringify(cards[i])), id: cardId(), open: true };
+      cards.forEach(x => x.open = false);
+      cards.splice(i + 1, 0, copy);
+      renderCards(cards); mSaveDraftSoon();
+      $(`.mcard[data-id="${copy.id}"]`, mForm).scrollIntoView({ block: "start" });
+      return;
+    }
     if (e.target.closest(".mtoggle")) {
       const closed = card.classList.toggle("closed");
       $(".mtoggle", card).setAttribute("aria-expanded", String(!closed));
@@ -1105,9 +1341,12 @@
     }
     if (e.target.closest("[data-delpt]")) {
       const rows = $$(".mpt", card), row = e.target.closest(".mpt");
-      if (rows.length === 1) { $$("input", row).forEach(i => i.value = ""); $$("select", row).forEach(s => s.value = ""); }
+      if (rows.length === 1) {
+        $$("input", row).forEach(i => i.value = ""); $$(".frac", row).forEach(b => b.classList.toggle("on", b.dataset.frac === ""));
+        $$(".szval", row).forEach(x => x.textContent = "");
+      }
       else row.remove();
-      $$(".mpt .ptn", card).forEach((n, i) => n.textContent = i + 1);
+      $$(".mpt .mpthead b", card).forEach((n, i) => n.textContent = `Size ${i + 1}`);
       updateHead(card); mSaveDraftSoon();
     }
   });
@@ -1168,6 +1407,12 @@
       return;
     }
     err.classList.add("hidden");
+    const warns = [];
+    $$(".mcard", mForm).forEach(el => { const name = $(".mname", el).textContent; showWarnings(el).forEach(w => warns.push(`${name}: ${w}`)); });
+    if (warns.length && !confirm(`Double-check before sending:\n\n• ${warns.join("\n• ")}\n\nSend anyway?`)) {
+      const first = $(".mwarns:not(.hidden)", mForm); if (first) { first.closest(".mcard").classList.remove("closed"); first.scrollIntoView({ block: "center" }); }
+      return;
+    }
     const items = cards.map(c => {
       const o = { ...c }; delete o.id; delete o.open;
       Object.keys(o).filter(k => k.endsWith("__custom")).forEach(k => delete o[k]);
@@ -1209,7 +1454,7 @@
     const cards = items.map(it => ({ ...it, id: cardId(), open: true }));
     const ph = {}, meta = {};
     cards.forEach((c, i) => {
-      for (let k = 1; k <= 3; k++) {
+      for (let k = 1; k <= 4; k++) {
         const slot = `i${i + 1}p${k}`;
         if (entry.photos && entry.photos[slot]) { ph[`${c.id}:${k}`] = entry.photos[slot]; meta[`${c.id}:${k}`] = (entry.photoMeta || {})[slot]; }
         else if (keep[slot]) ph[`${c.id}:${k}`] = { keep: keep[slot] };

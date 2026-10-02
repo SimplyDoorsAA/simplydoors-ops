@@ -10,14 +10,19 @@ import re
 FRACTIONS = ["", "1/8", "1/4", "3/8", "1/2", "5/8", "3/4", "7/8"]
 MAX_ITEMS = 60
 MAX_POINTS = 20
-PHOTOS_PER_ITEM = 3
+PHOTOS_PER_ITEM = 4
+# guided photo slots per card, in order (slot k = label k)
+PHOTO_LABELS = {
+    "door": ["Outside, whole door", "Inside, whole door", "Sill and floor", "Extra"],
+    "window": ["Outside, whole window", "Inside, whole window", "Sill / trim close-up", "Extra"],
+}
 
 # "custom": True means the phone offers "Custom (type it)" and any typed value is accepted.
 DOOR_FIELDS = [
     {"key": "loc", "label": "Location", "type": "text", "placeholder": "e.g. Front Entry"},
     {"key": "config", "label": "Config", "type": "select", "custom": True,
      "options": ["Single", "Double", "Sgl w/ 1 SL", "Sgl w/ 2 SL"]},
-    {"key": "handing", "label": "Handing", "type": "select", "custom": True,
+    {"key": "handing", "label": "Handing", "type": "select", "custom": True, "picker": "handing",
      "options": ["Left Hand Inswing", "Right Hand Inswing", "Left Hand Outswing", "Right Hand Outswing", "Slider"]},
     {"key": "dim_type", "label": "Size type", "type": "select", "options": ["Unit Size", "Rough Opening"], "default": "Unit Size"},
     {"key": "w", "label": "Width", "type": "size", "required": True},
@@ -58,7 +63,7 @@ TYPE_NAME = {"door": "Door", "window": "Window"}
 
 def public() -> dict:
     return {"fractions": FRACTIONS, "door": DOOR_FIELDS, "window": WINDOW_FIELDS,
-            "max_items": MAX_ITEMS, "photos_per_item": PHOTOS_PER_ITEM}
+            "max_items": MAX_ITEMS, "photos_per_item": PHOTOS_PER_ITEM, "photo_labels": PHOTO_LABELS}
 
 
 # ------------------------------------------------------------------ sizes
@@ -239,7 +244,8 @@ def photo_slots(data: dict | None) -> list[dict]:
     items = (data or {}).get("items") or []
     for i in range(len(items)):
         name = item_name(data, i)
+        labels = PHOTO_LABELS[items[i]["type"]]
         for k in range(1, PHOTOS_PER_ITEM + 1):
-            out.append({"slot": f"i{i + 1}p{k}", "label": f"{name} · photo {k}", "group": item_title(data, i),
+            out.append({"slot": f"i{i + 1}p{k}", "label": f"{name} · {labels[k - 1]}", "group": item_title(data, i),
                         "signature": False, "item": i})
     return out

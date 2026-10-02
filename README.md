@@ -21,6 +21,13 @@ GitHub Pages portal + Google Apps Script, one form at a time.
   - "Measured by" stays the original person. Whoever revises someone else's measure is listed as "Revised by".
 - Email goes to the Measure list (admin@) plus whoever measured, and whoever revised it.
 - The PDF has a summary table of every opening for ordering, then one section per door or window with its photos.
+- Round 2 additions:
+  - **Handing picker:** a drawing of each handing, seen from outside.
+  - **Fraction buttons:** 0 to 7/8, with a live size preview.
+  - **Warnings:** unusual sizes (typos like 3612, width bigger than height, a wide single door) show a ⚠. They never block sending, but the app asks "Send anyway?".
+  - **Guided photo slots:** outside, inside, sill and floor, extra.
+  - **Card controls:** duplicate any card, and move cards up or down with ▲▼.
+  - **Mark-up:** tap any new photo to draw or write on it, in any form, not just Measure.
 - Measure starts **switched off for staff**. Turn it on in Admin → Forms & lists.
 
 ## Stage 2: every portal form
