@@ -60,3 +60,5 @@ html, body { overflow-x: hidden; }
 .switch input { width: 20px; height: 20px; flex-shrink: 0; }
 .switch input:disabled + span { color: var(--muted); }
 #saveForms { margin: 4px 0 18px; }
+.rule.mine { border-color: var(--green); background: #fbfdf8; }
+#myCopies { margin: 8px 0; }

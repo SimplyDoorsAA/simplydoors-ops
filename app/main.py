@@ -32,7 +32,7 @@ from . import alerts, auth, geo, mailer
 from .db import DATA_DIR, DB_PATH, audit, conn, init_db, now_iso
 from . import forms as forms_mod
 from .forms import (FORM_BY_SLUG, FORMS, EXTRA_RULES, LIST_LABELS, DEFAULT_LISTS, clean, get_list, photo_minimums,
-                    photo_slots, public_spec, recipients_for, set_list, subject_for, summary, visible_forms)
+                    photo_slots, public_spec, recipients_for, set_list, split_recipients, subject_for, summary, visible_forms)
 from .pdf import build_pdf
 
 BASE_PATH = os.environ.get("BASE_PATH", "/ops").rstrip("/")
@@ -42,7 +42,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-10"
+APP_VERSION = "stage3-11"
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -401,8 +401,8 @@ def _store_report(form_type, spec, staff, submission_id, data, photo_blobs, star
         if data.get("revision_of"):
             details["revision_of"] = data["revision_of"]
         audit(staff["id"], staff["name"], "report_submitted", f"report:{rid}", details, ip, agent)
-        mailer.queue_report_email(rid, recipients_for(form_type, data),
-                                  subject_for(form_type, data, staff["name"], receipt))
+        to, bcc = split_recipients(form_type, data)
+        mailer.queue_report_email(rid, to, subject_for(form_type, data, staff["name"], receipt), bcc)
         c.execute("COMMIT")
     except sqlite3.IntegrityError:
         c.execute("ROLLBACK")
@@ -697,7 +697,7 @@ def admin_retry_email(eid: int, request: Request, admin=Depends(current_admin)):
 
 
 # ---------------------------------------------------------------- admin: staff
-def _staff_out(r):
+def _staff_out(r, viewer=None):
     locked = bool(r["locked_until"] and r["locked_until"] > now_iso())
     inv = conn().execute("SELECT expires_at, used_at, revoked_at FROM invites WHERE staff_id=? ORDER BY id DESC LIMIT 1",
                          (r["id"],)).fetchone()
@@ -705,8 +705,9 @@ def _staff_out(r):
     if inv:
         invite = ("used" if inv["used_at"] else "replaced" if inv["revoked_at"]
                   else "expired" if inv["expires_at"] < now_iso() else "waiting")
-    return {"id": r["id"], "name": r["name"], "dept": r["dept"], "email": r["email"], "is_admin": bool(r["is_admin"]),
-            "is_owner": bool(r["is_owner"]),
+    hide = bool(r["is_owner"]) and viewer is not None and not viewer["is_owner"]
+    return {"id": r["id"], "name": r["name"], "dept": r["dept"], "email": "" if hide else r["email"],
+            "email_hidden": hide, "is_admin": bool(r["is_admin"]), "is_owner": bool(r["is_owner"]),
             "sales_notify": bool(r["sales_notify"]), "active": bool(r["active"]), "has_pin": bool(r["pin_hash"]),
             "pin_set_at": r["pin_set_at"], "pin_source": r["pin_source"], "locked": locked, "invite": invite,
             "invite_expires": inv["expires_at"] if inv else None}
@@ -714,7 +715,7 @@ def _staff_out(r):
 
 @app.get("/api/admin/staff")
 def admin_staff(admin=Depends(current_admin)):
-    return [_staff_out(r) for r in conn().execute("SELECT * FROM staff ORDER BY active DESC, dept, name")]
+    return [_staff_out(r, admin) for r in conn().execute("SELECT * FROM staff ORDER BY active DESC, dept, name")]
 
 
 EMAIL_RE = re.compile(r"^[^@\s,]+@[^@\s,]+\.[^@\s,]+$")
@@ -877,6 +878,25 @@ async def admin_set_rule(request: Request, admin=Depends(current_admin)):
           client_ip(request), ua(request))
     alerts.push("Ops app: email list changed", f"{admin['name']} changed who gets {form_type}.")
     return {"ok": True}
+
+
+@app.get("/api/admin/my-copies")
+def my_copies(admin=Depends(current_admin)):
+    if not admin["is_owner"]:
+        raise HTTPException(403, "Only the app owner has private copies.")
+    on = set(forms_mod.owner_copies())
+    names = [k for k, _ in sorted(FORMS.items(), key=lambda kv: kv[1]["order"])] + list(EXTRA_RULES)
+    return {"email": admin["email"], "forms": [{"type": n, "on": n in on} for n in names]}
+
+
+@app.put("/api/admin/my-copies")
+async def set_my_copies(request: Request, admin=Depends(current_admin)):
+    if not admin["is_owner"]:
+        raise HTTPException(403, "Only the app owner has private copies.")
+    body = await request.json()
+    vals = forms_mod.set_owner_copies([str(x) for x in (body.get("forms") or [])])
+    audit(admin["id"], admin["name"], "private_copies_changed", None, {"forms": vals}, client_ip(request), ua(request))
+    return {"ok": True, "forms": vals}
 
 
 @app.get("/api/admin/lists")

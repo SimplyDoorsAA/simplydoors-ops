@@ -110,7 +110,8 @@ CREATE TABLE IF NOT EXISTS emails (
     last_error TEXT,
     created_at TEXT NOT NULL,
     next_try_at TEXT NOT NULL,
-    sent_at TEXT
+    sent_at TEXT,
+    bcc TEXT NOT NULL DEFAULT ''                -- private copies (the owner's), never shown in the email or to other admins
 );
 
 CREATE TABLE IF NOT EXISTS email_rules (
@@ -204,6 +205,30 @@ def init_db() -> None:
         c.execute("UPDATE staff SET is_owner=1, is_admin=1 WHERE name='Adem Atis'")
     for form, rcpts in SEED_RULES.items():
         c.execute("INSERT OR IGNORE INTO email_rules(form_type, recipients) VALUES (?,?)", (form, rcpts))
+    ecols = {r[1] for r in c.execute("PRAGMA table_info(emails)")}
+    if "bcc" not in ecols:
+        c.execute("ALTER TABLE emails ADD COLUMN bcc TEXT NOT NULL DEFAULT ''")
+    _move_owner_off_lists(c)
+
+
+def _move_owner_off_lists(c) -> None:
+    """Once: take the owner's address off the shared email lists (other admins can read those) and turn
+    each one into a private copy instead, so the owner still gets exactly what they got before."""
+    if c.execute("SELECT 1 FROM settings WHERE key='owner_copies'").fetchone():
+        return
+    row = c.execute("SELECT email FROM staff WHERE is_owner=1").fetchone()
+    owner = (row["email"] if row else "").strip().lower()
+    if not owner:
+        return
+    forms = []
+    for r in c.execute("SELECT form_type, recipients FROM email_rules").fetchall():
+        parts = [x.strip() for x in r["recipients"].split(",") if x.strip()]
+        keep = [x for x in parts if x.lower() != owner]
+        if len(keep) != len(parts):
+            forms.append(r["form_type"])
+            c.execute("UPDATE email_rules SET recipients=? WHERE form_type=?", (", ".join(keep), r["form_type"]))
+    c.execute("INSERT OR REPLACE INTO settings(key, value) VALUES ('owner_copies', ?)", (json.dumps(forms),))
+    audit(None, "system", "owner_copies_set_up", None, {"forms": forms})
 
 
 def audit(actor_id, actor_name, action, target=None, details=None, ip=None, user_agent=None) -> None:

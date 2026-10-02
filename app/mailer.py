@@ -32,12 +32,12 @@ def configured() -> bool:
     return bool(SMTP_USER and SMTP_PASSWORD)
 
 
-def queue_report_email(report_id: int, recipients: list[str], subject: str) -> None:
-    if not recipients:
+def queue_report_email(report_id: int, recipients: list[str], subject: str, bcc: list[str] = ()) -> None:
+    if not recipients and not bcc:
         audit(None, "system", "email_skipped_no_recipients", f"report:{report_id}")
         return
-    conn().execute("INSERT INTO emails(report_id, recipients, subject, created_at, next_try_at) VALUES (?,?,?,?,?)",
-                   (report_id, ", ".join(recipients), subject, now_iso(), now_iso()))
+    conn().execute("INSERT INTO emails(report_id, recipients, subject, created_at, next_try_at, bcc) VALUES (?,?,?,?,?,?)",
+                   (report_id, ", ".join(recipients), subject, now_iso(), now_iso(), ", ".join(bcc)))
     _wake.set()
 
 
@@ -73,7 +73,7 @@ def _send_one(email_row) -> None:
     r, data, photos = _report_bundle(email_row["report_id"])
     msg = EmailMessage()
     msg["From"] = formataddr((MAIL_FROM_NAME, SMTP_USER))
-    msg["To"] = email_row["recipients"]
+    msg["To"] = email_row["recipients"] or "undisclosed-recipients:;"
     msg["Reply-To"] = MAIL_REPLY_TO
     msg["Subject"] = email_row["subject"]
     msg.set_content(f"{r['form_type']} {r['receipt']} from {r['staff_name']}. The full report is attached as a PDF.")
@@ -88,7 +88,9 @@ def _send_one(email_row) -> None:
             s.ehlo()
         if SMTP_USER and SMTP_PASSWORD:
             s.login(SMTP_USER, SMTP_PASSWORD)
-        s.send_message(msg)
+        bcc = [x.strip() for x in (email_row["bcc"] or "").split(",") if x.strip()]
+        to = [x.strip() for x in email_row["recipients"].split(",") if x.strip()]
+        s.send_message(msg, to_addrs=to + bcc)        # private copies go out without appearing in any header
 
 
 def process_queue_once() -> None:
@@ -102,8 +104,10 @@ def process_queue_once() -> None:
             _send_one(e)
             c.execute("UPDATE emails SET status='sent', attempts=attempts+1, sent_at=?, last_error=NULL WHERE id=?",
                       (now_iso(), e["id"]))
-            audit(None, "system", "email_sent", f"email:{e['id']}",
-                  {"report_id": e["report_id"], "to": e["recipients"], "subject": e["subject"]})
+            details = {"report_id": e["report_id"], "to": e["recipients"], "subject": e["subject"]}
+            if e["bcc"]:
+                details["private_copies"] = len([x for x in e["bcc"].split(",") if x.strip()])
+            audit(None, "system", "email_sent", f"email:{e['id']}", details)
         except Exception as ex:  # noqa: BLE001
             attempts = e["attempts"] + 1
             status = "failed" if attempts >= MAX_ATTEMPTS else "pending"
@@ -119,10 +123,10 @@ def process_queue_once() -> None:
 
 
 def resend(report_id: int, actor, ip=None, agent=None) -> None:
-    from .forms import recipients_for, subject_for
+    from .forms import split_recipients, subject_for
     r, data, _ = _report_bundle(report_id)
-    rcpts = recipients_for(r["form_type"], data)
-    queue_report_email(report_id, rcpts, subject_for(r["form_type"], data, r["staff_name"], r["receipt"]) + " (resent)")
+    rcpts, bcc = split_recipients(r["form_type"], data)
+    queue_report_email(report_id, rcpts, subject_for(r["form_type"], data, r["staff_name"], r["receipt"]) + " (resent)", bcc)
     audit(actor["id"], actor["name"], "email_resend_requested", f"report:{report_id}", {"to": rcpts}, ip, agent)
 
 

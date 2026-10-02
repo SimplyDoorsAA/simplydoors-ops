@@ -476,6 +476,59 @@ def _rule(name: str) -> list[str]:
     return [r.strip() for r in (row["recipients"] if row else "").split(",") if r.strip()]
 
 
+def owner_email() -> str:
+    row = conn().execute("SELECT email FROM staff WHERE is_owner=1 AND active=1").fetchone()
+    return (row["email"] if row else "").strip()
+
+
+def owner_copies() -> list[str]:
+    try:
+        return [x for x in json.loads(get_setting("owner_copies") or "[]") if isinstance(x, str)]
+    except Exception:
+        return []
+
+
+def set_owner_copies(forms: list[str]) -> list[str]:
+    allowed = set(FORMS) | set(EXTRA_RULES)
+    vals = [f for f in forms if f in allowed]
+    set_setting("owner_copies", json.dumps(vals))
+    return vals
+
+
+def split_recipients(form_type: str, data: dict) -> tuple[list[str], list[str]]:
+    """(to, private copies). The owner's address is only ever shown in 'To' when someone typed it into an
+    email list on purpose; when it gets added automatically (sales rep picked, who measured, owner copy)
+    it goes as a private BCC copy instead."""
+    owner = owner_email().lower()
+    rule = _rule(form_type)
+    if form_type == "Vehicle Inspection" and data.get("defective"):
+        rule += _rule("Vehicle Inspection: when something is Defective")
+    auto = []
+    for f in FORMS[form_type]["fields"]:
+        if (f.get("notify") or f.get("target")) and data.get(f["key"] + "_email"):
+            auto.append(data[f["key"] + "_email"])
+    if form_type == "Measure Report":
+        auto += [e for e in (data.get("measured_by_email"), data.get("revised_by_email")) if e]
+    to, bcc = [], []
+    for e in rule:
+        to.append(e)
+    for e in auto:
+        (bcc if owner and e.lower() == owner else to).append(e)
+    if owner and (form_type in owner_copies() or (form_type == "Vehicle Inspection" and data.get("defective")
+                                                    and "Vehicle Inspection: when something is Defective" in owner_copies())):
+        bcc.append(owner_email())
+
+    def dedupe(xs, skip=()):
+        seen, out = {x.lower() for x in skip}, []
+        for x in xs:
+            if x.lower() not in seen:
+                seen.add(x.lower())
+                out.append(x)
+        return out
+    to = dedupe(to)
+    return to, dedupe(bcc, skip=to)
+
+
 def recipients_for(form_type: str, data: dict) -> list[str]:
     rcpts = _rule(form_type)
     for f in FORMS[form_type]["fields"]:

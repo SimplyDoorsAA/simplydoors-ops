@@ -37,7 +37,8 @@
     admin_denied: "Blocked from admin page", audit_exported: "Exported the activity log",
     audit_viewed: "Looked at the activity log", photo_viewed: "Opened a photo",
     app_started: "App started", staff_seeded: "Staff list created",
-    owner_set: "App owner set (server console)", list_changed: "Changed a pick list", forms_switched: "Changed which forms staff see", measure_reopened: "Reopened a measure",
+    owner_set: "App owner set (server console)", private_copies_changed: "Changed their private copies",
+    owner_copies_set_up: "Owner's address moved to private copies", list_changed: "Changed a pick list", forms_switched: "Changed which forms staff see", measure_reopened: "Reopened a measure",
   };
 
   // ------------------------------------------------------------ tabs
@@ -144,7 +145,7 @@
         rows.map(r => `<tr${r.active ? "" : ' style="opacity:.5"'}><td><b>${esc(r.name)}</b>
           ${r.is_owner ? ' <span class="badge ok">owner</span>' : r.is_admin ? ' <span class="badge ok">admin</span>' : ""}${r.sales_notify ? ' <span class="badge">sales list</span>' : ""}
           ${r.active ? "" : ' <span class="badge">turned off</span>'}${r.locked ? ' <span class="badge bad">locked</span>' : ""}</td>
-          <td class="hide-sm">${esc(r.dept)}</td><td class="hide-sm">${esc(r.email)}</td>
+          <td class="hide-sm">${esc(r.dept)}</td><td class="hide-sm">${r.email_hidden ? '<span class="muted">hidden</span>' : esc(r.email)}</td>
           <td>${r.has_pin ? `<span class="badge ok">set</span><div class="det">${esc(PIN_SRC[r.pin_source] || r.pin_source || "")}</div>` : '<span class="badge bad">none</span>'}
             ${r.invite === "waiting" ? `<div class="det">setup link sent, expires ${esc(shortDate(r.invite_expires))}</div>`
               : r.invite === "expired" ? '<div class="det">setup link expired</div>' : ""}</td>
@@ -194,7 +195,7 @@
       <form id="editForm" class="grid">
         <label>Name<input name="name" value="${esc(r.name)}" required></label>
         <label>Department<input name="dept" list="depts" value="${esc(r.dept)}" required></label>
-        <label>Work email<input name="email" type="email" value="${esc(r.email)}"></label>
+        ${r.email_hidden ? "" : `<label>Work email<input name="email" type="email" value="${esc(r.email)}"></label>`}
         <label class="inline"><input name="sales_notify" type="checkbox" ${r.sales_notify ? "checked" : ""}> Shows in "Notify a sales rep"</label>
         <label class="inline"><input name="is_admin" type="checkbox" ${r.is_admin ? "checked" : ""}> Admin (sees everything)</label>
         <label class="inline"><input name="active" type="checkbox" ${r.active ? "checked" : ""}> Can sign in</label>
@@ -210,7 +211,7 @@
       ev.preventDefault();
       const f = ev.target;
       const el = f.elements;
-      const body = { name: el.name.value, dept: el.dept.value, email: el.email.value,
+      const body = { name: el.name.value, dept: el.dept.value, ...(el.email ? { email: el.email.value } : {}),
         sales_notify: el.sales_notify.checked, is_admin: el.is_admin.checked, active: el.active.checked };
       if (body.is_admin && !r.is_admin && !confirm(`Make ${r.name} an admin? Admins can see every report, including disciplinary records, and the full activity log.`)) return;
       try { await api(`api/admin/staff/${r.id}`, { method: "PATCH", json: body }); toast("Saved"); closeSheet(); loadStaff(); } catch (e) { fail(e); }
@@ -238,10 +239,24 @@
   async function loadRules() {
     try {
       const rows = await api("api/admin/email-rules");
-      $("#rulesList").innerHTML = rows.map((r, i) => `<div class="rule"><h3>${esc(r.form_type)} ${r.live ? '<span class="badge ok">live</span>' : '<span class="badge">coming later</span>'}</h3>
+      let mine = "";
+      if (amOwner) {
+        const m = await api("api/admin/my-copies");
+        mine = `<div class="rule mine"><h3>My private copies <span class="badge">only you see this</span></h3>
+          <p class="det">You get a copy of the reports ticked here. Copies go out as BCC, so your address (${esc(m.email)})
+          isn't shown to anyone, not in the email and not on these lists. If you type your address into a list below, it will show there.</p>
+          <div id="myCopies">${m.forms.map(f => `<label class="switch"><input type="checkbox" value="${esc(f.type)}" ${f.on ? "checked" : ""}><span>${esc(f.type)}</span></label>`).join("")}</div>
+          <button class="mini primary" id="saveMine" type="button">Save my copies</button></div>`;
+      }
+      $("#rulesList").innerHTML = mine + rows.map((r, i) => `<div class="rule"><h3>${esc(r.form_type)} ${r.live ? '<span class="badge ok">live</span>' : '<span class="badge">coming later</span>'}</h3>
         <textarea data-form="${esc(r.form_type)}" aria-label="Recipients for ${esc(r.form_type)}">${esc(r.recipients)}</textarea>
         ${r.extra ? `<div class="det">${esc(r.extra)}</div>` : ""}<button class="mini primary" data-save="${i}" type="button">Save</button></div>`).join("");
       $$("#rulesList textarea").forEach(ta => { ta.style.height = "auto"; ta.style.height = (ta.scrollHeight + 4) + "px"; });
+      const sm = $("#saveMine");
+      if (sm) sm.onclick = async () => {
+        const forms = $$("#myCopies input:checked").map(i => i.value);
+        try { await api("api/admin/my-copies", { method: "PUT", json: { forms } }); toast("Saved. Only you can see this."); } catch (e) { fail(e); }
+      };
       $$("[data-save]").forEach(b => b.onclick = async () => {
         const ta = b.parentElement.querySelector("textarea");
         try { await api("api/admin/email-rules", { method: "PUT", json: { form_type: ta.dataset.form, recipients: ta.value } }); toast("Saved"); loadRules(); }

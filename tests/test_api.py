@@ -412,12 +412,13 @@ def test_disciplinary_goes_to_employee_and_is_confidential(client):
             "consequences": "Further action"}
     r = client.post("/ops/api/reports/disciplinary", data=data, headers=H)
     assert r.status_code == 200, r.text
-    e = conn().execute("SELECT subject, recipients FROM emails ORDER BY id DESC LIMIT 1").fetchone()
+    e = conn().execute("SELECT subject, recipients, bcc FROM emails ORDER BY id DESC LIMIT 1").fetchone()
     assert e[0].startswith("CONFIDENTIAL") and "Jaime Mendoza" in e[0]
     to = {x.strip() for x in e[1].split(",")}
-    assert {"adem@simplydoors.com", "paz@simplydoors.com", "admin@simplydoors.com"} <= to
+    assert {"paz@simplydoors.com", "admin@simplydoors.com"} <= to
+    assert "adem@simplydoors.com" not in to and e[2] == "adem@simplydoors.com"   # owner: private copy only
     assert "lupes@simplydoors.com" not in to
-    assert len(to) == 4  # plus the employee
+    assert len(to) == 3  # plus the employee
     bad = client.post("/ops/api/reports/disciplinary", data={**data, "submission_id": "sub-dsc-0002", "target": "99999"}, headers=H)
     assert bad.status_code == 422
 
@@ -606,3 +607,40 @@ def test_owner_can_manage_admins_but_not_the_reverse(client):
     # ownership can't be granted from the app
     client.patch(f"/ops/api/admin/staff/{paz['id']}", json={"is_owner": True}, headers=H)
     assert conn().execute("SELECT is_owner FROM staff WHERE id=?", (paz["id"],)).fetchone()[0] == 0
+
+
+
+def test_owner_address_stays_private(client, smtp):
+    # the owner's address was moved off every shared list, into private copies
+    rules = " ".join(r[0] for r in conn().execute("SELECT recipients FROM email_rules"))
+    assert "adem@" not in rules
+    login(client, "Adem Atis", "246810")
+    mine = client.get("/ops/api/admin/my-copies").json()
+    assert any(f["type"] == "Receiving Report" and f["on"] for f in mine["forms"])
+    # Paz can't see the owner's email or the private-copy settings
+    login(client, "Paz Galambos", "112233")
+    staff = client.get("/ops/api/admin/staff").json()
+    me = next(x for x in staff if x["name"] == "Adem Atis")
+    assert me["email"] == "" and me["email_hidden"] and me["is_owner"]
+    assert client.get("/ops/api/admin/my-copies").status_code == 403
+    # a sent email delivers to the owner without the address in any header
+    RECEIVED.clear()
+    r = receiving(client, "sub-priv-0001")
+    assert r.status_code == 200
+    mailer.SMTP_USER, mailer.SMTP_PASSWORD, mailer.SMTP_STARTTLS = "", "", False
+    orig = mailer.configured
+    mailer.configured = lambda: True
+    try:
+        mailer.process_queue_once()
+    finally:
+        mailer.configured = orig
+    got = RECEIVED[-1]
+    assert "adem@simplydoors.com" in got["to"]                      # delivered
+    head = got["data"].split(b"\r\n\r\n", 1)[0].lower()
+    assert b"adem@simplydoors.com" not in head                     # but not visible in To/Cc
+    # if the owner types the address into a list on purpose, it shows
+    login(client, "Adem Atis", "246810")
+    client.put("/ops/api/admin/email-rules", json={"form_type": "End of Shift", "recipients": "adem@simplydoors.com, lupes@simplydoors.com"}, headers=H)
+    from app.forms import split_recipients
+    to, bcc = split_recipients("End of Shift", {})
+    assert "adem@simplydoors.com" in to and "adem@simplydoors.com" not in bcc
