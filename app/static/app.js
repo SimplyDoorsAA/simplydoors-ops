@@ -341,13 +341,28 @@
   $("#obFinish").addEventListener("click", () => showHome());
 
   // ------------------------------------------------------------ home
+  const ic = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+  const FORM_ICONS = {
+    receiving: ic('<path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 11v10"/>'),
+    delivery: ic('<path d="M2 6h11v10H2zM13 9h4l4 4v3h-8z"/><circle cx="6" cy="18" r="2"/><circle cx="17" cy="18" r="2"/>'),
+    eos: ic('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
+    inspection: ic('<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 3v2h6V3M8.5 12l2 2 4-4M8 17h8"/>'),
+    vincident: ic('<path d="M3 13l2-5h11l3 5v4H3z"/><circle cx="7" cy="17" r="1.6"/><circle cx="16" cy="17" r="1.6"/><path d="M19 3l-2 3h3l-2 3"/>'),
+    incident: ic('<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/>'),
+    disciplinary: ic('<path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h7M9 17h5"/>'),
+    measure: ic('<path d="M3 17L17 3l4 4L7 21z"/><path d="M7 13l2 2M10 10l2 2M13 7l2 2"/>'),
+    _: ic('<rect x="4" y="4" width="16" height="16" rx="2"/>'),
+  };
+
   async function showHome() {
     show("viewHome");
     updateGeoNote();
     const cards = $("#formCards");
-    cards.innerHTML = (me.forms || []).map(f => `<button class="card${f.admin_only ? " admin" : ""}" type="button" data-open="${esc(f.slug)}">
-        <span class="card-title">${esc(f.type)}${me.is_admin && !f.staff_can_see ? ' <span class="pillnote">hidden from staff</span>' : ""}</span>
-        <span class="card-sub">${esc(f.blurb)}</span></button>`).join("") || `<p class="muted">No forms are switched on yet.</p>`;
+    cards.innerHTML = (me.forms || []).map(f => `<button class="card tilecard${f.admin_only ? " admin" : ""}" type="button" data-open="${esc(f.slug)}" title="${esc(f.blurb)}">
+        <span class="card-icon" aria-hidden="true">${FORM_ICONS[f.slug] || FORM_ICONS._}</span>
+        <span class="card-title">${esc(f.type)}</span>
+        <span class="card-sub">${esc(f.blurb)}</span>
+        ${me.is_admin && !f.staff_can_see ? '<span class="pillnote">hidden from staff</span>' : ""}</button>`).join("") || `<p class="muted">No forms are switched on yet.</p>`;
     const list = $("#recentList");
     const pending = (await outboxAll()).filter(e => e.userId === me.id);
     let rows = pending.map(e => `<li><span>${esc(e.type)}</span><span class="tag wait">${e.error ? "Needs fixing" : "Waiting to send"}</span></li>`);
