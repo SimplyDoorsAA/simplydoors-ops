@@ -617,11 +617,11 @@ def test_owner_address_stays_private(client, smtp):
     login(client, "Adem Atis", "246810")
     mine = client.get("/ops/api/admin/my-copies").json()
     assert any(f["type"] == "Receiving Report" and f["on"] for f in mine["forms"])
-    # Paz can't see the owner's email or the private-copy settings
+    # the staff list shows the owner's email like anyone's; the private-copy settings are owner-only
     login(client, "Paz Galambos", "112233")
     staff = client.get("/ops/api/admin/staff").json()
     me = next(x for x in staff if x["name"] == "Adem Atis")
-    assert me["email"] == "" and me["email_hidden"] and me["is_owner"]
+    assert me["email"] == "adem@simplydoors.com" and me["is_owner"]
     assert client.get("/ops/api/admin/my-copies").status_code == 403
     # a sent email delivers to the owner without the address in any header
     RECEIVED.clear()

@@ -145,7 +145,7 @@
         rows.map(r => `<tr${r.active ? "" : ' style="opacity:.5"'}><td><b>${esc(r.name)}</b>
           ${r.is_owner ? ' <span class="badge ok">owner</span>' : r.is_admin ? ' <span class="badge ok">admin</span>' : ""}${r.sales_notify ? ' <span class="badge">sales list</span>' : ""}
           ${r.active ? "" : ' <span class="badge">turned off</span>'}${r.locked ? ' <span class="badge bad">locked</span>' : ""}</td>
-          <td class="hide-sm">${esc(r.dept)}</td><td class="hide-sm">${r.email_hidden ? '<span class="muted">hidden</span>' : esc(r.email)}</td>
+          <td class="hide-sm">${esc(r.dept)}</td><td class="hide-sm">${esc(r.email)}</td>
           <td>${r.has_pin ? `<span class="badge ok">set</span><div class="det">${esc(PIN_SRC[r.pin_source] || r.pin_source || "")}</div>` : '<span class="badge bad">none</span>'}
             ${r.invite === "waiting" ? `<div class="det">setup link sent, expires ${esc(shortDate(r.invite_expires))}</div>`
               : r.invite === "expired" ? '<div class="det">setup link expired</div>' : ""}</td>
@@ -195,7 +195,7 @@
       <form id="editForm" class="grid">
         <label>Name<input name="name" value="${esc(r.name)}" required></label>
         <label>Department<input name="dept" list="depts" value="${esc(r.dept)}" required></label>
-        ${r.email_hidden ? "" : `<label>Work email<input name="email" type="email" value="${esc(r.email)}"></label>`}
+        <label>Work email<input name="email" type="email" value="${esc(r.email)}"></label>
         <label class="inline"><input name="sales_notify" type="checkbox" ${r.sales_notify ? "checked" : ""}> Shows in "Notify a sales rep"</label>
         <label class="inline"><input name="is_admin" type="checkbox" ${r.is_admin ? "checked" : ""}> Admin (sees everything)</label>
         <label class="inline"><input name="active" type="checkbox" ${r.active ? "checked" : ""}> Can sign in</label>

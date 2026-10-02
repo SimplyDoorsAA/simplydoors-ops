@@ -42,7 +42,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-11"
+APP_VERSION = "stage3-12"
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -705,9 +705,8 @@ def _staff_out(r, viewer=None):
     if inv:
         invite = ("used" if inv["used_at"] else "replaced" if inv["revoked_at"]
                   else "expired" if inv["expires_at"] < now_iso() else "waiting")
-    hide = bool(r["is_owner"]) and viewer is not None and not viewer["is_owner"]
-    return {"id": r["id"], "name": r["name"], "dept": r["dept"], "email": "" if hide else r["email"],
-            "email_hidden": hide, "is_admin": bool(r["is_admin"]), "is_owner": bool(r["is_owner"]),
+    return {"id": r["id"], "name": r["name"], "dept": r["dept"], "email": r["email"],
+            "is_admin": bool(r["is_admin"]), "is_owner": bool(r["is_owner"]),
             "sales_notify": bool(r["sales_notify"]), "active": bool(r["active"]), "has_pin": bool(r["pin_hash"]),
             "pin_set_at": r["pin_set_at"], "pin_source": r["pin_source"], "locked": locked, "invite": invite,
             "invite_expires": inv["expires_at"] if inv else None}
