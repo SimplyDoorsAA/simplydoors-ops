@@ -567,3 +567,19 @@ def test_measure_vendor_style_door_fields(client):
     r = _measure(client, "sub-msr-v004", [{**base, "config": "Sgl w/ 1 SL", "handing": "Right Hand Outswing", "sidelite": "Right"}])
     it = json.loads(conn().execute("SELECT data FROM reports WHERE receipt=?", (r.json()["receipt"],)).fetchone()[0])["items"][0]
     assert (it["config"], it["handing"], it["swing"], it["sidelite"]) == ("Single w/ 1 Sidelite", "Right", "OutSwing", "Right")
+
+
+def test_measure_slab_only_bore_and_hinges(client):
+    login(client, "Adem Atis", "246810")
+    slab = {**_door(), "config": "Slab Only", "handing": "Left", "swing": "InSwing", "h": {"w": "80", "f": ""},
+            "bore_mode": "Custom", "bore_at": {"w": "44", "f": ""},
+            "hinges": [{"w": "8", "f": "1/4"}, {"w": "38", "f": ""}, {"w": "67", "f": "3/4"}, {"w": "", "f": ""}]}
+    r = _measure(client, "sub-msr-s001", [slab])
+    assert r.status_code == 200, r.text
+    it = json.loads(conn().execute("SELECT data FROM reports WHERE receipt=?", (r.json()["receipt"],)).fetchone()[0])["items"][0]
+    assert len(it["hinges"]) == 3 and it["bore_at"]["w"] == "44"
+    # bore/hinges are dropped for anything that isn't a slab
+    r = _measure(client, "sub-msr-s002", [{**slab, "config": "Single Door"}])
+    it = json.loads(conn().execute("SELECT data FROM reports WHERE receipt=?", (r.json()["receipt"],)).fetchone()[0])["items"][0]
+    assert it["hinges"] == [] and it["bore_mode"] == ""
+    assert _measure(client, "sub-msr-s003", [{**slab, "handing": "Fixed"}]).status_code == 422   # slab: left/right only

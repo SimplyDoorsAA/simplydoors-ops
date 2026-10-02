@@ -17,11 +17,12 @@ PHOTO_LABELS = {
     "window": ["Outside, whole window", "Inside, whole window", "Sill / trim close-up", "Extra"],
 }
 
-CONFIGS = ["Single Door", "Double Door", "Single w/ 1 Sidelite", "Single w/ 2 Sidelites", "Sliding Glass Door"]
+CONFIGS = ["Single Door", "Slab Only", "Double Door", "Single w/ 1 Sidelite", "Single w/ 2 Sidelites", "Sliding Glass Door"]
 SINGLE_HANDING = ["Left", "Right", "Fixed"]
 HANDINGS = {
     "Double Door": ["Left Hand Active", "Right Hand Active", "LH/Fixed", "RH/Fixed", "Fixed/LH", "Fixed/RH", "Fixed/Fixed"],
     "Sliding Glass Door": ["Left Slide", "Right Slide"],
+    "Slab Only": ["Left", "Right"],
     "_default": SINGLE_HANDING,
 }
 # answers saved by the first version of this app, mapped onto the vendor-style fields
@@ -72,6 +73,13 @@ DOOR_FIELDS = [
      "options_by": HANDINGS},
     {"key": "swing", "label": "Swing", "type": "pick", "icon": "swing", "options": ["InSwing", "OutSwing"],
      "hide_if": {"config": ["Sliding Glass Door"], "handing": ["Fixed", "Fixed/Fixed"]}},
+    # slab only: where to bore for the lock and cut the hinges, measured from the TOP of the slab down
+    {"key": "bore_mode", "label": "Bore height", "type": "pick", "icon": "none", "options": ["Standard", "Custom"],
+     "show_if": {"config": ["Slab Only"]}},
+    {"key": "bore_at", "label": "Bore location (from top of slab down)", "type": "size",
+     "show_if": {"config": ["Slab Only"], "bore_mode": ["Custom"]}},
+    {"key": "hinges", "label": "Hinge locations (from top of slab down)", "type": "hinges", "count": 4,
+     "show_if": {"config": ["Slab Only"]}},
     {"key": "dim_type", "label": "Size type", "type": "select", "options": ["Unit Size", "Rough Opening"], "default": "Unit Size"},
     {"key": "w", "label": "Width", "type": "size", "required": True},
     {"key": "h", "label": "Height", "type": "size", "required": True},
@@ -194,8 +202,15 @@ def clean(raw: dict) -> tuple[dict, list[str]]:
                 o[k] = _txt(v, 120)
                 if o[k] and not f.get("custom") and o[k] not in f["options"]:
                     errors.append(f"{label}: pick from the list.")
+            elif ft in ("size", "hinges") and not pick_shown(f, o):
+                o[k] = {"w": "", "f": ""} if ft == "size" else []
             elif ft == "size":
-                o[k] = _size(v, f"{name} {f['label'].lower()}", errors, f.get("required", False))
+                o[k] = _size(v, f"{name} {f['label'].split(' (')[0].lower()}", errors, f.get("required", False))
+            elif ft == "hinges":
+                hs = v if isinstance(v, list) else []
+                o[k] = [_size(h, f"{name} hinge {j}", errors) for j, h in enumerate(hs[:f["count"]], 1)]
+                while o[k] and not o[k][-1]["w"]:
+                    o[k].pop()
             elif ft == "qty":
                 q = str(v or "1").strip()
                 if not re.fullmatch(r"\d{1,2}", q) or int(q) < 1:
@@ -257,12 +272,41 @@ def item_summary(it: dict) -> str:
     return " · ".join(p for p in parts if p)
 
 
+def _dec(s) -> str:
+    """36 1/2 -> 36.5 (the decimal the door vendors' order forms ask for)."""
+    try:
+        n = float(s["w"]) + (eval_frac(s["f"]) if s.get("f") else 0)
+        return f"{n:g}"
+    except Exception:
+        return ""
+
+
+def eval_frac(f: str) -> float:
+    a, b = f.split("/")
+    return int(a) / int(b)
+
+
+def standard_bore(it: dict) -> str:
+    """Standard bore = 36" up from the bottom, i.e. slab height minus 36, measured from the top."""
+    h = it.get("h") or {}
+    try:
+        top = float(h["w"]) + (eval_frac(h["f"]) if h.get("f") else 0) - 36
+        return f'{top:g}" from top' if top > 0 else ""
+    except Exception:
+        return ""
+
+
 def item_rows(it: dict) -> list[tuple[str, str]]:
     rows = []
     for f in ITEM_FIELDS[it["type"]]:
         k, ft, v = f["key"], f["type"], it.get(f["key"])
+        if k == "bore_mode" and v:
+            v = f"Standard ({standard_bore(it)})" if v == "Standard" and standard_bore(it) else v
         if ft == "size":
-            v = fmt_size(v)
+            v = fmt_size(v) + ((f" ({_dec(v)})" if v.get("f") else "") + " from top" if k == "bore_at" and fmt_size(v) else "")
+        elif ft == "hinges":
+            hs = [f"#{j} {fmt_size(h)}" + (f" ({_dec(h)})" if h.get("f") else "") for j, h in enumerate(v or [], 1) if h.get("w")]
+            v = ("from top: " + ", ".join(hs)) if hs else ""
         elif ft == "points":
             v = "\n".join(f'{i}) {fmt_size(p["w"])} W × {fmt_size(p["h"])} H' for i, p in enumerate(v or [], 1))
         elif ft == "toggle":

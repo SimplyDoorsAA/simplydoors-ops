@@ -984,7 +984,11 @@
   // ---- vendor-style door pictures: elevations drawn from the EXTERIOR, plus a plan view for swing
   // leaf kinds: L = hinged left (knob right), R = hinged right, F = fixed, Li / Ri = inactive leaf hinged left / right
   function leafSVG(x, w, kind) {
-    const y = 18, h = 82, out = [`<rect x="${x}" y="${y}" width="${w}" height="${h}" class="ic-leaf"/>`,
+    const y = 18, h = 82;
+    if (kind === "S") return `<rect x="${x}" y="${y}" width="${w}" height="${h}" class="ic-leaf ic-slab"/>
+      <circle cx="${x + w - 6}" cy="${y + h * 0.6}" r="3.2" class="ic-bore"/>
+      ${[y + 10, y + h / 2, y + h - 10].map(hy => `<rect x="${x}" y="${hy - 4}" width="3" height="8" class="ic-cut"/>`).join("")}`;
+    const out = [`<rect x="${x}" y="${y}" width="${w}" height="${h}" class="ic-leaf"/>`,
       `<rect x="${x + w * 0.22}" y="${y + 9}" width="${w * 0.56}" height="${h * 0.55}" class="ic-glass"/>`];
     const hingeX = /^L/.test(kind) ? x + 1.5 : /^R/.test(kind) ? x + w - 1.5 : null;
     if (hingeX !== null) [y + 10, y + h / 2, y + h - 10].forEach(hy => out.push(`<line x1="${hingeX}" y1="${hy - 4}" x2="${hingeX}" y2="${hy + 4}" class="ic-hinge"/>`));
@@ -1024,13 +1028,19 @@
     "Fixed/LH": ["F", "L"], "Fixed/RH": ["F", "R"], "Fixed/Fixed": ["F", "F"] };
   function slOf(c) { return c.config === "Single w/ 2 Sidelites" ? "both" : c.config === "Single w/ 1 Sidelite" ? (c.sidelite || "Left") : null; }
   const ICONS = {
-    config: (o) => o === "Single Door" ? unitSVG(["L"]) : o === "Double Door" ? unitSVG(["L", "Ri"]) : o === "Single w/ 1 Sidelite" ? unitSVG(["L"], "Left")
+    config: (o) => o === "Single Door" ? unitSVG(["L"]) : o === "Slab Only" ? unitSVG(["S"], null, "NO FRAME") : o === "Double Door" ? unitSVG(["L", "Ri"]) : o === "Single w/ 1 Sidelite" ? unitSVG(["L"], "Left")
       : o === "Single w/ 2 Sidelites" ? unitSVG(["L"], "both") : slideSVG(null),
     sidelite: (o) => unitSVG(["L"], o),
     handing: (o, c) => c.config === "Sliding Glass Door" ? slideSVG(o === "Left Slide" ? "Left" : "Right")
       : c.config === "Double Door" ? unitSVG(DOUBLE_LEAVES[o] || ["F", "F"]) : unitSVG([o === "Left" ? "L" : o === "Right" ? "R" : "F"], slOf(c)),
     swing: (o) => swingSVG(o),
+    none: () => "",
   };
+  // standard bore = 36" up from the bottom, shown the way the vendor asks: inches from the TOP of the slab
+  function standardBore(c) {
+    const h = c.h && c.h.w ? inches(c.h) : 0;
+    return h > 36 ? `Standard ${+(h - 36).toFixed(3)}"` : "Standard";
+  }
   const pickOptions = (f, c) => f.options_by ? (f.options_by[c.config] || f.options_by._default) : f.options;
   function pickShown(f, c) {
     for (const [k, vals] of Object.entries(f.show_if || {})) if (!vals.includes(c[k])) return false;
@@ -1039,8 +1049,9 @@
   }
   function pickHTML(f, c) {
     const opts = pickOptions(f, c), v = c[f.key] || "", custom = f.custom && ((v && !opts.includes(v)) || c[f.key + "__custom"]);
-    const tiles = opts.map(o => `<button type="button" class="handopt${!custom && o === v ? " on" : ""}" role="radio" aria-checked="${!custom && o === v}" data-pickopt="${esc(o)}">
-        ${ICONS[f.icon](o, c)}<span>${esc(o)}</span></button>`).join("");
+    const text = (o) => f.key === "bore_mode" && o === "Standard" ? standardBore(c) : o;
+    const tiles = opts.map(o => `<button type="button" class="handopt${f.icon === "none" ? " textonly" : ""}${!custom && o === v ? " on" : ""}" role="radio" aria-checked="${!custom && o === v}" data-pickopt="${esc(o)}">
+        ${ICONS[f.icon](o, c)}<span>${esc(text(o))}</span></button>`).join("");
     const other = f.custom ? `<button type="button" class="handopt other-opt${custom ? " on" : ""}" role="radio" aria-checked="${!!custom}" data-pickopt="Custom"><span class="big">✎</span><span>Other</span></button>` : "";
     return `<div class="mf wide" data-pick="${esc(f.key)}"><span class="szl">${esc(f.label)}</span>
       ${f.key === "handing" ? `<p class="muted small hhelp">Stand <b>outside</b> facing the door. ${c.config === "Sliding Glass Door" ? "Pick the side of the panel that moves." : "Hinges on your left = Left."}</p>` : ""}
@@ -1084,6 +1095,15 @@
       if (w && h && w > h && w <= 100) out.push(`Width is bigger than height. Swapped?`);
       if (c.config === "Single Door" && w > 44 && w <= 100) out.push(`${fmtSize(c.w)} is wide for a single door. Double or sidelites?`);
       if (c.config === "Double Door" && w && w < 48) out.push(`${fmtSize(c.w)} is narrow for a double door.`);
+      if (c.config === "Slab Only") {
+        const hs = (c.hinges || []).filter(x => x.w), nums = hs.map(inches);
+        if (hs.length < 3) out.push(`Only ${hs.length} hinge location${hs.length === 1 ? "" : "s"}. Slabs usually need 3.`);
+        if (nums.some((n, i) => i && n <= nums[i - 1])) out.push("Hinge locations should go down the slab in order (1 at the top).");
+        if (h && nums.some(n => n >= h)) out.push("A hinge location is past the bottom of the slab.");
+        if (c.bore_mode === "Custom" && !(c.bore_at && c.bore_at.w)) out.push("Custom bore picked but no bore location entered.");
+        if (c.bore_mode === "Custom" && h && inches(c.bore_at) >= h) out.push("Bore location is past the bottom of the slab.");
+        if (c.bore_mode === "Standard" && !h) out.push("Enter the height so the standard bore can be worked out.");
+      }
       mFields("door").filter(f => f.type === "pick" && pickShown(f, c) && !c[f.key]).forEach(f => out.push(`${f.label.replace(" (exterior view)", "")} not picked yet.`));
       both(c.w, "Width"); both(c.h, "Height");
     } else {
@@ -1108,6 +1128,7 @@
   }
 
   function mFieldHTML(f, c) {
+    if ((f.show_if || f.hide_if) && f.type !== "pick" && !pickShown(f, c)) return "";
     const v = c[f.key], k = esc(f.key), lab = esc(f.label);
     switch (f.type) {
       case "text": return `<div class="mf wide"><label>${lab}</label><input type="text" data-k="${k}" maxlength="200" value="${esc(v)}"${f.placeholder ? ` placeholder="${esc(f.placeholder)}"` : ""}></div>`;
@@ -1120,6 +1141,9 @@
       case "points": return `<div class="mf wide"><span class="szl">${lab} *</span><div class="mpts">${(v && v.length ? v : [blankPoint()]).map(pointRow).join("")}</div>
         <button type="button" class="link" data-addpt>+ Add another size</button></div>`;
       case "pick": return pickShown(f, c) ? pickHTML(f, c) : "";
+      case "hinges": return `<div class="mf wide" data-hinges><span class="szl">${lab}</span>
+        <p class="muted small hhelp">Measure from the <b>top of the slab down</b> to the top of each hinge.</p>` +
+        Array.from({ length: f.count }, (_, j) => sizeCell((v || [])[j], `Hinge ${j + 1}${j === 3 ? " (if there is one)" : ""}`, `data-hg="${j + 1}"`, false)).join("") + `</div>`;
       case "select": {
         const custom = f.custom && v && !f.options.includes(v) || c[f.key + "__custom"];
         const opts = (f.default ? "" : `<option value="">Pick…</option>`) + f.options.map(o =>
@@ -1159,13 +1183,17 @@
     mFields(c.type).forEach(f => {
       const k = f.key;
       if (f.type === "size") c[k] = readSize(el, `data-sz="${k}"`);
+      else if (f.type === "hinges") {
+        c[k] = Array.from({ length: f.count }, (_, j) => readSize(el, `data-hg="${j + 1}"`));
+        while (c[k].length && !c[k][c[k].length - 1].w) c[k].pop();
+      }
       else if (f.type === "points") c[k] = $$(".mpt", el).map(r => ({ w: readSize(r, 'data-pt="w"'), h: readSize(r, 'data-pt="h"') }));
       else if (f.type === "labor") c[k] = $$("[data-labor]", el).filter(x => x.checked).map(x => x.value);
       else if (f.type === "toggle") c[k] = $(`[data-k="${k}"]`, el).checked;
       else if (f.type === "pick") {
         const hid = $(`input[type=hidden][data-k="${k}"]`, el);
-        c[k + "__custom"] = !!hid && hid.value === "Custom";
-        c[k] = !hid ? "" : hid.value === "Custom" ? $(`[data-kc="${k}"]`, el).value.trim() : hid.value;
+        c[k + "__custom"] = !!f.custom && !!hid && hid.value === "Custom";     // "Other (type it)", only on pickers that allow it
+        c[k] = !hid ? "" : c[k + "__custom"] ? $(`[data-kc="${k}"]`, el).value.trim() : hid.value;
       }
       else if (f.type === "select" && f.custom) {
         const sel = $(`[data-k="${k}"]`, el);
@@ -1313,7 +1341,11 @@
     const sz = e.target.closest(".sz");
     if (sz) { const w = $('[data-part="w"]', sz).value.trim(), f = $('[data-part="f"]', sz).value; $(".szval", sz).textContent = fmtSize({ w, f }); }
     const card = e.target.closest(".mcard");
-    if (card) { card.classList.remove("invalid"); updateHead(card); }
+    if (card) {
+      card.classList.remove("invalid"); updateHead(card);
+      const std = $('[data-pick="bore_mode"] [data-pickopt="Standard"] span', card);
+      if (std && e.target.matches('[data-sz="h"]')) std.textContent = standardBore(readCard(card));
+    }
     mSaveDraftSoon();
   });
   // tapping a number box selects what's there, so typing replaces it (qty "1" doesn't become "12")
@@ -1364,7 +1396,7 @@
     if (po) {
       const wrap = po.closest("[data-pick]"), key = wrap.dataset.pick;
       $("input[type=hidden][data-k]", wrap).value = po.dataset.pickopt;
-      if (po.dataset.pickopt === "Custom") {
+      if (po.dataset.pickopt === "Custom" && $("[data-kc]", wrap)) {
         $$(".handopt", wrap).forEach(b => b.classList.toggle("on", b === po));
         const other = $("[data-kc]", wrap); other.classList.remove("hidden"); other.focus();
         updateHead(card); mSaveDraftSoon(); return;

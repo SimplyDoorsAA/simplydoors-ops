@@ -279,3 +279,8 @@ label.tog input { width: 24px; height: 24px; accent-color: var(--red); }
 .ic-f { font-size: 7px; font-weight: 700; fill: #8a949e; text-anchor: middle; }
 .ic-arrow { fill: none; stroke: #2f6f1f; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
 .handopt span:last-child { text-align: center; line-height: 1.15; }
+.handopt.textonly { min-height: 54px; font-size: 16px; }
+.hand:has(.textonly) { grid-template-columns: 1fr 1fr; }
+.ic-slab { stroke-dasharray: 4 2; }
+.ic-bore { fill: #fff; stroke: #c62828; stroke-width: 1.6; }
+.ic-cut { fill: #2f6f1f; }
