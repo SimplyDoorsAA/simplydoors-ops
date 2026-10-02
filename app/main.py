@@ -42,7 +42,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-17"
+APP_VERSION = "stage3-18"
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -271,12 +271,26 @@ def logout(request: Request):
     return resp
 
 
+STUDIO_URL = os.environ.get("STUDIO_URL", "https://optiplex-ai.tailf0af63.ts.net/").strip()
+STUDIO_DEPTS = ("sales", "admin", "office")
+
+
+def shows_studio(staff) -> bool:
+    """The Simply Studio tile: per person when an admin set it, otherwise admins and office/sales people."""
+    if not STUDIO_URL:
+        return False
+    if staff["studio_link"] is not None:
+        return bool(staff["studio_link"])
+    return bool(staff["is_admin"]) or (staff["dept"] or "").strip().lower() in STUDIO_DEPTS
+
+
 @app.get("/api/me")
 def me(staff=Depends(current_staff)):
     return {
         "id": staff["id"], "name": staff["name"], "dept": staff["dept"], "is_admin": bool(staff["is_admin"]),
         "is_owner": bool(staff["is_owner"]),
         "test_mode": bool(staff["is_owner"]) and get_setting("owner_test_mode") == "1",
+        "studio_url": STUDIO_URL if shows_studio(staff) else None,
         "forms": [public_spec(t) for t in visible_forms(staff)],
     }
 
@@ -810,6 +824,7 @@ def _staff_out(r, viewer=None):
     return {"id": r["id"], "name": r["name"], "dept": r["dept"], "email": r["email"],
             "is_admin": bool(r["is_admin"]), "is_owner": bool(r["is_owner"]),
             "sales_notify": bool(r["sales_notify"]), "active": bool(r["active"]), "has_pin": bool(r["pin_hash"]),
+            "studio": shows_studio(r),
             "pin_set_at": r["pin_set_at"], "pin_source": r["pin_source"], "locked": locked, "invite": invite,
             "invite_expires": inv["expires_at"] if inv else None}
 
@@ -842,6 +857,8 @@ def _validate_staff(body: dict, partial: bool):
     for k in ("is_admin", "sales_notify", "active"):
         if k in body:
             out[k] = 1 if body[k] else 0
+    if "studio_link" in body:
+        out["studio_link"] = 1 if body["studio_link"] else 0
     return out
 
 

@@ -218,6 +218,7 @@
         <label>Department<input name="dept" list="depts" value="${esc(r.dept)}" required></label>
         <label>Work email<input name="email" type="email" value="${esc(r.email)}"></label>
         <label class="inline"><input name="sales_notify" type="checkbox" ${r.sales_notify ? "checked" : ""}> Shows in "Notify a sales rep"</label>
+        <label class="inline"><input name="studio_link" type="checkbox" ${r.studio ? "checked" : ""}> Shows the Simply Studio tile</label>
         <label class="inline"><input name="is_admin" type="checkbox" ${r.is_admin ? "checked" : ""}> Admin (sees everything)</label>
         <label class="inline"><input name="active" type="checkbox" ${r.active ? "checked" : ""}> Can sign in</label>
         <button class="mini primary" type="submit">Save changes</button>
@@ -233,7 +234,8 @@
       const f = ev.target;
       const el = f.elements;
       const body = { name: el.name.value, dept: el.dept.value, ...(el.email ? { email: el.email.value } : {}),
-        sales_notify: el.sales_notify.checked, is_admin: el.is_admin.checked, active: el.active.checked };
+        sales_notify: el.sales_notify.checked, is_admin: el.is_admin.checked, active: el.active.checked,
+        ...(el.studio_link.checked !== !!r.studio ? { studio_link: el.studio_link.checked } : {}) };
       if (body.is_admin && !r.is_admin && !confirm(`Make ${r.name} an admin? Admins can see every report, including disciplinary records, and the full activity log.`)) return;
       try { await api(`api/admin/staff/${r.id}`, { method: "PATCH", json: body }); toast("Saved"); closeSheet(); loadStaff(); } catch (e) { fail(e); }
     };

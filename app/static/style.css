@@ -306,3 +306,7 @@ label.tog input { width: 24px; height: 24px; accent-color: var(--red); }
 .testbox.on { background: var(--amber-bg); border-color: #e7c66b; }
 body.testmode { box-shadow: inset 0 6px 0 #f0b400; }
 body.testmode #viewForm h1::after, body.testmode #viewMeasure h1::after { content: " · TEST"; color: var(--amber); }
+/* link out to Simply Studio */
+a.card.tilecard.studio { text-decoration: none; color: inherit; border-style: solid; }
+.card.tilecard.studio .card-icon { color: #fff; background: var(--green-dark); }
+.tilecard .pillnote.out { color: var(--green-dark); background: var(--green-bg); }

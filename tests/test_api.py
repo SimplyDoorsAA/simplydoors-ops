@@ -767,6 +767,20 @@ def test_owner_test_mode_and_log_cleanup(client):
     client.put("/ops/api/owner/test-mode", json={"on": False}, headers=H)
 
 
+def test_simply_studio_tile(client):
+    login(client, "Jaime Mendoza", "135790")
+    assert client.get("/ops/api/me", headers=H).json()["studio_url"] is None       # warehouse: no tile
+    login(client, "Paz Galambos", "112233")
+    assert client.get("/ops/api/me", headers=H).json()["studio_url"].startswith("https://")   # admin: tile
+    login(client, "Adem Atis", "246810")
+    jid = conn().execute("SELECT id FROM staff WHERE name='Jaime Mendoza'").fetchone()[0]
+    staff = {r["name"]: r for r in client.get("/ops/api/admin/staff", headers=H).json()}
+    assert staff["Steven Chandler"]["studio"] and not staff["Jaime Mendoza"]["studio"]
+    assert client.patch(f"/ops/api/admin/staff/{jid}", json={"studio_link": True}, headers=H).status_code == 200
+    login(client, "Jaime Mendoza", "135790")
+    assert client.get("/ops/api/me", headers=H).json()["studio_url"]
+
+
 def test_reset_test_data_is_console_only_and_one_time(client, monkeypatch):
     # keep this test last: it wipes the reports
     from app import cli

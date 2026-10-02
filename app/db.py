@@ -202,6 +202,9 @@ def init_db() -> None:
                      ("geo_status", "TEXT"), ("file_age", "INTEGER")):
         if col not in pcols:
             c.execute(f"ALTER TABLE photos ADD COLUMN {col} {typ}")
+    if "studio_link" not in cols:
+        # NULL = automatic (admins and the Sales / Admin departments see the Simply Studio tile)
+        c.execute("ALTER TABLE staff ADD COLUMN studio_link INTEGER")
     if "is_owner" not in cols:
         # the person who built the app: full admin, can manage other admins; only changed from the server console
         c.execute("ALTER TABLE staff ADD COLUMN is_owner INTEGER NOT NULL DEFAULT 0")
