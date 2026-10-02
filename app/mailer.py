@@ -11,7 +11,8 @@ from html import escape
 
 from . import alerts
 from .db import audit, conn, now_iso
-from .forms import display_rows
+from . import measure as measure_mod
+from .forms import FORMS, display_rows
 from .pdf import build_pdf, local_time
 
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
@@ -52,9 +53,10 @@ def _body_html(r, data) -> str:
     rows = "".join(
         f"<tr><td style='padding:8px 12px;border:1px solid #e0e0e0;background:#f2f9eb;font-weight:bold;width:40%'>{escape(a)}</td>"
         f"<td style='padding:8px 12px;border:1px solid #e0e0e0'>{escape(str(b))}</td></tr>"
-        for a, b in [("Submitted by", r["staff_name"]), ("Received", local_time(r["submitted_at"]))]
-        + display_rows(r["form_type"], data))
-    from .forms import FORMS
+        for a, b in ([("Received", local_time(r["submitted_at"]))] if data.get("measured_by") == r["staff_name"]
+                     else [("Submitted by", r["staff_name"]), ("Received", local_time(r["submitted_at"]))])
+        + (measure_mod.job_rows(data) if FORMS.get(r["form_type"], {}).get("kind") == "measure"
+           else display_rows(r["form_type"], data)))
     confidential = bool(FORMS.get(r["form_type"], {}).get("confidential"))
     alarm = confidential or bool(data.get("defective"))
     head = "#b3261e" if alarm else "#2f6f1f"

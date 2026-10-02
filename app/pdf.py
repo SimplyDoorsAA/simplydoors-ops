@@ -63,7 +63,8 @@ def build_pdf(report, staff_name: str, data: dict, photos: list) -> bytes:
     ss = getSampleStyleSheet()
     alarm = FORMS.get(form_type, {}).get("confidential") or data.get("defective")
     accent = colors.HexColor("#c62828") if alarm else GREEN
-    h1 = ParagraphStyle("h1", parent=ss["Title"], alignment=0, textColor=accent, fontSize=20, spaceAfter=2)
+    h1 = ParagraphStyle("h1", parent=ss["Title"], alignment=0, textColor=accent, fontSize=(15 if tight else 20),
+                        leading=(17 if tight else 24), spaceAfter=(0 if tight else 2), spaceBefore=0)
     small = ParagraphStyle("small", parent=ss["Normal"], fontSize=9, textColor=colors.HexColor("#555555"))
     cell = ParagraphStyle("cell", parent=ss["Normal"], fontSize=10, leading=13)
     lab = ParagraphStyle("lab", parent=cell, fontName="Helvetica-Bold")
@@ -75,11 +76,12 @@ def build_pdf(report, staff_name: str, data: dict, photos: list) -> bytes:
                  Paragraph(f"Receipt <b>{escape(report['receipt'])}</b> &nbsp;·&nbsp; "
                            f"Received {escape(local_time(report['submitted_at']))}"
                            + (" (sent from phone's offline queue)" if report["queued_on_phone"] else ""), small)]
-    logo = _img(LOGO, 1.6 * inch, 0.6 * inch) if os.path.exists(LOGO) else ""
+    logo = _img(LOGO, 1.2 * inch if tight else 1.6 * inch, 0.38 * inch if tight else 0.6 * inch) if os.path.exists(LOGO) else ""
     t = Table([[head_left, logo]], colWidths=[doc.width - 1.9 * inch, 1.9 * inch])
     t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (1, 0), (1, 0), "RIGHT"),
-                           ("LINEBELOW", (0, 0), (-1, 0), 2, accent), ("BOTTOMPADDING", (0, 0), (-1, 0), 8)]))
-    story += [t, Spacer(1, 10)]
+                           ("LINEBELOW", (0, 0), (-1, 0), 2, accent), ("BOTTOMPADDING", (0, 0), (-1, 0), 4 if tight else 8),
+                           ("TOPPADDING", (0, 0), (-1, 0), 0)]))
+    story += [t, Spacer(1, 4 if tight else 10)]
 
     if FORMS.get(form_type, {}).get("kind") == "measure":
         _measure_body(story, report, staff_name, data, photos, cell, lab, small, h2)
@@ -151,8 +153,9 @@ def _aspect(path) -> float:
 def _spec_table(rows, style, W, grey):
     if not rows:
         return None
-    vw = (W - 2.0 * inch) / 2
-    sp = Table(rows, colWidths=[1.0 * inch, vw, 1.0 * inch, vw])
+    lw = 0.82 * inch
+    vw = (W - 3 * lw) / 3
+    sp = Table(rows, colWidths=[lw, vw, lw, vw, lw, vw])
     sp.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.4, grey), ("VALIGN", (0, 0), (-1, -1), "TOP"),
                             ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2)] + style))
     return sp
@@ -186,7 +189,7 @@ def _measure_body(story, report, staff_name, data, photos, cell, lab, small, h2)
                             ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f7f9f8")), ("VALIGN", (0, 0), (-1, -1), "TOP"),
                             ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]
                            + [("BACKGROUND", (c, 0), (c, 0), colors.HexColor("#fff4d6")) for c, (a, _) in enumerate(job) if a == "REVISED"]))
-    story += [jt, Spacer(1, 8)]
+    story += [jt, Spacer(1, 5)]
     items = data.get("items") or []
     # page 1 has the header, so its two openings share what's left; later pages split the full page
     head_h = sum(f.wrap(W, 2000)[1] for f in story)
@@ -210,9 +213,9 @@ def _measure_body(story, report, staff_name, data, photos, cell, lab, small, h2)
             gap = target - total
             if -0.5 <= gap <= 1.5:
                 break
-            h = max(1.3 * inch, h + gap - 0.5)
+            h = max(0.9 * inch, h + gap - 0.5)
         if total > target:            # never spill past half a page
-            body = build(max(1.3 * inch, h + (target - total) - 1))
+            body = build(max(0.9 * inch, h + (target - total) - 1))
         return head + [body] + divider()
 
     for i, it in enumerate(items):
@@ -239,20 +242,22 @@ def _measure_body(story, report, staff_name, data, photos, cell, lab, small, h2)
         specs = [(a, b) for a, b in M.item_rows(it) if a not in ("Width", "Height")]
         if it["type"] == "window" and len(it.get("points") or []) <= 1:
             specs = [(a, b) for a, b in specs if not a.startswith("Measurements")]
-        short = [(a, b) for a, b in specs if a not in ("Notes",) and "\n" not in b and len(b) <= 40]
+        short_label = {"Measurements (W × H)": "Sizes (W × H)", "Wall thickness": "Wall thick."}
+        specs = [(short_label.get(a, a), " · ".join(b.split("\n")) if a.startswith("Measurements") else b) for a, b in specs]
+        short = [(a, b) for a, b in specs if a not in ("Notes",) and "\n" not in b and len(b) <= 26]
         long_ = [(a, b) for a, b in specs if (a, b) not in short]
         rows, style = [], []
-        for k in range(0, len(short), 2):
-            pair = short[k:k + 2]
+        for k in range(0, len(short), 3):
+            trio = short[k:k + 3]
             row = []
-            for a, b in pair:
+            for a, b in trio:
                 row += [Paragraph(escape(a), lab7), Paragraph(escape(b), val9)]
                 if a == "Tempered":
                     style.append(("TEXTCOLOR", (len(row) - 1, len(rows)), (len(row) - 1, len(rows)), red))
-            rows.append(row + [""] * (4 - len(row)))
+            rows.append(row + [""] * (6 - len(row)))
         for a, b in long_:
-            style.append(("SPAN", (1, len(rows)), (3, len(rows))))
-            rows.append([Paragraph(escape(a), lab7), Paragraph(escape(b).replace("\n", "<br/>"), val9), "", ""])
+            style.append(("SPAN", (1, len(rows)), (5, len(rows))))
+            rows.append([Paragraph(escape(a), lab7), Paragraph(escape(b).replace("\n", "<br/>"), val9), "", "", "", ""])
         pics = sorted(by_item.get(i, []), key=lambda x: x["slot"])
         labels = M.PHOTO_LABELS[it["type"]]
 
