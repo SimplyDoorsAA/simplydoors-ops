@@ -182,9 +182,13 @@ def test_admin_staff_changes(client):
     assert client.post(f"/ops/api/admin/staff/{sid}/pin", json={"pin": "12"}, headers=H).status_code == 422
     assert client.post(f"/ops/api/admin/staff/{sid}/pin", json={"pin": "4321"}, headers=H).status_code == 422  # too short
     assert client.post(f"/ops/api/admin/staff/{sid}/pin", json={"pin": "432198"}, headers=H).status_code == 200
-    paz = conn().execute("SELECT id FROM staff WHERE name='Paz Galambos'").fetchone()[0]
-    assert client.post(f"/ops/api/admin/staff/{paz}/pin", json={"pin": "999888"}, headers=H).status_code == 422
-    assert client.patch(f"/ops/api/admin/staff/{paz}", json={"is_admin": False}, headers=H).status_code == 422
+    # a non-owner admin (Paz) can't touch another admin; the owner (Adem) can
+    assert client.patch(f"/ops/api/admin/staff/{sid}", json={"is_admin": True}, headers=H).status_code == 200
+    login(client, "Paz Galambos", "112233")
+    assert client.post(f"/ops/api/admin/staff/{sid}/pin", json={"pin": "999888"}, headers=H).status_code == 422
+    assert client.patch(f"/ops/api/admin/staff/{sid}", json={"is_admin": False}, headers=H).status_code == 422
+    login(client, "Adem Atis", "246810")
+    assert client.patch(f"/ops/api/admin/staff/{sid}", json={"is_admin": False}, headers=H).status_code == 200
     me_id = conn().execute("SELECT id FROM staff WHERE name='Adem Atis'").fetchone()[0]
     r = client.patch(f"/ops/api/admin/staff/{me_id}", json={"is_admin": False}, headers=H)
     assert r.status_code == 422  # can't remove your own admin
@@ -305,7 +309,7 @@ def test_setup_link_flow(client):
     login(client, "Adem Atis", "246810")
     gid = conn().execute("SELECT id FROM staff WHERE name='Gerardo Zuniga'").fetchone()[0]
     paz = conn().execute("SELECT id FROM staff WHERE name='Paz Galambos'").fetchone()[0]
-    assert client.post(f"/ops/api/admin/staff/{paz}/invite", headers=H).status_code == 422   # other admin: console only
+    assert client.post(f"/ops/api/admin/staff/{paz}/invite", headers=H).status_code == 200   # owner may manage other admins
     r1 = client.post(f"/ops/api/admin/staff/{gid}/invite", headers=H).json()
     r2 = client.post(f"/ops/api/admin/staff/{gid}/invite", headers=H).json()             # replaces the first
     assert len(r2["code"]) == 9 and r2["code"][4] == "-"
@@ -583,3 +587,22 @@ def test_measure_slab_only_bore_and_hinges(client):
     it = json.loads(conn().execute("SELECT data FROM reports WHERE receipt=?", (r.json()["receipt"],)).fetchone()[0])["items"][0]
     assert it["hinges"] == [] and it["bore_mode"] == ""
     assert _measure(client, "sub-msr-s003", [{**slab, "handing": "Fixed"}]).status_code == 422   # slab: left/right only
+
+
+def test_owner_can_manage_admins_but_not_the_reverse(client):
+    adem = conn().execute("SELECT id, is_owner FROM staff WHERE name='Adem Atis'").fetchone()
+    paz = conn().execute("SELECT id, is_owner FROM staff WHERE name='Paz Galambos'").fetchone()
+    assert adem["is_owner"] == 1 and paz["is_owner"] == 0
+    login(client, "Paz Galambos", "112233")
+    assert client.get("/ops/api/me").json()["is_owner"] is False
+    assert client.post(f"/ops/api/admin/staff/{adem['id']}/pin", json={"pin": "918273"}, headers=H).status_code == 403
+    assert client.post(f"/ops/api/admin/staff/{adem['id']}/invite", headers=H).status_code == 403
+    assert client.patch(f"/ops/api/admin/staff/{adem['id']}", json={"is_admin": False}, headers=H).status_code == 403
+    login(client, "Adem Atis", "246810")
+    assert client.get("/ops/api/me").json()["is_owner"] is True
+    r = client.post(f"/ops/api/admin/staff/{paz['id']}/invite", headers=H)
+    assert r.status_code == 200 and r.json()["name"] == "Paz Galambos"
+    assert client.post(f"/ops/api/admin/staff/{paz['id']}/pin", json={"pin": "112233"}, headers=H).status_code == 200
+    # ownership can't be granted from the app
+    client.patch(f"/ops/api/admin/staff/{paz['id']}", json={"is_owner": True}, headers=H)
+    assert conn().execute("SELECT is_owner FROM staff WHERE id=?", (paz["id"],)).fetchone()[0] == 0

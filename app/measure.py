@@ -74,10 +74,14 @@ DOOR_FIELDS = [
     {"key": "swing", "label": "Swing", "type": "pick", "icon": "swing", "options": ["InSwing", "OutSwing"],
      "hide_if": {"config": ["Sliding Glass Door"], "handing": ["Fixed", "Fixed/Fixed"]}},
     # slab only: where to bore for the lock and cut the hinges, measured from the TOP of the slab down
-    {"key": "bore_mode", "label": "Bore height", "type": "pick", "icon": "none", "options": ["Standard", "Custom"],
+    {"key": "bore_mode", "label": "Handle bore", "type": "pick", "icon": "none", "options": ["Standard", "Custom"],
      "show_if": {"config": ["Slab Only"]}},
-    {"key": "bore_at", "label": "Bore location (from top of slab down)", "type": "size",
+    {"key": "bore_at", "label": "Handle bore location (from top of slab down)", "type": "size",
      "show_if": {"config": ["Slab Only"], "bore_mode": ["Custom"]}},
+    {"key": "db_mode", "label": "Deadbolt bore", "type": "pick", "icon": "none", "options": ["None", "Standard", "Custom"],
+     "show_if": {"config": ["Slab Only"]}},
+    {"key": "db_at", "label": "Deadbolt bore location (from top of slab down)", "type": "size",
+     "show_if": {"config": ["Slab Only"], "db_mode": ["Custom"]}},
     {"key": "hinges", "label": "Hinge locations (from top of slab down)", "type": "hinges", "count": 4,
      "show_if": {"config": ["Slab Only"]}},
     {"key": "dim_type", "label": "Size type", "type": "select", "options": ["Unit Size", "Rough Opening"], "default": "Unit Size"},
@@ -286,11 +290,18 @@ def eval_frac(f: str) -> float:
     return int(a) / int(b)
 
 
-def standard_bore(it: dict) -> str:
-    """Standard bore = 36" up from the bottom, i.e. slab height minus 36, measured from the top."""
-    h = it.get("h") or {}
+DEADBOLT_ABOVE = 5.5      # standard double bore: deadbolt 5-1/2" above the handle, center to center
+
+
+def _inch(s) -> float:
+    return float(s["w"]) + (eval_frac(s["f"]) if s.get("f") else 0)
+
+
+def standard_bore(it: dict, deadbolt: bool = False) -> str:
+    """Standard handle bore = 36" up from the bottom (slab height - 36 from the top);
+    standard deadbolt = 5-1/2" above that. Both shown as inches from the top."""
     try:
-        top = float(h["w"]) + (eval_frac(h["f"]) if h.get("f") else 0) - 36
+        top = _inch(it.get("h") or {}) - 36 - (DEADBOLT_ABOVE if deadbolt else 0)
         return f'{top:g}" from top' if top > 0 else ""
     except Exception:
         return ""
@@ -300,10 +311,12 @@ def item_rows(it: dict) -> list[tuple[str, str]]:
     rows = []
     for f in ITEM_FIELDS[it["type"]]:
         k, ft, v = f["key"], f["type"], it.get(f["key"])
-        if k == "bore_mode" and v:
-            v = f"Standard ({standard_bore(it)})" if v == "Standard" and standard_bore(it) else v
+        if k in ("bore_mode", "db_mode") and v == "Standard" and standard_bore(it, k == "db_mode"):
+            v = f"Standard ({standard_bore(it, k == 'db_mode')})"
+        if k == "db_mode" and v == "None":
+            v = "None"
         if ft == "size":
-            v = fmt_size(v) + ((f" ({_dec(v)})" if v.get("f") else "") + " from top" if k == "bore_at" and fmt_size(v) else "")
+            v = fmt_size(v) + ((f" ({_dec(v)})" if v.get("f") else "") + " from top" if k in ("bore_at", "db_at") and fmt_size(v) else "")
         elif ft == "hinges":
             hs = [f"#{j} {fmt_size(h)}" + (f" ({_dec(h)})" if h.get("f") else "") for j, h in enumerate(v or [], 1) if h.get("w")]
             v = ("from top: " + ", ".join(hs)) if hs else ""

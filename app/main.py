@@ -42,7 +42,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-9"
+APP_VERSION = "stage3-10"
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -258,6 +258,7 @@ def logout(request: Request):
 def me(staff=Depends(current_staff)):
     return {
         "id": staff["id"], "name": staff["name"], "dept": staff["dept"], "is_admin": bool(staff["is_admin"]),
+        "is_owner": bool(staff["is_owner"]),
         "forms": [public_spec(t) for t in visible_forms(staff)],
     }
 
@@ -705,6 +706,7 @@ def _staff_out(r):
         invite = ("used" if inv["used_at"] else "replaced" if inv["revoked_at"]
                   else "expired" if inv["expires_at"] < now_iso() else "waiting")
     return {"id": r["id"], "name": r["name"], "dept": r["dept"], "email": r["email"], "is_admin": bool(r["is_admin"]),
+            "is_owner": bool(r["is_owner"]),
             "sales_notify": bool(r["sales_notify"]), "active": bool(r["active"]), "has_pin": bool(r["pin_hash"]),
             "pin_set_at": r["pin_set_at"], "pin_source": r["pin_source"], "locked": locked, "invite": invite,
             "invite_expires": inv["expires_at"] if inv else None}
@@ -756,6 +758,16 @@ async def admin_add_staff(request: Request, admin=Depends(current_admin)):
     return {"ok": True, "id": cur.lastrowid}
 
 
+def _guard_other(admin, target, sid, what="PIN"):
+    """Owner can manage anyone. Other admins can't touch the owner, or another admin's PIN/access."""
+    if sid == admin["id"] or admin["is_owner"]:
+        return
+    if target["is_owner"]:
+        raise HTTPException(403, "Only the app owner can change this account.")
+    if target["is_admin"]:
+        raise HTTPException(422, f"Another admin's {what} can only be changed by the app owner.")
+
+
 @app.patch("/api/admin/staff/{sid}")
 async def admin_edit_staff(sid: int, request: Request, admin=Depends(current_admin)):
     body = await request.json()
@@ -766,9 +778,11 @@ async def admin_edit_staff(sid: int, request: Request, admin=Depends(current_adm
     v = _validate_staff(body, partial=True)
     if sid == admin["id"] and (v.get("is_admin") == 0 or v.get("active") == 0):
         raise HTTPException(422, "You can't remove your own admin access or turn off your own account.")
-    if old["is_admin"] and sid != admin["id"] and ("is_admin" in v or v.get("active") == 0):
+    if old["is_owner"] and sid != admin["id"]:
+        raise HTTPException(403, "Only the app owner can change this account.")
+    if old["is_admin"] and sid != admin["id"] and not admin["is_owner"] and ("is_admin" in v or v.get("active") == 0):
         if v.get("is_admin", 1) == 0 or v.get("active") == 0:
-            raise HTTPException(422, "Another admin's access can only be removed from the server console.")
+            raise HTTPException(422, "Another admin's access can only be removed by the app owner.")
     changes = {k: {"from": old[k], "to": val} for k, val in v.items() if old[k] != val}
     if not changes:
         return {"ok": True}
@@ -790,11 +804,10 @@ async def admin_set_pin(sid: int, request: Request, admin=Depends(current_admin)
     if not auth.valid_pin_format(pin):
         raise HTTPException(422, "PIN must be 6 to 8 digits.")
     c = conn()
-    row = c.execute("SELECT name, is_admin FROM staff WHERE id=?", (sid,)).fetchone()
+    row = c.execute("SELECT name, is_admin, is_owner FROM staff WHERE id=?", (sid,)).fetchone()
     if not row:
         raise HTTPException(404)
-    if row["is_admin"] and sid != admin["id"]:
-        raise HTTPException(422, "Another admin's PIN can only be reset from the server console.")
+    _guard_other(admin, row, sid)
     auth.set_pin(sid, pin, "admin")
     auth.end_all_sessions(sid)
     audit(admin["id"], admin["name"], "pin_reset", row["name"], None, client_ip(request), ua(request))
@@ -805,13 +818,12 @@ async def admin_set_pin(sid: int, request: Request, admin=Depends(current_admin)
 @app.post("/api/admin/staff/{sid}/invite")
 def admin_invite(sid: int, request: Request, admin=Depends(current_admin)):
     c = conn()
-    row = c.execute("SELECT name, is_admin, active FROM staff WHERE id=?", (sid,)).fetchone()
+    row = c.execute("SELECT name, is_admin, is_owner, active FROM staff WHERE id=?", (sid,)).fetchone()
     if not row:
         raise HTTPException(404)
     if not row["active"]:
         raise HTTPException(422, "Turn this person's account back on first.")
-    if row["is_admin"] and sid != admin["id"]:
-        raise HTTPException(422, "Another admin's PIN can only be reset from the server console.")
+    _guard_other(admin, row, sid)
     code, expires = auth.new_invite(sid, admin["name"])
     audit(admin["id"], admin["name"], "invite_created", row["name"], {"expires": expires}, client_ip(request), ua(request))
     alerts.push("Ops app: setup link created", f"{admin['name']} created a setup link for {row['name']}.")

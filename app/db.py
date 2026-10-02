@@ -187,6 +187,9 @@ def init_db() -> None:
                      ("geo_status", "TEXT"), ("file_age", "INTEGER")):
         if col not in pcols:
             c.execute(f"ALTER TABLE photos ADD COLUMN {col} {typ}")
+    if "is_owner" not in cols:
+        # the person who built the app: full admin, can manage other admins; only changed from the server console
+        c.execute("ALTER TABLE staff ADD COLUMN is_owner INTEGER NOT NULL DEFAULT 0")
     if "lock_level" not in cols:
         c.execute("ALTER TABLE staff ADD COLUMN lock_level INTEGER NOT NULL DEFAULT 0")
         c.execute("ALTER TABLE staff ADD COLUMN last_lock_at TEXT")
@@ -197,6 +200,8 @@ def init_db() -> None:
                 (name, dept, email, admin, notify, now_iso()),
             )
         audit(None, "system", "staff_seeded", None, {"count": len(SEED_STAFF)})
+    if not c.execute("SELECT 1 FROM staff WHERE is_owner=1").fetchone():
+        c.execute("UPDATE staff SET is_owner=1, is_admin=1 WHERE name='Adem Atis'")
     for form, rcpts in SEED_RULES.items():
         c.execute("INSERT OR IGNORE INTO email_rules(form_type, recipients) VALUES (?,?)", (form, rcpts))
 

@@ -37,7 +37,7 @@
     admin_denied: "Blocked from admin page", audit_exported: "Exported the activity log",
     audit_viewed: "Looked at the activity log", photo_viewed: "Opened a photo",
     app_started: "App started", staff_seeded: "Staff list created",
-    list_changed: "Changed a pick list", forms_switched: "Changed which forms staff see", measure_reopened: "Reopened a measure",
+    owner_set: "App owner set (server console)", list_changed: "Changed a pick list", forms_switched: "Changed which forms staff see", measure_reopened: "Reopened a measure",
   };
 
   // ------------------------------------------------------------ tabs
@@ -142,13 +142,13 @@
       $("#depts").innerHTML = [...new Set(rows.map(r => r.dept))].map(d => `<option>${esc(d)}</option>`).join("");
       $("#staffList").innerHTML = `<table class="rows"><thead><tr><th>Name</th><th class="hide-sm">Dept</th><th class="hide-sm">Email</th><th>PIN</th><th></th></tr></thead><tbody>` +
         rows.map(r => `<tr${r.active ? "" : ' style="opacity:.5"'}><td><b>${esc(r.name)}</b>
-          ${r.is_admin ? ' <span class="badge ok">admin</span>' : ""}${r.sales_notify ? ' <span class="badge">sales list</span>' : ""}
+          ${r.is_owner ? ' <span class="badge ok">owner</span>' : r.is_admin ? ' <span class="badge ok">admin</span>' : ""}${r.sales_notify ? ' <span class="badge">sales list</span>' : ""}
           ${r.active ? "" : ' <span class="badge">turned off</span>'}${r.locked ? ' <span class="badge bad">locked</span>' : ""}</td>
           <td class="hide-sm">${esc(r.dept)}</td><td class="hide-sm">${esc(r.email)}</td>
           <td>${r.has_pin ? `<span class="badge ok">set</span><div class="det">${esc(PIN_SRC[r.pin_source] || r.pin_source || "")}</div>` : '<span class="badge bad">none</span>'}
             ${r.invite === "waiting" ? `<div class="det">setup link sent, expires ${esc(shortDate(r.invite_expires))}</div>`
               : r.invite === "expired" ? '<div class="det">setup link expired</div>' : ""}</td>
-          <td class="btns">${r.active && (!r.is_admin || r.id === myId)
+          <td class="btns">${r.active && (!r.is_admin || r.id === myId || (amOwner && !r.is_owner))
               ? `<button class="mini primary" data-invite="${r.id}" type="button">${r.has_pin ? "New link" : "Invite"}</button>` : ""}
             <button class="mini" data-edit="${r.id}" type="button">Edit</button></td></tr>`).join("") + `</tbody></table>`;
       $$("[data-invite]").forEach(b => b.onclick = () => invite(rows.find(r => r.id == b.dataset.invite)));
@@ -157,7 +157,7 @@
   }
   const PIN_SRC = { self: "made by them", admin: "set by admin", install: "set on server", import: "imported" };
   const shortDate = (iso) => iso ? new Date(iso).toLocaleDateString([], { timeZone: TZ, month: "short", day: "numeric" }) : "";
-  let myId = null;
+  let myId = null, amOwner = false;
 
   async function invite(r) {
     const msg = r.has_pin
@@ -203,7 +203,8 @@
       <h3>PIN</h3>
       <form id="pinForm" class="grid"><label>New PIN (6–8 digits)<input name="pin" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="off" required></label>
         <button class="mini" type="submit">Set PIN</button></form>
-      ${r.is_admin ? '<p class="det">Another admin\'s PIN and admin access can only be changed on the server console.</p>' : ""}
+      ${r.id === myId ? "" : r.is_owner && !amOwner ? '<p class="det">Only the app owner can change this account.</p>'
+        : r.is_admin && !amOwner ? '<p class="det">Another admin\'s PIN and admin access can only be changed by the app owner.</p>' : ""}
       ${r.locked ? `<p><button class="mini danger" id="unlock" type="button">Unlock account now</button></p>` : ""}`);
     $("#editForm").onsubmit = async (ev) => {
       ev.preventDefault();
@@ -318,7 +319,7 @@
       const me = await api("api/me");
       if (!me.is_admin) throw Object.assign(new Error("no"), { status: 403 });
       $("#who").textContent = me.name;
-      myId = me.id;
+      myId = me.id; amOwner = !!me.is_owner;
       me.forms.forEach(f => $("#repForm").insertAdjacentHTML("beforeend", `<option>${esc(f.type)}</option>`));
       $("#ui").classList.remove("hidden");
       tab("reports");

@@ -242,7 +242,7 @@ def _measure_body(story, report, staff_name, data, photos, cell, lab, small, h2)
         specs = [(a, b) for a, b in M.item_rows(it) if a not in ("Width", "Height")]
         if it["type"] == "window" and len(it.get("points") or []) <= 1:
             specs = [(a, b) for a, b in specs if not a.startswith("Measurements")]
-        short_label = {"Measurements (W × H)": "Sizes (W × H)", "Wall thickness": "Wall thick.", "Handing (exterior view)": "Handing", "Sidelite location": "Sidelite", "Bore location (from top of slab down)": "Bore", "Hinge locations (from top of slab down)": "Hinges"}
+        short_label = {"Measurements (W × H)": "Sizes (W × H)", "Wall thickness": "Wall thick.", "Handing (exterior view)": "Handing", "Sidelite location": "Sidelite", "Handle bore location (from top of slab down)": "Handle at", "Deadbolt bore location (from top of slab down)": "Deadbolt at", "Hinge locations (from top of slab down)": "Hinges"}
         specs = [(short_label.get(a, a), " · ".join(b.split("\n")) if a.startswith("Measurements") else b) for a, b in specs]
         short = [(a, b) for a, b in specs if a not in ("Notes",) and "\n" not in b and len(b) <= 26]
         long_ = [(a, b) for a, b in specs if (a, b) not in short]

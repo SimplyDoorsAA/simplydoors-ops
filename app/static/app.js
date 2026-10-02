@@ -1052,9 +1052,9 @@
     none: () => "",
   };
   // standard bore = 36" up from the bottom, shown the way the vendor asks: inches from the TOP of the slab
-  function standardBore(c) {
-    const h = c.h && c.h.w ? inches(c.h) : 0;
-    return h > 36 ? `Standard ${+(h - 36).toFixed(3)}"` : "Standard";
+  function standardBore(c, deadbolt) {
+    const h = c.h && c.h.w ? inches(c.h) : 0, at = h - 36 - (deadbolt ? 5.5 : 0);
+    return h > 36 && at > 0 ? `Standard ${+at.toFixed(3)}"` : "Standard";
   }
   const pickOptions = (f, c) => f.options_by ? (f.options_by[c.config] || f.options_by._default) : f.options;
   function pickShown(f, c) {
@@ -1064,7 +1064,7 @@
   }
   function pickHTML(f, c) {
     const opts = pickOptions(f, c), v = c[f.key] || "", custom = f.custom && ((v && !opts.includes(v)) || c[f.key + "__custom"]);
-    const text = (o) => f.key === "bore_mode" && o === "Standard" ? standardBore(c) : o;
+    const text = (o) => (f.key === "bore_mode" || f.key === "db_mode") && o === "Standard" ? standardBore(c, f.key === "db_mode") : o;
     const tiles = opts.map(o => `<button type="button" class="handopt${f.icon === "none" ? " textonly" : ""}${!custom && o === v ? " on" : ""}" role="radio" aria-checked="${!custom && o === v}" data-pickopt="${esc(o)}">
         ${ICONS[f.icon](o, c)}<span>${esc(text(o))}</span></button>`).join("");
     const other = f.custom ? `<button type="button" class="handopt other-opt${custom ? " on" : ""}" role="radio" aria-checked="${!!custom}" data-pickopt="Custom"><span class="big">✎</span><span>Other</span></button>` : "";
@@ -1115,9 +1115,12 @@
         if (hs.length < 3) out.push(`Only ${hs.length} hinge location${hs.length === 1 ? "" : "s"}. Slabs usually need 3.`);
         if (nums.some((n, i) => i && n <= nums[i - 1])) out.push("Hinge locations should go down the slab in order (1 at the top).");
         if (h && nums.some(n => n >= h)) out.push("A hinge location is past the bottom of the slab.");
-        if (c.bore_mode === "Custom" && !(c.bore_at && c.bore_at.w)) out.push("Custom bore picked but no bore location entered.");
-        if (c.bore_mode === "Custom" && h && inches(c.bore_at) >= h) out.push("Bore location is past the bottom of the slab.");
-        if (c.bore_mode === "Standard" && !h) out.push("Enter the height so the standard bore can be worked out.");
+        if (c.bore_mode === "Custom" && !(c.bore_at && c.bore_at.w)) out.push("Custom handle bore picked but no location entered.");
+        if (c.db_mode === "Custom" && !(c.db_at && c.db_at.w)) out.push("Custom deadbolt bore picked but no location entered.");
+        if (c.bore_mode === "Custom" && h && inches(c.bore_at) >= h) out.push("Handle bore is past the bottom of the slab.");
+        if ((c.bore_mode === "Standard" || c.db_mode === "Standard") && !h) out.push("Enter the height so the standard bore can be worked out.");
+        const hb = c.bore_mode === "Custom" ? inches(c.bore_at) : h - 36, dbv = c.db_mode === "Custom" ? inches(c.db_at) : c.db_mode === "Standard" ? h - 41.5 : 0;
+        if (dbv && hb && dbv >= hb) out.push("Deadbolt should be above the handle (a smaller number from the top).");
       }
       mFields("door").filter(f => f.type === "pick" && pickShown(f, c) && !c[f.key]).forEach(f => out.push(`${f.label.replace(" (exterior view)", "")} not picked yet.`));
       both(c.w, "Width"); both(c.h, "Height");
@@ -1358,8 +1361,12 @@
     const card = e.target.closest(".mcard");
     if (card) {
       card.classList.remove("invalid"); updateHead(card);
-      const std = $('[data-pick="bore_mode"] [data-pickopt="Standard"] span', card);
-      if (std && e.target.matches('[data-sz="h"]')) std.textContent = standardBore(readCard(card));
+      if (e.target.matches('[data-sz="h"]')) {
+        const cc = readCard(card);
+        const std = $('[data-pick="bore_mode"] [data-pickopt="Standard"] span', card), db = $('[data-pick="db_mode"] [data-pickopt="Standard"] span', card);
+        if (std) std.textContent = standardBore(cc);
+        if (db) db.textContent = standardBore(cc, true);
+      }
     }
     mSaveDraftSoon();
   });

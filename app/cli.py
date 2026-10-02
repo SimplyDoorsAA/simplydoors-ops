@@ -3,6 +3,7 @@
   docker exec -it opsapp python -m app.cli set-pin "Adem Atis"
   docker exec opsapp python -m app.cli import-pins /data/import/pins.csv
   docker exec opsapp python -m app.cli staff
+  docker exec opsapp python -m app.cli set-owner "Adem Atis"
 """
 import csv
 import getpass
@@ -87,8 +88,22 @@ def import_pins(path: str) -> int:
 
 
 def list_staff() -> int:
-    for r in conn().execute("SELECT name, dept, is_admin, pin_hash IS NOT NULL AS has_pin FROM staff ORDER BY dept, name"):
-        print(f"{r['dept']:<20} {r['name']:<20} {'admin' if r['is_admin'] else '':<6} {'PIN set' if r['has_pin'] else 'no PIN'}")
+    for r in conn().execute("SELECT name, dept, is_admin, is_owner, pin_hash IS NOT NULL AS has_pin FROM staff ORDER BY dept, name"):
+        print(f"{r['dept']:<20} {r['name']:<20} {'owner' if r['is_owner'] else 'admin' if r['is_admin'] else '':<6} {'PIN set' if r['has_pin'] else 'no PIN'}")
+    return 0
+
+
+def set_owner(name: str) -> int:
+    """Move app ownership to someone else (there is only ever one owner)."""
+    c = conn()
+    row = c.execute("SELECT id FROM staff WHERE name=?", (name,)).fetchone()
+    if not row:
+        print(f"No one called {name!r}. Names are listed with: python -m app.cli staff")
+        return 1
+    c.execute("UPDATE staff SET is_owner=0")
+    c.execute("UPDATE staff SET is_owner=1, is_admin=1 WHERE id=?", (row["id"],))
+    audit(None, "server console", "owner_set", name)
+    print(f"{name} is now the app owner.")
     return 0
 
 
@@ -98,6 +113,8 @@ def main(argv):
         return set_pin(argv[1])
     if len(argv) >= 2 and argv[0] == "import-pins":
         return import_pins(argv[1])
+    if len(argv) >= 2 and argv[0] == "set-owner":
+        return set_owner(argv[1])
     if argv and argv[0] == "staff":
         return list_staff()
     print(__doc__)
