@@ -40,7 +40,7 @@
     owner_set: "App owner set (server console)", private_copies_changed: "Changed their private copies",
     owner_copies_set_up: "Owner's address moved to private copies", test_data_reset: "Test data cleared (server console)", list_changed: "Changed a pick list", forms_switched: "Changed which forms staff see", measure_reopened: "Reopened a measure",
     test_mode_on: "Turned test mode on", test_mode_off: "Turned test mode off",
-    log_lines_deleted: "Deleted own log lines", test_report_deleted: "Deleted a test report",
+    log_lines_deleted: "Deleted own log lines", studio_opened: "Opened Simply Studio", test_report_deleted: "Deleted a test report",
   };
 
   // ------------------------------------------------------------ tabs

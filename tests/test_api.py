@@ -768,17 +768,33 @@ def test_owner_test_mode_and_log_cleanup(client):
 
 
 def test_simply_studio_tile(client):
+    import base64 as b64, hashlib as hl, hmac as hm
+    from app import main as M
     login(client, "Jaime Mendoza", "135790")
-    assert client.get("/ops/api/me", headers=H).json()["studio_url"] is None       # warehouse: no tile
-    login(client, "Paz Galambos", "112233")
-    assert client.get("/ops/api/me", headers=H).json()["studio_url"].startswith("https://")   # admin: tile
-    login(client, "Adem Atis", "246810")
-    jid = conn().execute("SELECT id FROM staff WHERE name='Jaime Mendoza'").fetchone()[0]
-    staff = {r["name"]: r for r in client.get("/ops/api/admin/staff", headers=H).json()}
-    assert staff["Steven Chandler"]["studio"] and not staff["Jaime Mendoza"]["studio"]
-    assert client.patch(f"/ops/api/admin/staff/{jid}", json={"studio_link": True}, headers=H).status_code == 200
-    login(client, "Jaime Mendoza", "135790")
-    assert client.get("/ops/api/me", headers=H).json()["studio_url"]
+    assert client.get("/ops/api/me", headers=H).json()["studio_url"]                  # everyone with an email
+    monkey_secret = "x" * 64
+    old, M.STUDIO_SSO_SECRET = M.STUDIO_SSO_SECRET, monkey_secret
+    try:
+        url = client.post("/ops/api/studio-link", headers=H).json()["url"]
+        body, sig = url.split("/sso?t=")[1].split(".")
+        want = b64.urlsafe_b64encode(hm.new(monkey_secret.encode(), body.encode(), hl.sha256).digest()).decode().rstrip("=")
+        assert sig == want
+        claims = json.loads(b64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+        assert claims["email"] == "jaimem@simplydoors.com" and claims["role"] == "field" and claims["aud"] == "simply-studio"
+        login(client, "Paz Galambos", "112233")
+        url = client.post("/ops/api/studio-link", headers=H).json()["url"]
+        body = url.split("/sso?t=")[1].split(".")[0]
+        assert json.loads(b64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))["role"] == "full"
+        assert client.post("/ops/api/studio-link").status_code in (400, 403)          # needs the app header
+        # an admin can switch the tile off for someone
+        login(client, "Adem Atis", "246810")
+        jid = conn().execute("SELECT id FROM staff WHERE name='Jaime Mendoza'").fetchone()[0]
+        assert client.patch(f"/ops/api/admin/staff/{jid}", json={"studio_link": False}, headers=H).status_code == 200
+        login(client, "Jaime Mendoza", "135790")
+        assert client.get("/ops/api/me", headers=H).json()["studio_url"] is None
+        assert client.post("/ops/api/studio-link", headers=H).status_code == 403
+    finally:
+        M.STUDIO_SSO_SECRET = old
 
 
 def test_reset_test_data_is_console_only_and_one_time(client, monkeypatch):

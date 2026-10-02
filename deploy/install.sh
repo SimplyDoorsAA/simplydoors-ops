@@ -82,6 +82,22 @@ EOF
   umask 022
 fi
 
+# One sign-in for Simply Studio: a secret both apps share (never leaves this server). The Studio tile hands a signed-in
+# person a one-time link that Studio checks with this secret. Made once; kept in opsapp/.env and in Studio's data folder.
+if ! grep -q '^STUDIO_SSO_SECRET=' "$APPDIR/.env" 2>/dev/null; then
+  touch "$APPDIR/.env"; chmod 600 "$APPDIR/.env"
+  printf 'STUDIO_SSO_SECRET=%s\n' "$(python3 -c 'import secrets; print(secrets.token_hex(32))')" >> "$APPDIR/.env"
+fi
+SIGN_DATA="$STACK/services/signapp/data"
+if [ -d "$SIGN_DATA" ]; then
+  SSO_SECRET=$(grep '^STUDIO_SSO_SECRET=' "$APPDIR/.env" | head -1 | cut -d= -f2-)
+  if [ "$(sudo cat "$SIGN_DATA/ops_sso_secret" 2>/dev/null)" != "$SSO_SECRET" ]; then
+    printf '%s' "$SSO_SECRET" | sudo tee "$SIGN_DATA/ops_sso_secret" >/dev/null
+    sudo chmod 600 "$SIGN_DATA/ops_sso_secret"
+    echo "Simply Studio sign-in link: set up."
+  fi
+fi
+
 if [ $FIRST_INSTALL = 1 ]; then
   say "Adding the opsapp service to docker-compose.override.yml"
   [ -f "$OVERRIDE.before-opsapp" ] || cp "$OVERRIDE" "$OVERRIDE.before-opsapp"

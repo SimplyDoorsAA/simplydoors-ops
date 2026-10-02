@@ -4,11 +4,15 @@ Staff page:  <base>/            Admin page: <base>/admin
 Everything is served under BASE_PATH (default /ops) so it can share the
 OptiPlex's public address with the Sign app.
 """
+import base64
 import csv
+import hashlib
+import hmac
 import io
 import json
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import threading
@@ -42,7 +46,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-19"
+APP_VERSION = "stage3-20"
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -272,16 +276,40 @@ def logout(request: Request):
 
 
 STUDIO_URL = os.environ.get("STUDIO_URL", "https://optiplex-ai.tailf0af63.ts.net/").strip()
-STUDIO_DEPTS = ("sales", "admin", "office")
+STUDIO_SSO_SECRET = os.environ.get("STUDIO_SSO_SECRET", "").strip()
+STUDIO_DEPTS = ("sales", "admin", "office")   # these get the full Studio; everyone else Edit + Design only
 
 
 def shows_studio(staff) -> bool:
-    """The Simply Studio tile: per person when an admin set it, otherwise admins and office/sales people."""
+    """The Simply Studio tile: everyone with a work email, unless an admin switched it off for them."""
     if not STUDIO_URL:
         return False
     if staff["studio_link"] is not None:
         return bool(staff["studio_link"])
-    return bool(staff["is_admin"]) or (staff["dept"] or "").strip().lower() in STUDIO_DEPTS
+    return bool((staff["email"] or "").strip())
+
+
+def studio_role(staff) -> str:
+    return "full" if staff["is_admin"] or (staff["dept"] or "").strip().lower() in STUDIO_DEPTS else "field"
+
+
+def _b64u(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).decode().rstrip("=")
+
+
+@app.post("/api/studio-link")
+def studio_link(request: Request, staff=Depends(current_staff)):
+    """A one-time, two-minute link that signs this person into Simply Studio (Studio checks the signature)."""
+    if not shows_studio(staff):
+        raise HTTPException(403, "Simply Studio isn't switched on for you. Ask Adem.")
+    if not STUDIO_SSO_SECRET or not (staff["email"] or "").strip():
+        return {"url": STUDIO_URL}          # not set up yet: Studio's own sign-in page
+    claims = {"aud": "simply-studio", "email": staff["email"].strip().lower(), "name": staff["name"],
+              "role": studio_role(staff), "exp": int(time.time()) + 90, "n": secrets.token_urlsafe(18)}
+    body = _b64u(json.dumps(claims, separators=(",", ":")).encode())
+    sig = _b64u(hmac.new(STUDIO_SSO_SECRET.encode(), body.encode(), hashlib.sha256).digest())
+    audit(staff["id"], staff["name"], "studio_opened", None, {"as": claims["role"]}, client_ip(request), ua(request))
+    return {"url": STUDIO_URL.rstrip("/") + "/sso?t=" + body + "." + sig}
 
 
 @app.get("/api/me")

@@ -365,6 +365,21 @@
     showHome();
   });
 
+  // Simply Studio tile: ask the server for a one-time sign-in link, then open it in a new tab.
+  // The tab is opened first (straight from the tap) so the phone doesn't block it as a pop-up.
+  document.addEventListener("click", async (ev) => {
+    const a = ev.target.closest("#studioTile");
+    if (!a) return;
+    ev.preventDefault();
+    const w = window.open("about:blank", "_blank");
+    try {
+      const r = await api("api/studio-link", { method: "POST" });
+      if (w) w.location.href = r.url; else location.href = r.url;
+    } catch (e) {
+      if (w) w.location.href = a.href; else location.href = a.href;   // Studio's own sign-in page
+    }
+  });
+
   async function showHome() {
     show("viewHome");
     updateGeoNote();
@@ -379,7 +394,7 @@
         <span class="card-title">${esc(f.type)}</span>
         <span class="card-sub">${esc(f.blurb)}</span>
         ${me.is_admin && !f.staff_can_see ? '<span class="pillnote">hidden from staff</span>' : ""}</button>`).join("") || `<p class="muted">No forms are switched on yet.</p>`;
-    if (me.studio_url) cards.insertAdjacentHTML("afterbegin", `<a class="card tilecard studio" href="${esc(me.studio_url)}" target="_blank" rel="noopener" title="Open Simply Studio">
+    if (me.studio_url) cards.insertAdjacentHTML("afterbegin", `<a class="card tilecard studio" href="${esc(me.studio_url)}" target="_blank" rel="noopener" id="studioTile" title="Open Simply Studio (you're signed in automatically)">
         <span class="card-icon" aria-hidden="true">${FORM_ICONS.studio}</span>
         <span class="studio-txt"><span class="card-title">Simply Studio</span>
         <span class="studio-tag">Edit · Design · Sign</span></span>
