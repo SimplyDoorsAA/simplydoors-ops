@@ -140,7 +140,7 @@ def _kv(rows, cell, lab, widths=(2.0, 5.3), shade=None):
 
 
 def _measure_body(story, report, staff_name, data, photos, cell, lab, small, h2):
-    """Job details + summary, then each opening in a fixed half-page block (two per page):
+    """One-line job strip, then each opening in a fixed half-page block (two per page, page 1 included):
     title bar with the size in big type, a compact two-column spec grid, then the photos as large as fit."""
     from reportlab.platypus.flowables import HRFlowable
     from . import geo
@@ -153,35 +153,25 @@ def _measure_body(story, report, staff_name, data, photos, cell, lab, small, h2)
     ttl = ParagraphStyle("ttl", parent=lab, fontSize=12.5, leading=15)
     big = ParagraphStyle("big", parent=lab, fontSize=13, leading=15, alignment=2)
 
-    # job details as a compact 4-column grid
-    job = M.job_rows(data)
+    # job details: one compact strip, label above value
+    job = [(a, b) for a, b in M.job_rows(data)]
     if staff_name != data.get("measured_by") and staff_name != data.get("revised_by"):
         job.insert(4, ("Sent by", staff_name))
-    cells = [[Paragraph(escape(a), lab7), Paragraph(escape(str(b)), val9)] for a, b in job]
-    rows = [sum(cells[i:i + 2], []) + [""] * (4 - 2 * len(cells[i:i + 2])) for i in range(0, len(cells), 2)]
-    jt = Table(rows, colWidths=[1.15 * inch, 2.5 * inch, 1.15 * inch, 2.5 * inch])
-    jt.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, grey), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                            ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#f2f9eb")),
-                            ("BACKGROUND", (2, 0), (2, -1), colors.HexColor("#f2f9eb")),
-                            ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]
-                           + [("BACKGROUND", (c, r), (c + 1, r), colors.HexColor("#fff4d6"))
-                              for r, row in enumerate(rows) for c in (0, 2)
-                              if isinstance(row[c], Paragraph) and row[c].text == "REVISED"]))
-    story.append(jt)
-
+    jl = ParagraphStyle("jl", parent=lab7, fontSize=6.5, leading=8)
+    jv = ParagraphStyle("jv", parent=val9, fontSize=10, leading=12, fontName="Helvetica-Bold")
+    weight = {"Customer": 2.0, "REVISED": 2.0, "Items": 1.8}
+    tot = sum(weight.get(a, 1.4) for a, _ in job)
+    jt = Table([[[Paragraph(escape(a.upper()), jl), Paragraph(escape(str(b)), jv)] for a, b in job]],
+               colWidths=[W * weight.get(a, 1.4) / tot for a, _ in job])
+    jt.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.6, grey), ("LINEBEFORE", (1, 0), (-1, 0), 0.6, grey),
+                            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f7f9f8")), ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                            ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]
+                           + [("BACKGROUND", (c, 0), (c, 0), colors.HexColor("#fff4d6")) for c, (a, _) in enumerate(job) if a == "REVISED"]))
+    story += [jt, Spacer(1, 8)]
     items = data.get("items") or []
-    hdr = ParagraphStyle("hdr", parent=lab, textColor=colors.white, fontSize=8.5)
-    sm = ParagraphStyle("sm", parent=cell, fontSize=8.5, leading=10.5)
-    summary = [[Paragraph("Item", hdr), Paragraph("Location", hdr), Paragraph("Size and details", hdr)]]
-    for i, it in enumerate(items):
-        summary.append([Paragraph(escape(M.item_name(data, i)), sm), Paragraph(escape(it.get("loc") or "—"), sm),
-                        Paragraph(escape(M.item_summary(it)), sm)])
-    st = Table(summary, colWidths=[0.9 * inch, 1.8 * inch, 4.6 * inch], repeatRows=1, splitInRow=1)
-    st.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), GREEN), ("GRID", (0, 0), (-1, -1), 0.5, grey),
-                            ("VALIGN", (0, 0), (-1, -1), "TOP"), ("TOPPADDING", (0, 0), (-1, -1), 2),
-                            ("BOTTOMPADDING", (0, 0), (-1, -1), 2)]
-                           + [("BACKGROUND", (0, r), (-1, r), colors.HexColor("#f7f9f8")) for r in range(2, len(summary), 2)]))
-    story += [Spacer(1, 8), st, Spacer(1, 10)]
+    # page 1 has the header, so its two openings share what's left; later pages split the full page
+    head_h = sum(f.wrap(W, 2000)[1] for f in story)
+    FIRST_HALF = (letter[1] - 0.5 * inch - 0.6 * inch - head_h) / 2 - 10
 
     slots = {s["slot"]: s for s in M.photo_slots(data)}
     by_item: dict[int, list] = {}
@@ -190,6 +180,7 @@ def _measure_body(story, report, staff_name, data, photos, cell, lab, small, h2)
             by_item.setdefault(slots[p["slot"]]["item"], []).append(p)
 
     for i, it in enumerate(items):
+        half = FIRST_HALF if i < 2 else HALF
         # title bar: name + location on the left, the size big on the right
         if it["type"] == "door":
             size = " × ".join(x for x in (M.fmt_size(it.get("w")) + " W" if it.get("w", {}).get("w") else "",
@@ -245,7 +236,7 @@ def _measure_body(story, report, staff_name, data, photos, cell, lab, small, h2)
             left.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.4, grey), ("VALIGN", (0, 0), (-1, -1), "TOP"),
                                       ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2)]))
             lh = left.wrap(3.1 * inch, 2000)[1]
-            avail = HALF - tb.wrap(W, 2000)[1] - 52
+            avail = half - tb.wrap(W, 2000)[1] - 38
             if lh <= avail:
                 n = len(pics)
                 pw = (W - 3.2 * inch) / n
@@ -272,7 +263,7 @@ def _measure_body(story, report, staff_name, data, photos, cell, lab, small, h2)
         if pics:
             n = len(pics)
             col = W / n
-            max_h = max(1.8 * inch, min(3.6 * inch, HALF - used - 58))   # leave room for captions + divider
+            max_h = max(1.6 * inch, min(3.6 * inch, half - used - 40))   # leave room for captions + divider
             max_w = min(col - 6, 3.6 * inch)
             pt = Table([[photo_cell(p, max_w, max_h, n) for p in pics]], colWidths=[col] * n)
             pt.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (0, 0), (-1, -1), "CENTER"),
