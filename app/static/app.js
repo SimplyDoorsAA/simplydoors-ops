@@ -351,6 +351,8 @@
     incident: ic('<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/>'),
     disciplinary: ic('<path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h7M9 17h5"/>'),
     measure: ic('<path d="M3 17L17 3l4 4L7 21z"/><path d="M7 13l2 2M10 10l2 2M13 7l2 2"/>'),
+    install: ic('<path d="M6 21V3h12v18"/><path d="M3 21h18M14 12h1"/>'),
+    rma: ic('<path d="M4 12a8 8 0 1 0 2.3-5.7"/><path d="M4 4v4h4"/><path d="M9 10l3-2 3 2v5H9z"/>'),
     _: ic('<rect x="4" y="4" width="16" height="16" rx="2"/>'),
   };
 

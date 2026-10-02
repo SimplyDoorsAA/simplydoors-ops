@@ -176,6 +176,7 @@ SEED_RULES = {
     "Measure Report": "admin@simplydoors.com",
     "Delivery Proof": "adem@simplydoors.com, lupes@simplydoors.com",
     "Installation Completion": "admin@simplydoors.com",
+    "RMA": "admin@simplydoors.com",
     "Vehicle Inspection: when something is Defective": "admin@simplydoors.com",
 }
 

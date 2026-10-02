@@ -21,8 +21,9 @@ from .db import conn, get_setting, set_setting
 DEFAULT_LISTS = {
     "locations": ["Location A", "Location B", "Location C", "Location D"],
     "vehicles": ["Sprinter Van", "Small Truck", "Big Truck"],
+    "vendors": ["Hoelscher"],
 }
-LIST_LABELS = {"locations": "Receiving locations", "vehicles": "Vehicles"}
+LIST_LABELS = {"locations": "Receiving locations", "vehicles": "Vehicles", "vendors": "Vendors (RMA form)"}
 
 INSPECTION_ITEMS = {
     "Engine / Fluids": ["Fuel Level", "Oil Level", "Transmission Fluid", "Coolant", "Leaks Under Vehicle"],
@@ -58,6 +59,11 @@ INSTALL_CHECKS = [
     ("trim", "Exterior and interior trim installed and caulked"),
     ("cleanup", "Work area cleaned and old material hauled off"),
 ]
+RMA_VENDOR, RMA_CUSTOMER = "Return to vendor", "Return from customer"
+_V = {"field": "direction", "in": [RMA_VENDOR]}
+_C = {"field": "direction", "in": [RMA_CUSTOMER]}
+RMA_RETURN_TEXT = "By signing, the customer confirms the items listed above were returned to SimplyDoors."
+
 ACCEPT_TEXT = ("By signing, the customer confirms the work listed above was completed and accepts the installation, "
                "except for anything listed on the punch list.")
 
@@ -154,6 +160,62 @@ FORMS = {
         "photo_grid": True,
         "email_keys": ["po", "customer", "address", "work", "crew", "punch", "punch_items", "cust_comments", "signer", "no_sign_reason"],
         "summary": ["po", "customer"],
+    },
+    "RMA": {
+        "slug": "rma", "prefix": "RMA", "order": 3,
+        "blurb": "Product going back to a vendor or coming back from a customer: what, why, photos, RMA #.",
+        "fields": [
+            {"key": "direction", "label": "Return type", "ask": "Which way is it going?", "type": "choice",
+             "options": [RMA_VENDOR, RMA_CUSTOMER], "required": True},
+            {"key": "po", "label": "Job / PO Number", "type": "text", "required": True},
+            # vendor return
+            {"key": "vendor", "label": "Vendor", "type": "select", "options": "vendors", "allow_other": True,
+             "required": True, "show_if": _V},
+            {"key": "vendor_order", "label": "Vendor order / invoice #", "type": "text", "show_if": _V},
+            {"key": "vendor_rma", "label": "Vendor RMA / authorization #", "type": "text", "show_if": _V,
+             "placeholder": "Leave empty if they haven't given one yet"},
+            {"key": "job_customer", "label": "Customer / job (if any)", "type": "text", "show_if": _V},
+            # customer return
+            {"key": "customer", "label": "Customer", "type": "text", "required": True, "show_if": _C},
+            # both
+            {"key": "items", "label": "Item(s) being returned", "type": "textarea", "required": True,
+             "placeholder": "Qty, description, size, handing, color…"},
+            {"key": "reason_v", "label": "Reason", "type": "select", "required": True, "allow_other": True, "show_if": _V,
+             "options": ["Damaged in shipping", "Defective / manufacturer issue", "Wrong size", "Wrong handing / swing",
+                         "Wrong item shipped", "Ordered wrong (our mistake)", "Not needed / extra"]},
+            {"key": "want", "label": "What we want", "type": "choice", "show_if": _V, "required": True,
+             "options": ["Credit", "Replacement", "Repair", "Not decided yet"]},
+            {"key": "reason_c", "label": "Reason", "type": "select", "required": True, "allow_other": True, "show_if": _C,
+             "options": ["Changed mind", "Wrong item / size ordered", "Damaged", "Defective", "Extra / not needed"]},
+            {"key": "condition", "label": "Condition", "type": "choice", "show_if": _C, "required": True,
+             "options": ["Unused, in box", "Opened, not installed", "Installed / used", "Damaged"]},
+            {"key": "resolution", "label": "Resolution", "type": "choice", "show_if": _C, "required": True,
+             "options": ["Refund", "Store credit", "Exchange", "Not decided yet"]},
+            {"key": "restock", "label": "Restocking fee", "type": "choice", "show_if": _C, "required": True,
+             "options": ["No", "Yes"]},
+            {"key": "restock_amt", "label": "Restocking fee amount", "type": "text", "required": True,
+             "show_if": {"field": "restock", "in": ["Yes"]}, "placeholder": "e.g. 15% or $75"},
+            {"key": "location", "label": "Where is it now", "type": "select", "options": "locations", "allow_other": True},
+            {"key": "sales_notify", "label": "Sales Rep Notified", "ask": "Notify a sales rep (optional)",
+             "type": "select", "options": "sales_reps", "none_label": "Don't notify anyone", "notify": True},
+            {"key": "notes", "label": "Notes", "type": "textarea",
+             "placeholder": "Who you talked to, pickup date, anything else"},
+            {"key": "signer", "label": "Signed by (print name)", "type": "text", "tail": True, "show_if": _C,
+             "placeholder": "Leave empty if the customer isn't here"},
+        ],
+        "photos": [
+            {"group": "product", "title": "Product / damage", "help": "The item and any damage, close up.",
+             "slots": [("product1", "Photo 1"), ("product2", "Photo 2"), ("product3", "Photo 3")], "min": 1},
+            {"group": "labels", "title": "Labels & paperwork (optional)",
+             "help": "Product label or sticker, packing slip, the vendor's RMA paperwork.",
+             "slots": [("label1", "Label / slip 1"), ("label2", "Label / slip 2")]},
+            {"group": "signature", "title": "Customer signature (optional)", "signature": "sig",
+             "show_if": _C, "help": RMA_RETURN_TEXT},
+        ],
+        "photo_grid": True,
+        "email_keys": ["direction", "po", "vendor", "vendor_rma", "job_customer", "customer", "items", "reason_v",
+                       "want", "reason_c", "resolution", "restock_amt", "location"],
+        "summary": ["po", "vendor", "customer"],
     },
     "End of Shift": {
         "slug": "eos", "prefix": "EOS", "order": 3,
@@ -267,8 +329,8 @@ FORMS = {
 }
 
 FORM_BY_SLUG = {v["slug"]: k for k, v in FORMS.items()}
-# keep the home screen order: Installation Completion sits right after Delivery Proof
-for _i, _k in enumerate(sorted(FORMS, key=lambda k: (FORMS[k]["order"], k != "Installation Completion")), 1):
+# keep the home screen order: Installation Completion, then RMA, right after Delivery Proof
+for _i, _k in enumerate(sorted(FORMS, key=lambda k: (FORMS[k]["order"], {"Installation Completion": 0, "RMA": 1}.get(k, 2))), 1):
     FORMS[_k]["order"] = _i
 MAX_TEXT = 4000
 
@@ -556,6 +618,9 @@ def subject_for(form_type: str, data: dict, staff_name: str, receipt: str) -> st
         "Vehicle Inspection": f"{'DEFECTIVE - ' if d.get('defective') else ''}Vehicle {d.get('trip')}: {d.get('vehicle')} - {staff_name}",
         "Vehicle Incident": f"URGENT: Vehicle Incident - {d.get('vehicle')} ({staff_name})",
         "Employee Incident": f"URGENT: Employee Incident - {staff_name}",
+        "RMA": (f"RMA to {d.get('vendor')}: {d.get('po')}" + (f" - {d['job_customer']}" if d.get('job_customer') else "")
+                + (f" (vendor RMA {d['vendor_rma']})" if d.get('vendor_rma') else "")
+                if d.get("direction") == RMA_VENDOR else f"RMA from customer: {d.get('po')} - {d.get('customer')}"),
         "Disciplinary Action": f"CONFIDENTIAL: Disciplinary Action - {d.get('target')}",
         "Measure Report": f"{'REVISED ' if d.get('revision_of') else ''}Measure Report: {d.get('customer')}"
                           f"{' - PO ' + d['po'] if d.get('po') else ''} ({d.get('measured_by') or staff_name})",

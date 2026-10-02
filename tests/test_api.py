@@ -356,7 +356,7 @@ def test_staff_only_see_enabled_forms(client):
     assert r.status_code == 403
     login(client, "Adem Atis", "246810")
     slugs = [f["slug"] for f in client.get("/ops/api/me").json()["forms"]]
-    assert slugs == ["receiving", "delivery", "install", "eos", "inspection", "vincident", "incident", "disciplinary", "measure"]
+    assert slugs == ["receiving", "delivery", "install", "rma", "eos", "inspection", "vincident", "incident", "disciplinary", "measure"]
     r = client.put("/ops/api/admin/forms-enabled", json={"forms": ["Receiving Report", "End of Shift", "Disciplinary Action"]}, headers=H)
     assert r.json()["forms"] == ["Receiving Report", "End of Shift"]  # admin-only form can't be switched on for staff
     login(client, "Jaime Mendoza", "135790")
@@ -674,6 +674,39 @@ def test_installation_completion(client):
     bad = {**base, "submission_id": "sub-ins-0005", "cust_present": "No", "no_sign_reason": "x"}
     bad.pop("checklist:operates")
     assert client.post("/ops/api/reports/install", data=bad, files=photos, headers=H).status_code == 422
+
+
+def test_rma_vendor_and_customer(client):
+    login(client, "Adem Atis", "246810")
+    photos = {"product1": ("a.jpg", jpeg(), "image/jpeg")}
+    v = {"direction": "Return to vendor", "po": "SD-9", "vendor": "Hoelscher", "vendor_rma": "R-55",
+         "items": "1 slab 3068 LH", "reason_v": "Damaged in shipping", "want": "Replacement"}
+    # vendor fields required on a vendor return; customer fields are not
+    bad = {**v, "submission_id": "sub-rma-0001"}; bad.pop("want")
+    r = client.post("/ops/api/reports/rma", data=bad, files=photos, headers=H)
+    assert r.status_code == 422 and "What we want" in r.json()["detail"]
+    r = client.post("/ops/api/reports/rma", data={**v, "submission_id": "sub-rma-0002"}, files=photos, headers=H)
+    assert r.status_code == 200, r.text
+    assert r.json()["receipt"].startswith("RMA-")
+    e = conn().execute("SELECT subject, recipients FROM emails ORDER BY id DESC LIMIT 1").fetchone()
+    assert e[0].startswith("RMA to Hoelscher: SD-9 (vendor RMA R-55)") and "admin@simplydoors.com" in e[1]
+    # at least one product photo
+    r = client.post("/ops/api/reports/rma", data={**v, "submission_id": "sub-rma-0003"}, headers=H)
+    assert r.status_code == 422
+    # customer return: customer, condition, resolution, restocking fee
+    c = {"direction": "Return from customer", "po": "SD-10", "customer": "Lee", "items": "storm door",
+         "reason_c": "Changed mind", "condition": "Unused, in box", "resolution": "Store credit", "restock": "Yes"}
+    r = client.post("/ops/api/reports/rma", data={**c, "submission_id": "sub-rma-0004"}, files=photos, headers=H)
+    assert r.status_code == 422 and "Restocking fee amount" in r.json()["detail"]
+    r = client.post("/ops/api/reports/rma", data={**c, "submission_id": "sub-rma-0005", "restock_amt": "15%",
+                    "vendor": "ignored"}, files=photos, headers=H)
+    assert r.status_code == 200, r.text
+    rid = conn().execute("SELECT id, data FROM reports WHERE submission_id='sub-rma-0005'").fetchone()
+    d = json.loads(rid["data"])
+    assert "vendor" not in d and d["restock_amt"] == "15%"
+    e = conn().execute("SELECT subject FROM emails ORDER BY id DESC LIMIT 1").fetchone()[0]
+    assert e.startswith("RMA from customer: SD-10 - Lee")
+    assert client.get(f"/ops/api/admin/reports/{rid['id']}/pdf", headers=H).status_code == 200
 
 
 def test_reset_test_data_is_console_only_and_one_time(client, monkeypatch):
