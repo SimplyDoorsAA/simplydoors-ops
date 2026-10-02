@@ -15,6 +15,7 @@ from . import measure as M
 from .forms import FORMS, display_rows, photo_slots
 
 GREEN = colors.HexColor("#76c043")
+MS_SIDE, MS_TOP, MS_BOTTOM = 0.4 * inch, 0.35 * inch, 0.5 * inch
 LOGO = os.path.join(os.path.dirname(__file__), "static", "logo.png")
 TZ = ZoneInfo(os.environ.get("TZ_DISPLAY", "America/Chicago"))
 
@@ -54,8 +55,10 @@ def build_pdf(report, staff_name: str, data: dict, photos: list) -> bytes:
     """report: row from reports; photos: list of rows from photos (slot, path)."""
     form_type = report["form_type"]
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=0.6 * inch, rightMargin=0.6 * inch,
-                            topMargin=0.5 * inch, bottomMargin=0.6 * inch,
+    tight = FORMS.get(form_type, {}).get("kind") == "measure"     # measure: thin margins, the photos need the room
+    doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=(MS_SIDE if tight else 0.6 * inch),
+                            rightMargin=(MS_SIDE if tight else 0.6 * inch),
+                            topMargin=(MS_TOP if tight else 0.5 * inch), bottomMargin=(MS_BOTTOM if tight else 0.6 * inch),
                             title=f"{form_type} {report['receipt']}")
     ss = getSampleStyleSheet()
     alarm = FORMS.get(form_type, {}).get("confidential") or data.get("defective")
@@ -73,7 +76,7 @@ def build_pdf(report, staff_name: str, data: dict, photos: list) -> bytes:
                            f"Received {escape(local_time(report['submitted_at']))}"
                            + (" (sent from phone's offline queue)" if report["queued_on_phone"] else ""), small)]
     logo = _img(LOGO, 1.6 * inch, 0.6 * inch) if os.path.exists(LOGO) else ""
-    t = Table([[head_left, logo]], colWidths=[5.4 * inch, 1.9 * inch])
+    t = Table([[head_left, logo]], colWidths=[doc.width - 1.9 * inch, 1.9 * inch])
     t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (1, 0), (1, 0), "RIGHT"),
                            ("LINEBELOW", (0, 0), (-1, 0), 2, accent), ("BOTTOMPADDING", (0, 0), (-1, 0), 8)]))
     story += [t, Spacer(1, 10)]
@@ -139,13 +142,29 @@ def _kv(rows, cell, lab, widths=(2.0, 5.3), shade=None):
     return t
 
 
+def _aspect(path) -> float:
+    from PIL import Image as PILImage
+    with PILImage.open(path) as im:
+        return im.size[1] / im.size[0]
+
+
+def _spec_table(rows, style, W, grey):
+    if not rows:
+        return None
+    vw = (W - 2.0 * inch) / 2
+    sp = Table(rows, colWidths=[1.0 * inch, vw, 1.0 * inch, vw])
+    sp.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.4, grey), ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                            ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2)] + style))
+    return sp
+
+
 def _measure_body(story, report, staff_name, data, photos, cell, lab, small, h2):
     """One-line job strip, then each opening in a fixed half-page block (two per page, page 1 included):
     title bar with the size in big type, a compact two-column spec grid, then the photos as large as fit."""
     from reportlab.platypus.flowables import HRFlowable
     from . import geo
-    W = 7.3 * inch
-    HALF = (letter[1] - 0.5 * inch - 0.6 * inch) / 2 - 10          # usable page height / 2, minus the divider
+    W = letter[0] - 2 * MS_SIDE - 12                                # page frames keep 6pt padding on every side
+    HALF = (letter[1] - MS_TOP - MS_BOTTOM - 12) / 2 - 2            # exactly half the usable page
     red, grey = colors.HexColor("#c62828"), colors.HexColor("#dddddd")
     lab7 = ParagraphStyle("lab7", parent=lab, fontSize=7.5, leading=9, textColor=colors.HexColor("#5f6b76"))
     val9 = ParagraphStyle("val9", parent=cell, fontSize=9.5, leading=11.5)
@@ -171,13 +190,30 @@ def _measure_body(story, report, staff_name, data, photos, cell, lab, small, h2)
     items = data.get("items") or []
     # page 1 has the header, so its two openings share what's left; later pages split the full page
     head_h = sum(f.wrap(W, 2000)[1] for f in story)
-    FIRST_HALF = (letter[1] - 0.5 * inch - 0.6 * inch - head_h) / 2 - 10
+    FIRST_HALF = (letter[1] - MS_TOP - MS_BOTTOM - 12 - head_h) / 2 - 2
 
     slots = {s["slot"]: s for s in M.photo_slots(data)}
     by_item: dict[int, list] = {}
     for p in photos:
         if p["slot"] in slots and os.path.exists(p["path"]):
             by_item.setdefault(slots[p["slot"]]["item"], []).append(p)
+
+    def divider():
+        return [Spacer(1, 4), HRFlowable(width="100%", thickness=0.6, color=grey, dash=(3, 3)), Spacer(1, 4)]
+
+    def fit(head, build, target, start):
+        """Grow or shrink the photos until head + photos + divider fill `target` points of height."""
+        h = start
+        for _ in range(4):
+            body = build(h)
+            total = sum(f.wrap(W, 5000)[1] for f in head + [body] + divider())
+            gap = target - total
+            if -0.5 <= gap <= 1.5:
+                break
+            h = max(1.3 * inch, h + gap - 0.5)
+        if total > target:            # never spill past half a page
+            body = build(max(1.3 * inch, h + (target - total) - 1))
+        return head + [body] + divider()
 
     for i, it in enumerate(items):
         half = FIRST_HALF if i < 2 else HALF
@@ -193,7 +229,7 @@ def _measure_body(story, report, staff_name, data, photos, cell, lab, small, h2)
         if it.get("tempered"):
             left += ' &nbsp;<font color="#c62828"><b>TEMPERED</b></font>'
         right = escape(size) + (f'<br/><font size="8" color="#5f6b76">{escape(sub)}</font>' if sub else "")
-        tb = Table([[Paragraph(left, ttl), Paragraph(right, big)]], colWidths=[3.9 * inch, 3.4 * inch])
+        tb = Table([[Paragraph(left, ttl), Paragraph(right, big)]], colWidths=[W * 0.54, W * 0.46])
         tb.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#eef6e6") if it["type"] == "door" else colors.HexColor("#e8f1f8")),
                                 ("LINEBEFORE", (0, 0), (0, 0), 4, GREEN if it["type"] == "door" else colors.HexColor("#4a90c2")),
                                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("TOPPADDING", (0, 0), (-1, -1), 4),
@@ -236,40 +272,44 @@ def _measure_body(story, report, staff_name, data, photos, cell, lab, small, h2)
             left.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.4, grey), ("VALIGN", (0, 0), (-1, -1), "TOP"),
                                       ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2)]))
             lh = left.wrap(3.1 * inch, 2000)[1]
-            avail = half - tb.wrap(W, 2000)[1] - 38
-            if lh <= avail:
+            avail = half - tb.wrap(W, 2000)[1] - 30
+            # how tall the photos could get beside the specs vs. in a row under them; use whichever is bigger
+            aspect = max(_aspect(p["path"]) for p in pics)
+            side_h = min(avail, ((W - 3.2 * inch) / len(pics) - 8) * aspect)
+            spec_h = (sp_preview.wrap(W, 2000)[1] if (sp_preview := _spec_table(rows, style, W, grey)) else 0)
+            row_h = min(half - tb.wrap(W, 2000)[1] - spec_h - 30, (W / len(pics) - 6) * aspect)
+            if lh <= avail and side_h >= row_h:
                 n = len(pics)
                 pw = (W - 3.2 * inch) / n
-                cells = [photo_cell(p, pw - 8, min(avail, 4.3 * inch), n) for p in pics]
-                ptab = Table([cells], colWidths=[pw] * n)
-                ptab.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                                          ("LEFTPADDING", (0, 0), (-1, -1), 3), ("RIGHTPADDING", (0, 0), (-1, -1), 3)]))
-                both = Table([[left, ptab]], colWidths=[3.2 * inch, W - 3.2 * inch])
-                both.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                                          ("RIGHTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (0, 0), 4)]))
-                story.append(KeepTogether([tb, both, Spacer(1, 6),
-                                           HRFlowable(width="100%", thickness=0.6, color=grey, dash=(3, 3)), Spacer(1, 6)]))
+
+                def build_side(mh, n=n, pw=pw, left=left, pics=pics):
+                    ptab = Table([[photo_cell(p, pw - 8, mh, n) for p in pics]], colWidths=[pw] * n)
+                    ptab.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                                              ("LEFTPADDING", (0, 0), (-1, -1), 3), ("RIGHTPADDING", (0, 0), (-1, -1), 3)]))
+                    both = Table([[left, ptab]], colWidths=[3.2 * inch, W - 3.2 * inch])
+                    both.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                                              ("RIGHTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (0, 0), 4)]))
+                    return both
+                story.append(KeepTogether(fit([tb], build_side, half, avail)))
                 continue
 
         block = [tb]
         if rows:
-            sp = Table(rows, colWidths=[1.0 * inch, 2.65 * inch, 1.0 * inch, 2.65 * inch])
-            sp.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.4, grey), ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                                    ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2)] + style))
-            block.append(sp)
+            block.append(_spec_table(rows, style, W, grey))
         used = sum(f.wrap(W, 2000)[1] for f in block)
 
-        # photos: one row, as large as the rest of the half page allows
+        # photos: one row, grown until the block fills its half of the page
         if pics:
             n = len(pics)
             col = W / n
-            max_h = max(1.6 * inch, min(3.6 * inch, half - used - 40))   # leave room for captions + divider
-            max_w = min(col - 6, 3.6 * inch)
-            pt = Table([[photo_cell(p, max_w, max_h, n) for p in pics]], colWidths=[col] * n)
-            pt.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                                    ("LEFTPADDING", (0, 0), (-1, -1), 3), ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-                                    ("TOPPADDING", (0, 0), (-1, -1), 6)]))
-            block.append(pt)
-        else:
-            block.append(Paragraph("No photos for this one.", small))
+
+            def build_row(mh, n=n, col=col, pics=pics):
+                pt = Table([[photo_cell(p, col - 6, mh, n) for p in pics]], colWidths=[col] * n)
+                pt.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                                        ("LEFTPADDING", (0, 0), (-1, -1), 3), ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                                        ("TOPPADDING", (0, 0), (-1, -1), 5)]))
+                return pt
+            story.append(KeepTogether(fit(block, build_row, half, half - used - 30)))
+            continue
+        block.append(Paragraph("No photos for this one.", small))
         story.append(KeepTogether(block + [Spacer(1, 6), HRFlowable(width="100%", thickness=0.6, color=grey, dash=(3, 3)), Spacer(1, 6)]))
