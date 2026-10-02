@@ -709,6 +709,64 @@ def test_rma_vendor_and_customer(client):
     assert client.get(f"/ops/api/admin/reports/{rid['id']}/pdf", headers=H).status_code == 200
 
 
+def test_owner_test_mode_and_log_cleanup(client):
+    # only the owner can switch test mode on
+    login(client, "Paz Galambos", "112233")
+    assert client.put("/ops/api/owner/test-mode", json={"on": True}, headers=H).status_code == 403
+    login(client, "Adem Atis", "246810")
+    assert client.put("/ops/api/owner/test-mode", json={"on": True}, headers=H).json()["test_mode"] is True
+    assert client.get("/ops/api/me", headers=H).json()["test_mode"] is True
+    real_before = conn().execute("SELECT MAX(receipt) FROM reports WHERE receipt LIKE 'RCV-%'").fetchone()[0]
+    r = receiving(client, "sub-test-0001", is_test="1")
+    assert r.json()["receipt"] == "TEST-RCV-00001"
+    rid = conn().execute("SELECT id FROM reports WHERE receipt='TEST-RCV-00001'").fetchone()[0]
+    e = conn().execute("SELECT recipients, bcc, subject FROM emails WHERE report_id=?", (rid,)).fetchone()
+    assert e["recipients"] == "adem@simplydoors.com" and e["bcc"] == "" and e["subject"].startswith("TEST - ")
+    # a real report right after keeps the real numbering going
+    r = receiving(client, "sub-real-0001")
+    assert r.json()["receipt"] > (real_before or "") and not r.json()["receipt"].startswith("TEST")
+    real_id = conn().execute("SELECT id FROM reports WHERE submission_id='sub-real-0001'").fetchone()[0]
+    # non-owner flag is ignored
+    login(client, "Jaime Mendoza", "135790")
+    assert not receiving(client, "sub-test-jaime", is_test="1").json()["receipt"].startswith("TEST")
+    # deleting: only the owner, only test reports
+    login(client, "Paz Galambos", "112233")
+    assert client.delete(f"/ops/api/admin/reports/{rid}", headers=H).status_code == 403
+    login(client, "Adem Atis", "246810")
+    client.get(f"/ops/api/admin/reports/{rid}", headers=H)   # leaves a report_viewed line
+    assert client.delete(f"/ops/api/admin/reports/{real_id}", headers=H).status_code == 403
+    assert client.delete(f"/ops/api/admin/reports/{rid}", headers=H).status_code == 200
+    c = conn()
+    assert not c.execute("SELECT 1 FROM reports WHERE id=?", (rid,)).fetchone()
+    assert not c.execute("SELECT 1 FROM audit WHERE target=?", (f"report:{rid}",)).fetchone()
+    assert c.execute("SELECT 1 FROM audit WHERE action='test_report_deleted' AND target='TEST-RCV-00001'").fetchone()
+    # own routine lines are deletable; sign-ins, other people's lines and receipts are not
+    log = client.get("/ops/api/admin/audit?limit=1000", headers=H).json()
+    assert log["can_delete"]
+    mine = [r for r in log["rows"] if r["deletable"]]
+    assert mine and all(r["actor_name"] == "Adem Atis" for r in mine)
+    locked = [r["id"] for r in log["rows"] if r["action"] in ("login_ok", "test_mode_on", "test_report_deleted")
+              or r["actor_name"] != "Adem Atis"]
+    assert locked and not any(r["deletable"] for r in log["rows"] if r["id"] in locked)
+    assert client.post("/ops/api/admin/audit/delete", json={"ids": [mine[0]["id"], locked[0]]}, headers=H).status_code == 403
+    assert c.execute("SELECT 1 FROM audit WHERE id=?", (mine[0]["id"],)).fetchone()   # nothing deleted on refusal
+    r = client.post("/ops/api/admin/audit/delete", json={"ids": [x["id"] for x in mine]}, headers=H)
+    assert r.json()["deleted"] == len(mine)
+    assert c.execute("SELECT 1 FROM audit WHERE action='log_lines_deleted'").fetchone()
+    # Paz (admin, not owner) sees no delete boxes and can't call it
+    login(client, "Paz Galambos", "112233")
+    log = client.get("/ops/api/admin/audit", headers=H).json()
+    assert not log["can_delete"] and not any(r["deletable"] for r in log["rows"])
+    assert client.post("/ops/api/admin/audit/delete", json={"ids": [1]}, headers=H).status_code == 403
+    # and the database itself still refuses deletes
+    raw = sqlite3.connect(os.path.join(TMP, "ops.db"))
+    with pytest.raises(sqlite3.IntegrityError):
+        raw.execute("DELETE FROM audit")
+    raw.close()
+    login(client, "Adem Atis", "246810")
+    client.put("/ops/api/owner/test-mode", json={"on": False}, headers=H)
+
+
 def test_reset_test_data_is_console_only_and_one_time(client, monkeypatch):
     # keep this test last: it wipes the reports
     from app import cli

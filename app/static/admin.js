@@ -39,6 +39,8 @@
     app_started: "App started", staff_seeded: "Staff list created",
     owner_set: "App owner set (server console)", private_copies_changed: "Changed their private copies",
     owner_copies_set_up: "Owner's address moved to private copies", test_data_reset: "Test data cleared (server console)", list_changed: "Changed a pick list", forms_switched: "Changed which forms staff see", measure_reopened: "Reopened a measure",
+    test_mode_on: "Turned test mode on", test_mode_off: "Turned test mode off",
+    log_lines_deleted: "Deleted own log lines", test_report_deleted: "Deleted a test report",
   };
 
   // ------------------------------------------------------------ tabs
@@ -56,7 +58,7 @@
       const rows = await api(`api/admin/reports?q=${q}&form=${f}`);
       $("#repList").innerHTML = rows.length ? `<table class="rows"><thead><tr><th>Receipt</th><th>Form</th><th>From</th>
         <th class="hide-sm">Details</th><th>Received</th><th>Email</th></tr></thead><tbody>` +
-        rows.map(r => `<tr class="click" data-id="${r.id}"><td><b>${esc(r.receipt)}</b></td><td>${esc(r.form_type)}</td>
+        rows.map(r => `<tr class="click" data-id="${r.id}"><td><b>${esc(r.receipt)}</b>${r.is_test ? ' <span class="badge warn">TEST</span>' : ""}</td><td>${esc(r.form_type)}</td>
           <td>${esc(r.staff_name)}</td><td class="hide-sm">${esc(r.summary)}</td><td>${esc(when(r.submitted_at))}${r.queued_on_phone ? ' <span class="badge warn">sent late</span>' : ""}${r.no_geo ? ` <span class="badge warn">${r.no_geo} photo${r.no_geo > 1 ? "s" : ""} without location</span>` : ""}</td>
           <td>${emailBadge(r.email_status)}</td></tr>`).join("") + `</tbody></table>`
         : `<p class="muted">No reports yet.</p>`;
@@ -75,7 +77,8 @@
         <p class="muted small">From ${esc(r.staff_name)} · received ${esc(when(r.submitted_at))}
         ${r.started_at ? ` · form opened ${esc(when(r.started_at))} (phone clock)` : ""}${r.queued_on_phone ? " · sent from the phone's offline queue" : ""}</p>
         <div class="actions"><a class="mini" href="api/admin/reports/${r.id}/pdf" target="_blank" rel="noopener">Open PDF</a>
-        <button class="mini" id="resend" type="button">Email it again</button></div>
+        <button class="mini" id="resend" type="button">Email it again</button>
+        ${r.is_test && amOwner ? '<button class="mini danger" id="delTest" type="button">Delete test report</button>' : ""}</div>
         <table class="kv">${r.rows.map(([a, b]) => `<tr><td>${esc(a)}</td><td>${esc(b)}</td></tr>`).join("")}</table>
         <h3>Photos (${r.photos.length})</h3>
         <div class="gallery">${r.photos.map(p => `<div><a href="api/admin/photos/${p.id}" target="_blank" rel="noopener"><img loading="lazy" src="api/admin/photos/${p.id}" alt=""></a>
@@ -89,6 +92,11 @@
       $("#resend").onclick = async () => {
         if (!confirm("Send this report's email again to everyone on the list?")) return;
         try { await api(`api/admin/reports/${r.id}/resend`, { method: "POST" }); toast("Queued to send again"); openReport(id); } catch (e) { fail(e); }
+      };
+      if ($("#delTest")) $("#delTest").onclick = async () => {
+        if (!confirm(`Delete ${r.receipt}? Its photos, emails and log lines go too. This can't be undone.`)) return;
+        try { await api(`api/admin/reports/${r.id}`, { method: "DELETE" }); toast(`${r.receipt} deleted`); closeSheet(); loadReports(); }
+        catch (e) { fail(e); }
       };
       $$("[data-retry]").forEach(b => b.onclick = async () => {
         try { await api(`api/admin/emails/${b.dataset.retry}/retry`, { method: "POST" }); toast("Trying again"); setTimeout(() => openReport(id), 2500); } catch (e) { fail(e); }
@@ -113,12 +121,16 @@
       const d = await api(`api/admin/audit?${p}`);
       logOffset += d.rows.length;
       $("#logCount").textContent = `${d.total} entr${d.total === 1 ? "y" : "ies"}`;
-      const html = d.rows.map(r => `<tr><td>${esc(when(r.at))}</td><td>${esc(r.actor_name || "—")}</td>
+      logCanDelete = !!d.can_delete;
+      const box = (r) => logCanDelete ? `<td class="ck">${r.deletable ? `<input type="checkbox" data-del="${r.id}" aria-label="Select line">` : ""}</td>` : "";
+      const html = d.rows.map(r => `<tr>${box(r)}<td>${esc(when(r.at))}</td><td>${esc(r.actor_name || "—")}</td>
         <td><b>${esc(ACTIONS[r.action] || r.action)}</b>${r.target ? `<div class="det">${esc(r.target)}</div>` : ""}</td>
         <td class="hide-sm det">${esc(detail(r.details))}${r.ip ? `<br>${esc(r.ip)} · ${esc(device(r.user_agent))}` : ""}</td></tr>`).join("");
-      if (reset) $("#logList").innerHTML = `<table class="rows"><thead><tr><th>When</th><th>Who</th><th>What</th><th class="hide-sm">Details</th></tr></thead><tbody>${html}</tbody></table>`;
+      if (reset) $("#logList").innerHTML = `<table class="rows"><thead><tr>${logCanDelete ? "<th></th>" : ""}<th>When</th><th>Who</th><th>What</th><th class="hide-sm">Details</th></tr></thead><tbody>${html}</tbody></table>`;
       else $("#logList tbody").insertAdjacentHTML("beforeend", html);
       $("#logMore").classList.toggle("hidden", logOffset >= d.total);
+      $("#logSelAll").classList.toggle("hidden", !logCanDelete);
+      $("#logDel").classList.toggle("hidden", !logCanDelete);
     } catch (e) { fail(e); }
   }
   function detail(j) {
@@ -134,6 +146,15 @@
   Object.entries(ACTIONS).forEach(([k, v]) => $("#logAction").insertAdjacentHTML("beforeend", `<option value="${k}">${esc(v)}</option>`));
   ["#logPerson", "#logFrom", "#logTo", "#logAction"].forEach(s => $(s).addEventListener("change", () => loadLog(true)));
   $("#logMore").onclick = () => loadLog(false);
+  let logCanDelete = false;
+  $("#logSelAll").onclick = () => { const bs = $$("#logList [data-del]"); const on = bs.some(b => !b.checked); bs.forEach(b => b.checked = on); };
+  $("#logDel").onclick = async () => {
+    const ids = $$("#logList [data-del]:checked").map(b => +b.dataset.del);
+    if (!ids.length) return toast("Tick the lines to delete first (only your own routine lines have a box).");
+    if (!confirm(`Delete ${ids.length} line${ids.length > 1 ? "s" : ""} from the activity log? A note that you did this stays in the log.`)) return;
+    try { const r = await api("api/admin/audit/delete", { method: "POST", json: { ids } }); toast(`Deleted ${r.deleted}`); loadLog(true); }
+    catch (e) { fail(e); }
+  };
   $("#logCsv").onclick = () => { location.href = `api/admin/audit.csv?${logQuery()}`; };
 
   // ------------------------------------------------------------ staff

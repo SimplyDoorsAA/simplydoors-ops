@@ -29,7 +29,7 @@ warnings.simplefilter("error", Image.DecompressionBombWarning)
 PHOTO_FORMATS = ["JPEG", "PNG", "WEBP"]
 
 from . import alerts, auth, geo, mailer
-from .db import DATA_DIR, DB_PATH, audit, conn, init_db, now_iso
+from .db import DATA_DIR, DB_PATH, audit, conn, delete_audit_rows, get_setting, init_db, now_iso, set_setting
 from . import forms as forms_mod
 from .forms import (FORM_BY_SLUG, FORMS, EXTRA_RULES, LIST_LABELS, DEFAULT_LISTS, clean, get_list, photo_minimums,
                     photo_slots, public_spec, recipients_for, set_list, split_recipients, subject_for, summary, visible_forms)
@@ -42,7 +42,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-16"
+APP_VERSION = "stage3-17"
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -93,6 +93,14 @@ def current_staff(request: Request):
     row = auth.session_staff(request.cookies.get(COOKIE))
     if not row:
         raise HTTPException(401, "Please sign in again.")
+    return row
+
+
+def current_owner(request: Request):
+    row = current_staff(request)
+    if not row["is_owner"]:
+        audit(row["id"], row["name"], "admin_denied", request.url.path, None, client_ip(request), ua(request))
+        raise HTTPException(403, "Only the app owner can do this.")
     return row
 
 
@@ -242,6 +250,15 @@ def setup_complete(request: Request, body: SetupBody):
     return resp
 
 
+@app.put("/api/owner/test-mode")
+async def set_test_mode(request: Request, owner=Depends(current_owner)):
+    require_app_header(request)
+    on = bool((await request.json()).get("on"))
+    set_setting("owner_test_mode", "1" if on else "0")
+    audit(owner["id"], owner["name"], "test_mode_on" if on else "test_mode_off", None, None, client_ip(request), ua(request))
+    return {"test_mode": on}
+
+
 @app.post("/api/logout")
 def logout(request: Request):
     require_app_header(request)
@@ -259,6 +276,7 @@ def me(staff=Depends(current_staff)):
     return {
         "id": staff["id"], "name": staff["name"], "dept": staff["dept"], "is_admin": bool(staff["is_admin"]),
         "is_owner": bool(staff["is_owner"]),
+        "test_mode": bool(staff["is_owner"]) and get_setting("owner_test_mode") == "1",
         "forms": [public_spec(t) for t in visible_forms(staff)],
     }
 
@@ -360,24 +378,29 @@ async def submit_report(slug: str, request: Request, staff=Depends(current_staff
 
     started_at = str(form.get("started_at", ""))[:40] or None
     queued = 1 if str(form.get("queued", "")) == "1" else 0
+    is_test = bool(staff["is_owner"]) and str(form.get("is_test", "")) == "1"   # only the owner can file test reports
     return await run_in_threadpool(_store_report, form_type, spec, staff, submission_id, data, photo_blobs,
-                                   started_at, queued, client_ip(request), ua(request), kept)
+                                   started_at, queued, client_ip(request), ua(request), kept, is_test)
 
 
-def _store_report(form_type, spec, staff, submission_id, data, photo_blobs, started_at, queued, ip, agent, kept=()):
+def _store_report(form_type, spec, staff, submission_id, data, photo_blobs, started_at, queued, ip, agent, kept=(),
+                  is_test=False):
     c = conn()
     rid = None
     try:
         c.execute("BEGIN IMMEDIATE")
         cur = c.execute(
-            "INSERT INTO reports(submission_id, form_type, staff_id, submitted_at, started_at, queued_on_phone, data)"
-            " VALUES (?,?,?,?,?,?,?)",
-            (submission_id, form_type, staff["id"], now_iso(), started_at, queued, json.dumps(data, ensure_ascii=False)))
+            "INSERT INTO reports(submission_id, form_type, staff_id, submitted_at, started_at, queued_on_phone, data, is_test)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (submission_id, form_type, staff["id"], now_iso(), started_at, queued, json.dumps(data, ensure_ascii=False),
+             1 if is_test else 0))
         rid = cur.lastrowid
         # each form counts on its own (VIN-00001, VIN-00002 ...), carrying on from any earlier numbers
+        # test reports count separately (TEST-RMA-00001) so real numbers never have gaps
+        pre = ("TEST-" if is_test else "") + spec["prefix"]
         last = c.execute("SELECT MAX(CAST(substr(receipt, ?) AS INTEGER)) FROM reports WHERE receipt LIKE ?",
-                         (len(spec["prefix"]) + 2, spec["prefix"] + "-%")).fetchone()[0]
-        receipt = f"{spec['prefix']}-{(last or 0) + 1:05d}"
+                         (len(pre) + 2, pre + "-%")).fetchone()[0]
+        receipt = f"{pre}-{(last or 0) + 1:05d}"
         c.execute("UPDATE reports SET receipt=? WHERE id=?", (receipt, rid))
         folder = os.path.join(PHOTO_DIR, str(rid))
         os.makedirs(folder, exist_ok=True)
@@ -405,9 +428,15 @@ def _store_report(form_type, spec, staff, submission_id, data, photo_blobs, star
             details["photos_carried_over"] = len(kept)
         if data.get("revision_of"):
             details["revision_of"] = data["revision_of"]
+        if is_test:
+            details["test"] = True
         audit(staff["id"], staff["name"], "report_submitted", f"report:{rid}", details, ip, agent)
-        to, bcc = split_recipients(form_type, data)
-        mailer.queue_report_email(rid, to, subject_for(form_type, data, staff["name"], receipt), bcc)
+        subject = subject_for(form_type, data, staff["name"], receipt)
+        if is_test:   # test reports only ever go to the owner
+            to, bcc, subject = [e for e in [staff["email"]] if e], [], ("TEST - " + subject)[:200]
+        else:
+            to, bcc = split_recipients(form_type, data)
+        mailer.queue_report_email(rid, to, subject, bcc)
         c.execute("COMMIT")
     except sqlite3.IntegrityError:
         c.execute("ROLLBACK")
@@ -575,7 +604,74 @@ def admin_audit(request: Request, admin=Depends(current_admin)):
     c = conn()
     total = c.execute(f"SELECT COUNT(*) FROM audit{w}", args).fetchone()[0]
     rows = c.execute(f"SELECT * FROM audit{w} ORDER BY id DESC LIMIT ? OFFSET ?", args + [limit, offset]).fetchall()
-    return {"total": total, "rows": [dict(r) for r in rows]}
+    own = bool(admin["is_owner"])
+    return {"total": total, "can_delete": own,
+            "rows": [dict(r) | {"deletable": own and _own_deletable(r, admin["id"])} for r in rows]}
+
+
+# The owner may remove their OWN routine lines (views, downloads, submissions). Never: sign-ins, PINs, staff,
+# email lists, settings, test-mode switches, or the receipts these deletes leave behind.
+OWN_DELETABLE = {"audit_viewed", "audit_exported", "report_viewed", "report_pdf_downloaded", "photo_viewed",
+                 "report_submitted", "measure_reopened", "email_resend_requested", "email_retry_requested"}
+
+
+def _own_deletable(r, owner_id) -> bool:
+    return r["actor_id"] == owner_id and r["action"] in OWN_DELETABLE
+
+
+@app.post("/api/admin/audit/delete")
+async def delete_own_audit(request: Request, owner=Depends(current_owner)):
+    require_app_header(request)
+    try:
+        ids = [int(i) for i in (await request.json()).get("ids", [])][:1000]
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Bad ids")
+    c = conn()
+    c.execute("BEGIN IMMEDIATE")
+    try:
+        rows = c.execute(f"SELECT * FROM audit WHERE id IN ({','.join('?' * len(ids))})", ids).fetchall() if ids else []
+        ok = [r for r in rows if _own_deletable(r, owner["id"])]
+        if len(ok) != len(ids):
+            raise HTTPException(403, "Some of those lines can't be deleted (only your own routine lines can).")
+        n = delete_audit_rows(c, [r["id"] for r in ok])
+        kinds = sorted({r["action"] for r in ok})
+        audit(owner["id"], owner["name"], "log_lines_deleted", None, {"count": n, "kinds": kinds},
+              client_ip(request), ua(request))
+        c.execute("COMMIT")
+    except Exception:
+        c.execute("ROLLBACK")
+        raise
+    alerts.push("Ops app: activity log lines deleted", f"{owner['name']} deleted {n} of their own log lines.")
+    return {"deleted": n}
+
+
+@app.delete("/api/admin/reports/{rid}")
+def delete_test_report(rid: int, request: Request, owner=Depends(current_owner)):
+    require_app_header(request)
+    c = conn()
+    r = c.execute("SELECT id, receipt, is_test FROM reports WHERE id=?", (rid,)).fetchone()
+    if not r:
+        raise HTTPException(404)
+    if not r["is_test"]:
+        raise HTTPException(403, "Only TEST reports can be deleted.")
+    c.execute("BEGIN IMMEDIATE")
+    try:
+        eids = [e[0] for e in c.execute("SELECT id FROM emails WHERE report_id=?", (rid,))]
+        pids = [p[0] for p in c.execute("SELECT id FROM photos WHERE report_id=?", (rid,))]
+        targets = [f"report:{rid}"] + [f"email:{e}" for e in eids] + [f"photo:{p}" for p in pids]
+        lines = [a[0] for a in c.execute(f"SELECT id FROM audit WHERE target IN ({','.join('?' * len(targets))})", targets)]
+        n = delete_audit_rows(c, lines)
+        c.execute("DELETE FROM emails WHERE report_id=?", (rid,))
+        c.execute("DELETE FROM photos WHERE report_id=?", (rid,))
+        c.execute("DELETE FROM reports WHERE id=?", (rid,))
+        audit(owner["id"], owner["name"], "test_report_deleted", r["receipt"], {"log_lines_removed": n},
+              client_ip(request), ua(request))
+        c.execute("COMMIT")
+    except Exception:
+        c.execute("ROLLBACK")
+        raise
+    shutil.rmtree(os.path.join(PHOTO_DIR, str(rid)), ignore_errors=True)
+    return {"deleted": r["receipt"]}
 
 
 @app.get("/api/admin/audit.csv")
@@ -608,7 +704,7 @@ def admin_reports(request: Request, admin=Depends(current_admin)):
         args += [f"%{p['q']}%"] * 3
     w = (" WHERE " + " AND ".join(where)) if where else ""
     rows = conn().execute(
-        f"SELECT r.id, r.receipt, r.form_type, r.submitted_at, r.queued_on_phone, s.name AS staff_name, r.data,"
+        f"SELECT r.id, r.receipt, r.form_type, r.submitted_at, r.queued_on_phone, r.is_test, s.name AS staff_name, r.data,"
         f" (SELECT status FROM emails e WHERE e.report_id=r.id ORDER BY e.id DESC LIMIT 1) AS email_status,"
         f" (SELECT COUNT(*) FROM photos p WHERE p.report_id=r.id AND COALESCE(p.geo_status,'missing') NOT IN ('ok','signature')) AS no_geo"
         f" FROM reports r JOIN staff s ON s.id=r.staff_id{w} ORDER BY r.id DESC LIMIT 300", args).fetchall()
@@ -617,7 +713,7 @@ def admin_reports(request: Request, admin=Depends(current_admin)):
         d = json.loads(r["data"])
         summary = forms_mod.summary(r["form_type"], d)
         out.append({k: r[k] for k in ("id", "receipt", "form_type", "submitted_at", "queued_on_phone",
-                                      "staff_name", "email_status", "no_geo")} | {"summary": summary})
+                                      "staff_name", "email_status", "no_geo")} | {"summary": summary, "is_test": bool(r["is_test"])})
     return out
 
 
@@ -642,6 +738,7 @@ def admin_report(rid: int, request: Request, admin=Depends(current_admin)):
     return {
         "id": r["id"], "receipt": r["receipt"], "form_type": r["form_type"], "staff_name": r["staff_name"],
         "submitted_at": r["submitted_at"], "started_at": r["started_at"], "queued_on_phone": r["queued_on_phone"],
+        "is_test": bool(r["is_test"]),
         "rows": display_rows(r["form_type"], data),
         "photos": [{"id": p["id"], "slot": p["slot"], "label": labels.get(p["slot"], p["slot"]),
                     "located": p["geo_status"] in ("ok", "signature"), "signature": p["geo_status"] == "signature",

@@ -356,9 +356,22 @@
     _: ic('<rect x="4" y="4" width="16" height="16" rx="2"/>'),
   };
 
+  // Test mode (owner only): reports are marked TEST, numbered separately, emailed only to you, and deletable in Admin
+  $("#testSwitch").addEventListener("change", async (ev) => {
+    const on = ev.target.checked;
+    try { const r = await api("api/owner/test-mode", { method: "PUT", json: { on } }); me.test_mode = r.test_mode; }
+    catch (e) { ev.target.checked = !on; alert(e.message); }
+    showHome();
+  });
+
   async function showHome() {
     show("viewHome");
     updateGeoNote();
+    const tb = $("#testBox");
+    tb.classList.toggle("hidden", !me.is_owner);
+    tb.classList.toggle("on", !!me.test_mode);
+    $("#testSwitch").checked = !!me.test_mode;
+    document.body.classList.toggle("testmode", !!me.test_mode);
     const cards = $("#formCards");
     cards.innerHTML = (me.forms || []).map(f => `<button class="card tilecard${f.admin_only ? " admin" : ""}" type="button" data-open="${esc(f.slug)}" title="${esc(f.blurb)}">
         <span class="card-icon" aria-hidden="true">${FORM_ICONS[f.slug] || FORM_ICONS._}</span>
@@ -958,7 +971,7 @@
     clearTimeout(draftTimer);
     const keep = new Set(allSlots());
     const ph = Object.fromEntries(Object.entries(photos).filter(([s]) => keep.has(s)));
-    const entry = { id: newId(), slug: spec.slug, type: spec.type, userId: me.id, user: me.name, fields: f,
+    const entry = { id: newId(), slug: spec.slug, type: spec.type, userId: me.id, user: me.name, test: !!me.test_mode, fields: f,
       photos: ph, photoMeta: { ...photoMeta }, startedAt, createdAt: new Date().toISOString(), tries: 0 };
     try {
       await outboxPut(entry);              // safe on the phone before anything else
@@ -1595,7 +1608,7 @@
     });
     btn.disabled = true; btn.textContent = "Saving…";
     clearTimeout(mDraftTimer);
-    const entry = { id: newId(), slug: "measure", type: MS.type, userId: me.id, user: me.name,
+    const entry = { id: newId(), slug: "measure", type: MS.type, userId: me.id, user: me.name, test: !!me.test_mode,
       fields: { ...job, items: JSON.stringify(items), keep: JSON.stringify(keep), revision_of: mJob.revision_of || "" },
       photos: ph, photoMeta: meta, measured_by: mJob.measured_by, startedAt, createdAt: new Date().toISOString(), tries: 0 };
     try {
@@ -1652,6 +1665,7 @@
     fd.append("submission_id", entry.id);
     fd.append("started_at", entry.startedAt || "");
     fd.append("queued", entry.tries > 0 ? "1" : "0");
+    if (entry.test) fd.append("is_test", "1");
     try {
       const r = await api(`api/reports/${entry.slug}`, { method: "POST", body: fd });
       await outboxDel(entry.id);

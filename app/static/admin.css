@@ -62,3 +62,4 @@ html, body { overflow-x: hidden; }
 #saveForms { margin: 4px 0 18px; }
 .rule.mine { border-color: var(--green); background: #fbfdf8; }
 #myCopies { margin: 8px 0; }
+td.ck { width: 34px; } td.ck input { width: 22px; height: 22px; }

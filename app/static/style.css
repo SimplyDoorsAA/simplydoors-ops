@@ -298,3 +298,11 @@ label.tog input { width: 24px; height: 24px; accent-color: var(--red); }
 .card.tilecard { min-height: 108px; justify-content: flex-start; }
 .tilecard .card-title { font-size: 17px; }
 .okbtns .na input:checked + span { background: #5f6b76; border-color: #5f6b76; color: #fff; }
+/* owner test mode */
+.testbox { display: flex; gap: 12px; align-items: center; background: var(--card); border: 1.5px solid var(--line);
+  border-radius: 12px; padding: 10px 14px; margin: 0 0 14px; cursor: pointer; }
+.testbox input { width: 24px; height: 24px; flex: none; accent-color: var(--amber); }
+.testbox small { display: block; color: var(--muted); font-size: 14px; }
+.testbox.on { background: var(--amber-bg); border-color: #e7c66b; }
+body.testmode { box-shadow: inset 0 6px 0 #f0b400; }
+body.testmode #viewForm h1::after, body.testmode #viewMeasure h1::after { content: " · TEST"; color: var(--amber); }

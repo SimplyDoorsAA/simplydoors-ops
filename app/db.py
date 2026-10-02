@@ -139,9 +139,14 @@ CREATE TABLE IF NOT EXISTS audit (
 CREATE INDEX IF NOT EXISTS audit_at ON audit(at);
 CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit
 BEGIN SELECT RAISE(ABORT, 'activity log is append-only'); END;
-CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit
-BEGIN SELECT RAISE(ABORT, 'activity log is append-only'); END;
+-- The one exception: rows the app has listed in audit_delete_ok inside the same transaction
+-- (the owner removing test reports or their own routine lines; see delete_audit_rows).
+CREATE TABLE IF NOT EXISTS audit_delete_ok (id INTEGER PRIMARY KEY);
 """
+
+AUDIT_DELETE_TRIGGER = ("CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit "
+                        "WHEN OLD.id NOT IN (SELECT id FROM audit_delete_ok) "
+                        "BEGIN SELECT RAISE(ABORT, 'activity log is append-only'); END")
 
 # Staff as listed in the old portal + Apps Script (2026-10-01).
 SEED_STAFF = [
@@ -184,6 +189,13 @@ SEED_RULES = {
 def init_db() -> None:
     c = conn()
     c.executescript(SCHEMA)
+    trig = c.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='audit_no_delete'").fetchone()
+    if not trig or "audit_delete_ok" not in trig[0]:
+        c.execute("DROP TRIGGER IF EXISTS audit_no_delete")
+        c.execute(AUDIT_DELETE_TRIGGER)
+    rcols = {r[1] for r in c.execute("PRAGMA table_info(reports)")}
+    if "is_test" not in rcols:
+        c.execute("ALTER TABLE reports ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0")
     cols = {r[1] for r in c.execute("PRAGMA table_info(staff)")}
     pcols = {r[1] for r in c.execute("PRAGMA table_info(photos)")}
     for col, typ in (("taken_at", "TEXT"), ("lat", "REAL"), ("lon", "REAL"), ("acc", "REAL"),
@@ -231,6 +243,17 @@ def _move_owner_off_lists(c) -> None:
             c.execute("UPDATE email_rules SET recipients=? WHERE form_type=?", (", ".join(keep), r["form_type"]))
     c.execute("INSERT OR REPLACE INTO settings(key, value) VALUES ('owner_copies', ?)", (json.dumps(forms),))
     audit(None, "system", "owner_copies_set_up", None, {"forms": forms})
+
+
+def delete_audit_rows(c, ids) -> int:
+    """Remove specific activity-log rows. Call inside an open transaction. Nothing else can delete from the log."""
+    ids = [int(i) for i in ids]
+    if not ids:
+        return 0
+    c.executemany("INSERT OR IGNORE INTO audit_delete_ok(id) VALUES (?)", [(i,) for i in ids])
+    n = c.execute(f"DELETE FROM audit WHERE id IN ({','.join('?' * len(ids))})", ids).rowcount
+    c.execute("DELETE FROM audit_delete_ok")
+    return n
 
 
 def audit(actor_id, actor_name, action, target=None, details=None, ip=None, user_agent=None) -> None:

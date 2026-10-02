@@ -126,8 +126,13 @@ def process_queue_once() -> None:
 def resend(report_id: int, actor, ip=None, agent=None) -> None:
     from .forms import split_recipients, subject_for
     r, data, _ = _report_bundle(report_id)
-    rcpts, bcc = split_recipients(r["form_type"], data)
-    queue_report_email(report_id, rcpts, subject_for(r["form_type"], data, r["staff_name"], r["receipt"]) + " (resent)", bcc)
+    subject = subject_for(r["form_type"], data, r["staff_name"], r["receipt"]) + " (resent)"
+    if r["is_test"]:   # test reports only ever go to the person who filed them (the owner)
+        em = conn().execute("SELECT email FROM staff WHERE id=?", (r["staff_id"],)).fetchone()
+        rcpts, bcc, subject = [e for e in [em and em["email"]] if e], [], ("TEST - " + subject)[:200]
+    else:
+        rcpts, bcc = split_recipients(r["form_type"], data)
+    queue_report_email(report_id, rcpts, subject, bcc)
     audit(actor["id"], actor["name"], "email_resend_requested", f"report:{report_id}", {"to": rcpts}, ip, agent)
 
 

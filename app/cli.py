@@ -14,7 +14,7 @@ import sys
 import time
 
 from . import auth
-from .db import DATA_DIR, DB_PATH, audit, conn, get_setting, init_db, set_setting
+from .db import AUDIT_DELETE_TRIGGER, DATA_DIR, DB_PATH, audit, conn, get_setting, init_db, set_setting
 
 
 def set_pin(name: str) -> int:
@@ -148,8 +148,7 @@ def reset_test_data(again: bool = False) -> int:
         c.execute("DELETE FROM ip_failures")
         c.execute("DROP TRIGGER IF EXISTS audit_no_delete")
         c.execute("DELETE FROM audit")
-        c.execute("CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit "
-                  "BEGIN SELECT RAISE(ABORT, 'activity log is append-only'); END")
+        c.execute(AUDIT_DELETE_TRIGGER)
         c.execute("COMMIT")
     except Exception:
         c.execute("ROLLBACK")

@@ -36,13 +36,15 @@
     </section>
 
     <section data-panel="log" class="hidden">
-      <p class="muted small">Every sign-in, report, email, view and change. Entries can't be edited or deleted, by anyone.</p>
+      <p class="muted small">Every sign-in, report, email, view and change. Entries can't be edited. Only the app owner can delete their own routine lines (views, downloads, test reports), and every delete leaves a note. Sign-ins, PINs and settings changes can never be deleted.</p>
       <div class="filters">
         <input id="logPerson" type="search" placeholder="Person">
         <select id="logAction"><option value="">Everything</option></select>
         <label class="datebox">From<input id="logFrom" type="date"></label>
         <label class="datebox">To<input id="logTo" type="date"></label>
         <button class="mini" id="logCsv" type="button">Export spreadsheet</button>
+        <button class="mini hidden" id="logSelAll" type="button">Select all mine</button>
+        <button class="mini danger hidden" id="logDel" type="button">Delete selected</button>
       </div>
       <div id="logCount" class="muted small"></div>
       <div id="logList"></div>
