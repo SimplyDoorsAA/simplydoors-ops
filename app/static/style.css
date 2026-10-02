@@ -270,3 +270,12 @@ label.tog input { width: 24px; height: 24px; accent-color: var(--red); }
 #mkCanvas { position: absolute; inset: 0; touch-action: none; display: block; }
 .mkhint { margin: 0; text-align: center; color: #c9d0d6; font-size: 14px; }
 .mkbtns { grid-template-columns: 1fr 1.4fr; }
+/* vendor-style door pictures */
+.ic-leaf { fill: #fff; stroke: #1f2933; stroke-width: 1.6; }
+.ic-glass { fill: #dfe7ee; stroke: #9aa5b1; stroke-width: 1; }
+.ic-glass.ic-move { fill: #cfe8bd; stroke: #2f6f1f; }
+.ic-hinge { stroke: #2f6f1f; stroke-width: 3.2; stroke-linecap: round; }
+.ic-knob { fill: #c62828; }
+.ic-f { font-size: 7px; font-weight: 700; fill: #8a949e; text-anchor: middle; }
+.ic-arrow { fill: none; stroke: #2f6f1f; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.handopt span:last-child { text-align: center; line-height: 1.15; }

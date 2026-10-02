@@ -545,3 +545,25 @@ def test_measure_reopen_and_revise(client):
         assert r.status_code == 422
         r = _measure(client, "sub-msr-0008", items, keep=json.dumps({"i1p1": pids["i1p1"]}))
         assert r.status_code == 422
+
+
+def test_measure_vendor_style_door_fields(client):
+    login(client, "Adem Atis", "246810")
+    base = _door()
+    ok = {**base, "config": "Double Door", "handing": "RH/Fixed", "swing": "OutSwing", "sidelite": "Left"}
+    r = _measure(client, "sub-msr-v001", [ok])
+    assert r.status_code == 200, r.text
+    d = json.loads(conn().execute("SELECT data FROM reports WHERE receipt=?", (r.json()["receipt"],)).fetchone()[0])
+    it = d["items"][0]
+    assert it["handing"] == "RH/Fixed" and it["swing"] == "OutSwing" and it["sidelite"] == ""   # sidelite only for 1 SL
+    # a single-door handing on a double door is refused
+    r = _measure(client, "sub-msr-v002", [{**base, "config": "Double Door", "handing": "Left"}])
+    assert r.status_code == 422 and "pick one" in r.json()["detail"]
+    # sliders: slide side only, never a swing
+    r = _measure(client, "sub-msr-v003", [{**base, "config": "Sliding Glass Door", "handing": "Left Slide", "swing": "InSwing"}])
+    it = json.loads(conn().execute("SELECT data FROM reports WHERE receipt=?", (r.json()["receipt"],)).fetchone()[0])["items"][0]
+    assert it["handing"] == "Left Slide" and it["swing"] == ""
+    # old-style answers from a phone still on the previous version are converted
+    r = _measure(client, "sub-msr-v004", [{**base, "config": "Sgl w/ 1 SL", "handing": "Right Hand Outswing", "sidelite": "Right"}])
+    it = json.loads(conn().execute("SELECT data FROM reports WHERE receipt=?", (r.json()["receipt"],)).fetchone()[0])["items"][0]
+    assert (it["config"], it["handing"], it["swing"], it["sidelite"]) == ("Single w/ 1 Sidelite", "Right", "OutSwing", "Right")

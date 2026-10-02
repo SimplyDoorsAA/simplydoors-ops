@@ -17,13 +17,61 @@ PHOTO_LABELS = {
     "window": ["Outside, whole window", "Inside, whole window", "Sill / trim close-up", "Extra"],
 }
 
+CONFIGS = ["Single Door", "Double Door", "Single w/ 1 Sidelite", "Single w/ 2 Sidelites", "Sliding Glass Door"]
+SINGLE_HANDING = ["Left", "Right", "Fixed"]
+HANDINGS = {
+    "Double Door": ["Left Hand Active", "Right Hand Active", "LH/Fixed", "RH/Fixed", "Fixed/LH", "Fixed/RH", "Fixed/Fixed"],
+    "Sliding Glass Door": ["Left Slide", "Right Slide"],
+    "_default": SINGLE_HANDING,
+}
+# answers saved by the first version of this app, mapped onto the vendor-style fields
+LEGACY_CONFIG = {"Single": "Single Door", "Double": "Double Door", "Sgl w/ 1 SL": "Single w/ 1 Sidelite",
+                 "Sgl w/ 2 SL": "Single w/ 2 Sidelites"}
+
+
+def pick_options(f: dict, item: dict) -> list:
+    if "options_by" in f:
+        return f["options_by"].get(item.get("config") or "", f["options_by"]["_default"])
+    return f["options"]
+
+
+def pick_shown(f: dict, item: dict) -> bool:
+    for k, vals in (f.get("show_if") or {}).items():
+        if item.get(k) not in vals:
+            return False
+    for k, vals in (f.get("hide_if") or {}).items():
+        if item.get(k) in vals:
+            return False
+    return True
+
+
+def upgrade_door(it: dict) -> dict:
+    """Turn an older door card (config 'Sgl w/ 1 SL', handing 'Left Hand Inswing') into the current fields."""
+    it = dict(it)
+    it["config"] = LEGACY_CONFIG.get(it.get("config") or "", it.get("config") or "")
+    h = it.get("handing") or ""
+    m = re.fullmatch(r"(Left|Right) Hand (In|Out)swing", h)
+    if m:
+        it["swing"] = it.get("swing") or f"{m.group(2)}Swing"
+        it["handing"] = (f"{m.group(1)} Hand Active" if it["config"] == "Double Door" else m.group(1))
+    elif h == "Slider":
+        it["config"], it["handing"] = "Sliding Glass Door", ""
+    return it
+
+
 # "custom": True means the phone offers "Custom (type it)" and any typed value is accepted.
 DOOR_FIELDS = [
     {"key": "loc", "label": "Location", "type": "text", "placeholder": "e.g. Front Entry"},
-    {"key": "config", "label": "Config", "type": "select", "custom": True,
-     "options": ["Single", "Double", "Sgl w/ 1 SL", "Sgl w/ 2 SL"]},
-    {"key": "handing", "label": "Handing", "type": "select", "custom": True, "picker": "handing",
-     "options": ["Left Hand Inswing", "Right Hand Inswing", "Left Hand Outswing", "Right Hand Outswing", "Slider"]},
+    # Config → sidelite side → handing → swing, the same order as the door vendors' order forms.
+    # Handing is always judged from the EXTERIOR (vendor convention: "Exterior View").
+    {"key": "config", "label": "Config", "type": "pick", "icon": "config", "custom": True,
+     "options": CONFIGS},
+    {"key": "sidelite", "label": "Sidelite location", "type": "pick", "icon": "sidelite",
+     "options": ["Left", "Right"], "show_if": {"config": ["Single w/ 1 Sidelite"]}},
+    {"key": "handing", "label": "Handing (exterior view)", "type": "pick", "icon": "handing",
+     "options_by": HANDINGS},
+    {"key": "swing", "label": "Swing", "type": "pick", "icon": "swing", "options": ["InSwing", "OutSwing"],
+     "hide_if": {"config": ["Sliding Glass Door"], "handing": ["Fixed", "Fixed/Fixed"]}},
     {"key": "dim_type", "label": "Size type", "type": "select", "options": ["Unit Size", "Rough Opening"], "default": "Unit Size"},
     {"key": "w", "label": "Width", "type": "size", "required": True},
     {"key": "h", "label": "Height", "type": "size", "required": True},
@@ -62,7 +110,7 @@ TYPE_NAME = {"door": "Door", "window": "Window"}
 
 
 def public() -> dict:
-    return {"fractions": FRACTIONS, "door": DOOR_FIELDS, "window": WINDOW_FIELDS,
+    return {"fractions": FRACTIONS, "legacy_config": LEGACY_CONFIG, "door": DOOR_FIELDS, "window": WINDOW_FIELDS,
             "max_items": MAX_ITEMS, "photos_per_item": PHOTOS_PER_ITEM, "photo_labels": PHOTO_LABELS}
 
 
@@ -121,6 +169,8 @@ def clean(raw: dict) -> tuple[dict, list[str]]:
             errors.append("One of the cards couldn't be read.")
             continue
         t = it["type"]
+        if t == "door":
+            it = upgrade_door(it)          # a phone still on the old version can send old-style answers
         counts[t] += 1
         name = f"{TYPE_NAME[t]} #{counts[t]}"
         o = {"type": t}
@@ -132,6 +182,14 @@ def clean(raw: dict) -> tuple[dict, list[str]]:
                 o[k] = _txt(v, 200)
             elif ft == "textarea":
                 o[k] = _txt(v, 2000)
+            elif ft == "pick":
+                if not pick_shown(f, o):
+                    o[k] = ""
+                    continue
+                o[k] = _txt(v, 120)
+                if o[k] and o[k] not in pick_options(f, o) and not f.get("custom"):
+                    errors.append(f"{label}: pick one of the pictures.")
+                    o[k] = ""
             elif ft == "select":
                 o[k] = _txt(v, 120)
                 if o[k] and not f.get("custom") and o[k] not in f["options"]:
@@ -187,7 +245,11 @@ def item_title(data: dict, idx: int) -> str:
 def item_summary(it: dict) -> str:
     if it["type"] == "door":
         size = " × ".join(x for x in (fmt_size(it.get("w")), fmt_size(it.get("h"))) if x)
-        parts = [f"{size} {it.get('dim_type') or ''}".strip(), it.get("config"), it.get("handing")]
+        cfg = it.get("config") or ""
+        if it.get("sidelite"):
+            cfg += f" ({it['sidelite']} SL)"
+        hand = " ".join(x for x in (it.get("handing"), it.get("swing")) if x)
+        parts = [f"{size} {it.get('dim_type') or ''}".strip(), cfg, hand]
     else:
         pts = [f'{fmt_size(p["w"])} × {fmt_size(p["h"])}' for p in it.get("points") or []]
         parts = [f"Qty {it.get('qty') or 1}", ", ".join(pts) + (f" ({it['m_type']})" if it.get("m_type") else ""),

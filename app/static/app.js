@@ -981,33 +981,93 @@
     return `<div class="mpt"><div class="mpthead"><b>Size ${i + 1}</b><button type="button" class="link danger" data-delpt>Remove</button></div>
       ${sizeCell(p.w, "Width", 'data-pt="w"', true)}${sizeCell(p.h, "Height", 'data-pt="h"', true)}</div>`;
   }
-  // door handing, drawn from above. Standing OUTSIDE facing the door: hinges on your left = Left Hand.
-  function handSVG(opt) {
-    const left = /^Left/.test(opt), inswing = /Inswing/.test(opt);
-    const hx = left ? 27 : 73, fx = left ? 73 : 27, ty = inswing ? 14 : 106;
-    const sweep = (left === inswing) ? 0 : 1;
-    return `<svg viewBox="0 0 100 120" aria-hidden="true"><text x="50" y="9" class="hs-t">INSIDE</text><text x="50" y="118" class="hs-t">OUTSIDE</text>
-      <line x1="2" y1="60" x2="27" y2="60" class="hs-wall"/><line x1="73" y1="60" x2="98" y2="60" class="hs-wall"/>
-      <path d="M ${fx} 60 A 46 46 0 0 ${sweep} ${hx} ${ty}" class="hs-arc"/><line x1="${hx}" y1="60" x2="${hx}" y2="${ty}" class="hs-leaf"/>
-      <circle cx="${hx}" cy="60" r="3.5" class="hs-hinge"/></svg>`;
+  // ---- vendor-style door pictures: elevations drawn from the EXTERIOR, plus a plan view for swing
+  // leaf kinds: L = hinged left (knob right), R = hinged right, F = fixed, Li / Ri = inactive leaf hinged left / right
+  function leafSVG(x, w, kind) {
+    const y = 18, h = 82, out = [`<rect x="${x}" y="${y}" width="${w}" height="${h}" class="ic-leaf"/>`,
+      `<rect x="${x + w * 0.22}" y="${y + 9}" width="${w * 0.56}" height="${h * 0.55}" class="ic-glass"/>`];
+    const hingeX = /^L/.test(kind) ? x + 1.5 : /^R/.test(kind) ? x + w - 1.5 : null;
+    if (hingeX !== null) [y + 10, y + h / 2, y + h - 10].forEach(hy => out.push(`<line x1="${hingeX}" y1="${hy - 4}" x2="${hingeX}" y2="${hy + 4}" class="ic-hinge"/>`));
+    if (kind === "L" || kind === "R") out.push(`<circle cx="${kind === "L" ? x + w - 6 : x + 6}" cy="${y + h * 0.6}" r="3.2" class="ic-knob"/>`);
+    if (kind === "F") out.push(`<text x="${x + w / 2}" y="${y + h - 8}" class="ic-f">FIXED</text>`);
+    return out.join("");
   }
-  function slideSVG() {
-    return `<svg viewBox="0 0 100 120" aria-hidden="true"><text x="50" y="9" class="hs-t">INSIDE</text><text x="50" y="118" class="hs-t">OUTSIDE</text>
-      <line x1="2" y1="60" x2="22" y2="60" class="hs-wall"/><line x1="78" y1="60" x2="98" y2="60" class="hs-wall"/>
-      <line x1="22" y1="56" x2="54" y2="56" class="hs-leaf"/><line x1="46" y1="64" x2="78" y2="64" class="hs-leaf"/>
-      <path d="M 30 44 L 50 44 M 44 38 L 50 44 L 44 50" class="hs-arc solid"/></svg>`;
+  function sideSVG(x, w) {
+    return `<rect x="${x}" y="18" width="${w}" height="82" class="ic-leaf"/><rect x="${x + 3}" y="24" width="${w - 6}" height="70" class="ic-glass"/>`;
   }
-  function handingHTML(f, c) {
-    const v = c[f.key] || "", custom = (v && !f.options.includes(v)) || c[f.key + "__custom"];
-    const short = (o) => o.replace("Left Hand ", "LH ").replace("Right Hand ", "RH ");
-    return `<div class="mf wide"><span class="szl">${esc(f.label)}</span>
-      <p class="muted small hhelp">Stand <b>outside</b>, facing the door. Hinges on your left = Left Hand. Opens away from you = Inswing.</p>
+  // draws a whole unit: sidelites + leaves, centered
+  function unitSVG(leaves, sl, label) {
+    const lw = leaves.length > 1 ? 30 : 34, sw = 13, total = leaves.length * lw + (sl === "both" ? 2 * sw : sl ? sw : 0);
+    let x = 50 - total / 2, out = "";
+    if (sl === "Left" || sl === "both") { out += sideSVG(x, sw); x += sw; }
+    leaves.forEach(k => { out += leafSVG(x, lw, k); x += lw; });
+    if (sl === "Right" || sl === "both") out += sideSVG(x, sw);
+    return `<svg viewBox="0 0 100 106" aria-hidden="true"><text x="50" y="10" class="hs-t">${label || "EXTERIOR VIEW"}</text>${out}</svg>`;
+  }
+  function slideSVG(moving) {
+    const arrowX = moving === "Left" ? 34 : 66;
+    return `<svg viewBox="0 0 100 106" aria-hidden="true"><text x="50" y="10" class="hs-t">EXTERIOR VIEW</text>
+      <rect x="14" y="18" width="72" height="82" class="ic-leaf"/>
+      <rect x="18" y="22" width="32" height="74" class="ic-glass${moving === "Left" ? " ic-move" : ""}"/>
+      <rect x="50" y="22" width="32" height="74" class="ic-glass${moving === "Right" ? " ic-move" : ""}"/>
+      ${moving ? `<path d="M ${arrowX - 11} 59 L ${arrowX + 11} 59 M ${arrowX - 6} 54 L ${arrowX - 11} 59 L ${arrowX - 6} 64 M ${arrowX + 6} 54 L ${arrowX + 11} 59 L ${arrowX + 6} 64" class="ic-arrow"/>` : ""}</svg>`;
+  }
+  function swingSVG(opt) {
+    const tip = opt === "InSwing" ? 22 : 98;
+    return `<svg viewBox="0 0 100 106" aria-hidden="true"><text x="50" y="10" class="hs-t">INTERIOR</text><text x="50" y="104" class="hs-t">EXTERIOR</text>
+      <line x1="4" y1="60" x2="24" y2="60" class="hs-wall"/><line x1="76" y1="60" x2="96" y2="60" class="hs-wall"/>
+      <path d="M 76 60 A 52 52 0 0 ${opt === "InSwing" ? 0 : 1} ${24 + 52 * Math.cos(Math.PI / 4.2)} ${60 + (opt === "InSwing" ? -1 : 1) * 52 * Math.sin(Math.PI / 4.2)}" class="hs-arc"/>
+      <line x1="24" y1="60" x2="${24 + 52 * Math.cos(Math.PI / 4.2)}" y2="${60 + (opt === "InSwing" ? -1 : 1) * 52 * Math.sin(Math.PI / 4.2)}" class="hs-leaf"/>
+      <circle cx="24" cy="60" r="3.5" class="hs-hinge"/></svg>`;
+  }
+  const DOUBLE_LEAVES = { "Left Hand Active": ["L", "Ri"], "Right Hand Active": ["Li", "R"], "LH/Fixed": ["L", "F"], "RH/Fixed": ["R", "F"],
+    "Fixed/LH": ["F", "L"], "Fixed/RH": ["F", "R"], "Fixed/Fixed": ["F", "F"] };
+  function slOf(c) { return c.config === "Single w/ 2 Sidelites" ? "both" : c.config === "Single w/ 1 Sidelite" ? (c.sidelite || "Left") : null; }
+  const ICONS = {
+    config: (o) => o === "Single Door" ? unitSVG(["L"]) : o === "Double Door" ? unitSVG(["L", "Ri"]) : o === "Single w/ 1 Sidelite" ? unitSVG(["L"], "Left")
+      : o === "Single w/ 2 Sidelites" ? unitSVG(["L"], "both") : slideSVG(null),
+    sidelite: (o) => unitSVG(["L"], o),
+    handing: (o, c) => c.config === "Sliding Glass Door" ? slideSVG(o === "Left Slide" ? "Left" : "Right")
+      : c.config === "Double Door" ? unitSVG(DOUBLE_LEAVES[o] || ["F", "F"]) : unitSVG([o === "Left" ? "L" : o === "Right" ? "R" : "F"], slOf(c)),
+    swing: (o) => swingSVG(o),
+  };
+  const pickOptions = (f, c) => f.options_by ? (f.options_by[c.config] || f.options_by._default) : f.options;
+  function pickShown(f, c) {
+    for (const [k, vals] of Object.entries(f.show_if || {})) if (!vals.includes(c[k])) return false;
+    for (const [k, vals] of Object.entries(f.hide_if || {})) if (vals.includes(c[k])) return false;
+    return true;
+  }
+  function pickHTML(f, c) {
+    const opts = pickOptions(f, c), v = c[f.key] || "", custom = f.custom && ((v && !opts.includes(v)) || c[f.key + "__custom"]);
+    const tiles = opts.map(o => `<button type="button" class="handopt${!custom && o === v ? " on" : ""}" role="radio" aria-checked="${!custom && o === v}" data-pickopt="${esc(o)}">
+        ${ICONS[f.icon](o, c)}<span>${esc(o)}</span></button>`).join("");
+    const other = f.custom ? `<button type="button" class="handopt other-opt${custom ? " on" : ""}" role="radio" aria-checked="${!!custom}" data-pickopt="Custom"><span class="big">✎</span><span>Other</span></button>` : "";
+    return `<div class="mf wide" data-pick="${esc(f.key)}"><span class="szl">${esc(f.label)}</span>
+      ${f.key === "handing" ? `<p class="muted small hhelp">Stand <b>outside</b> facing the door. ${c.config === "Sliding Glass Door" ? "Pick the side of the panel that moves." : "Hinges on your left = Left."}</p>` : ""}
       <input type="hidden" data-k="${esc(f.key)}" value="${esc(custom ? "Custom" : v)}">
-      <div class="hand" role="radiogroup" aria-label="${esc(f.label)}">${f.options.map(o =>
-        `<button type="button" class="handopt${!custom && o === v ? " on" : ""}" role="radio" aria-checked="${!custom && o === v}" data-hand="${esc(o)}">
-          ${o === "Slider" ? slideSVG() : handSVG(o)}<span>${esc(short(o))}</span></button>`).join("")}
-        <button type="button" class="handopt other-opt${custom ? " on" : ""}" role="radio" aria-checked="${!!custom}" data-hand="Custom"><span class="big">✎</span><span>Other</span></button></div>
-      <input type="text" class="other${custom ? "" : " hidden"}" data-kc="${esc(f.key)}" maxlength="120" placeholder="Type it" value="${esc(custom ? v : "")}"></div>`;
+      <div class="hand${opts.length > 4 ? " many" : ""}" role="radiogroup" aria-label="${esc(f.label)}">${tiles}${other}</div>
+      ${f.custom ? `<input type="text" class="other${custom ? "" : " hidden"}" data-kc="${esc(f.key)}" maxlength="120" placeholder="Type it" value="${esc(custom ? v : "")}">` : ""}</div>`;
+  }
+  // clear answers that no longer apply (e.g. handing "Left" after switching to Double Door)
+  function normalizeCard(c) {
+    if (c.type !== "door") return c;
+    mFields("door").filter(f => f.type === "pick").forEach(f => {
+      if (!pickShown(f, c)) c[f.key] = "";
+      else if (c[f.key] && !c[f.key + "__custom"] && !pickOptions(f, c).includes(c[f.key]) && !f.custom) c[f.key] = "";
+    });
+    return c;
+  }
+  // doors saved by the first version (config "Sgl w/ 1 SL", handing "Left Hand Inswing") → current fields
+  function upgradeDoor(it) {
+    if (!it || it.type !== "door") return it;
+    const o = { ...it }, map = (MS && MS.measure.legacy_config) || {};
+    o.config = map[o.config] || o.config || "";
+    const m = /^(Left|Right) Hand (In|Out)swing$/.exec(o.handing || "");
+    if (m) { o.swing = o.swing || `${m[2]}Swing`; o.handing = o.config === "Double Door" ? `${m[1]} Hand Active` : m[1]; }
+    else if (o.handing === "Slider") { o.config = "Sliding Glass Door"; o.handing = ""; }
+    if (o.sidelite === undefined) o.sidelite = "";
+    if (o.swing === undefined) o.swing = "";
+    return o;
   }
 
   // ---- sanity checks: warnings only, never block (the measurer may be right)
@@ -1022,8 +1082,9 @@
       if (h > 120) out.push(`Height ${fmtSize(c.h)} is over 10 ft.${typo}`);
       else if (h && h < 66) out.push(`Height ${fmtSize(c.h)} is under 5'6".`);
       if (w && h && w > h && w <= 100) out.push(`Width is bigger than height. Swapped?`);
-      if (c.config === "Single" && w > 44 && w <= 100) out.push(`${fmtSize(c.w)} is wide for a single door. Double or sidelights?`);
-      if (c.config === "Double" && w && w < 48) out.push(`${fmtSize(c.w)} is narrow for a double door.`);
+      if (c.config === "Single Door" && w > 44 && w <= 100) out.push(`${fmtSize(c.w)} is wide for a single door. Double or sidelites?`);
+      if (c.config === "Double Door" && w && w < 48) out.push(`${fmtSize(c.w)} is narrow for a double door.`);
+      mFields("door").filter(f => f.type === "pick" && pickShown(f, c) && !c[f.key]).forEach(f => out.push(`${f.label.replace(" (exterior view)", "")} not picked yet.`));
       both(c.w, "Width"); both(c.h, "Height");
     } else {
       (c.points || []).forEach((p, i) => {
@@ -1058,8 +1119,8 @@
         `<label class="check"><input type="checkbox" data-labor value="${esc(o)}"${(v || []).includes(o) ? " checked" : ""}><span>${esc(o)}</span></label>`).join("")}</div></div>`;
       case "points": return `<div class="mf wide"><span class="szl">${lab} *</span><div class="mpts">${(v && v.length ? v : [blankPoint()]).map(pointRow).join("")}</div>
         <button type="button" class="link" data-addpt>+ Add another size</button></div>`;
+      case "pick": return pickShown(f, c) ? pickHTML(f, c) : "";
       case "select": {
-        if (f.picker === "handing") return handingHTML(f, c);
         const custom = f.custom && v && !f.options.includes(v) || c[f.key + "__custom"];
         const opts = (f.default ? "" : `<option value="">Pick…</option>`) + f.options.map(o =>
           `<option value="${esc(o)}"${!custom && o === v ? " selected" : ""}>${esc(o)}</option>`).join("") +
@@ -1071,7 +1132,8 @@
     return "";
   }
   function cardSummary(c) {
-    if (c.type === "door") return [fmtSize(c.w) && fmtSize(c.h) ? `${fmtSize(c.w)} × ${fmtSize(c.h)}` : "", c.config, c.handing].filter(Boolean).join(" · ");
+    if (c.type === "door") return [fmtSize(c.w) && fmtSize(c.h) ? `${fmtSize(c.w)} × ${fmtSize(c.h)}` : "",
+      c.config + (c.sidelite ? ` (${c.sidelite} SL)` : ""), [c.handing, c.swing].filter(Boolean).join(" ")].filter(Boolean).join(" · ");
     const pts = (c.points || []).filter(p => p.w.w || p.h.w).map(p => `${fmtSize(p.w)} × ${fmtSize(p.h)}`);
     return [c.qty && c.qty !== "1" ? `Qty ${c.qty}` : "", pts.join(", "), c.tempered ? "TEMPERED" : ""].filter(Boolean).join(" · ");
   }
@@ -1100,6 +1162,11 @@
       else if (f.type === "points") c[k] = $$(".mpt", el).map(r => ({ w: readSize(r, 'data-pt="w"'), h: readSize(r, 'data-pt="h"') }));
       else if (f.type === "labor") c[k] = $$("[data-labor]", el).filter(x => x.checked).map(x => x.value);
       else if (f.type === "toggle") c[k] = $(`[data-k="${k}"]`, el).checked;
+      else if (f.type === "pick") {
+        const hid = $(`input[type=hidden][data-k="${k}"]`, el);
+        c[k + "__custom"] = !!hid && hid.value === "Custom";
+        c[k] = !hid ? "" : hid.value === "Custom" ? $(`[data-kc="${k}"]`, el).value.trim() : hid.value;
+      }
       else if (f.type === "select" && f.custom) {
         const sel = $(`[data-k="${k}"]`, el);
         c[k + "__custom"] = sel.value === "Custom";
@@ -1197,7 +1264,7 @@
     btn.disabled = true; btn.textContent = "Opening…";
     try {
       const m = await api(`api/measures/${encodeURIComponent(id)}`);
-      const cards = (m.data.items || []).map(it => ({ ...it, id: cardId(), open: false }));
+      const cards = (m.data.items || []).map(it => ({ ...upgradeDoor(it), id: cardId(), open: false }));
       const ph = {};
       m.photos.forEach(p => {
         const x = /^i(\d+)p(\d+)$/.exec(p.slot);
@@ -1230,7 +1297,7 @@
     $$(".invalid", mForm).forEach(x => x.classList.remove("invalid"));
     $("#mDraftNote").textContent = state && !state.fresh ? "Picked up where you left off" : "";
     if (state) delete state.fresh;
-    renderCards((state && state.cards) || []);
+    renderCards(((state && state.cards) || []).map(upgradeDoor));
     show("viewMeasure");
   }
 
@@ -1293,14 +1360,22 @@
       $(".szval", sz).textContent = fmtSize({ w: $('[data-part="w"]', sz).value.trim(), f: hid.value });
       updateHead(card); mSaveDraftSoon(); return;
     }
-    const ho = e.target.closest("[data-hand]");
-    if (ho) {
-      const wrap = ho.closest(".mf"), hid = $("input[type=hidden][data-k]", wrap), other = $("[data-kc]", wrap);
-      hid.value = ho.dataset.hand;
-      $$(".handopt", wrap).forEach(b => { b.classList.toggle("on", b === ho); b.setAttribute("aria-checked", String(b === ho)); });
-      other.classList.toggle("hidden", ho.dataset.hand !== "Custom");
-      if (ho.dataset.hand === "Custom") other.focus();
-      updateHead(card); mSaveDraftSoon(); return;
+    const po = e.target.closest("[data-pickopt]");
+    if (po) {
+      const wrap = po.closest("[data-pick]"), key = wrap.dataset.pick;
+      $("input[type=hidden][data-k]", wrap).value = po.dataset.pickopt;
+      if (po.dataset.pickopt === "Custom") {
+        $$(".handopt", wrap).forEach(b => b.classList.toggle("on", b === po));
+        const other = $("[data-kc]", wrap); other.classList.remove("hidden"); other.focus();
+        updateHead(card); mSaveDraftSoon(); return;
+      }
+      // later questions depend on this answer, so redraw the card and keep it where it was on screen
+      const top = card.getBoundingClientRect().top;
+      const cards = readCards().map(normalizeCard);
+      renderCards(cards);
+      const again = $(`.mcard[data-id="${card.dataset.id}"]`, mForm);
+      window.scrollBy(0, again.getBoundingClientRect().top - top);
+      mSaveDraftSoon(); return;
     }
     const mv = e.target.closest("[data-move]");
     if (mv) {
