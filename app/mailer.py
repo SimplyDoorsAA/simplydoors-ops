@@ -12,7 +12,7 @@ from html import escape
 from . import alerts
 from .db import audit, conn, now_iso
 from . import measure as measure_mod
-from .forms import FORMS, display_rows
+from .forms import FORMS, display_rows, email_rows
 from .pdf import build_pdf, local_time
 
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
@@ -56,11 +56,12 @@ def _body_html(r, data) -> str:
         for a, b in ([("Received", local_time(r["submitted_at"]))] if data.get("measured_by") == r["staff_name"]
                      else [("Submitted by", r["staff_name"]), ("Received", local_time(r["submitted_at"]))])
         + (measure_mod.job_rows(data) if FORMS.get(r["form_type"], {}).get("kind") == "measure"
-           else display_rows(r["form_type"], data)))
+           else email_rows(r["form_type"], data)))
     confidential = bool(FORMS.get(r["form_type"], {}).get("confidential"))
-    alarm = confidential or bool(data.get("defective"))
+    alarm = confidential or bool(data.get("defective")) or bool(data.get("attention"))
     head = "#b3261e" if alarm else "#2f6f1f"
-    tag = " — CONFIDENTIAL" if confidential else (" — DEFECTIVE" if data.get("defective") else "")
+    tag = (" — CONFIDENTIAL" if confidential else " — DEFECTIVE" if data.get("defective")
+           else " — NEEDS FOLLOW-UP" if data.get("attention") else "")
     return f"""<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #ddd;border-radius:8px;overflow:hidden">
 <div style="background:#f8d7da;color:#721c24;padding:8px;text-align:center;font-size:12px;font-weight:bold">AUTOMATED MESSAGE — DO NOT REPLY</div>
 <div style="background:{head};color:#ffffff;padding:16px 20px"><h2 style="margin:0;color:#ffffff">{escape(r['form_type'])}{tag}</h2>

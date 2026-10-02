@@ -42,7 +42,7 @@ def _caption(p, labels, fallback_time, data=None) -> str:
          "taken_at": (p["taken_at"] if "taken_at" in keys else None) or fallback_time,
          "file_age": p["file_age"] if "file_age" in keys else None}
     if g["status"] == "signature":
-        who = str((data or {}).get("received_by") or "").strip()
+        who = str((data or {}).get("received_by") or (data or {}).get("signer") or "").strip()
         return "<b>" + escape(labels.get(p["slot"], p["slot"])) + "</b>" + (f" · Signed by {escape(who)}" if who else "") \
             + " · " + escape(geo.local(g["taken_at"]))
     text = "<b>" + escape(labels.get(p["slot"], p["slot"])) + "</b> · " + " · ".join(escape(x) for x in geo.describe(g))
@@ -61,7 +61,7 @@ def build_pdf(report, staff_name: str, data: dict, photos: list) -> bytes:
                             topMargin=(MS_TOP if tight else 0.5 * inch), bottomMargin=(MS_BOTTOM if tight else 0.6 * inch),
                             title=f"{form_type} {report['receipt']}")
     ss = getSampleStyleSheet()
-    alarm = FORMS.get(form_type, {}).get("confidential") or data.get("defective")
+    alarm = FORMS.get(form_type, {}).get("confidential") or data.get("defective") or data.get("attention")
     accent = colors.HexColor("#c62828") if alarm else GREEN
     h1 = ParagraphStyle("h1", parent=ss["Title"], alignment=0, textColor=accent, fontSize=(15 if tight else 20),
                         leading=(17 if tight else 24), spaceAfter=(0 if tight else 2), spaceBefore=0)
@@ -71,7 +71,8 @@ def build_pdf(report, staff_name: str, data: dict, photos: list) -> bytes:
     h2 = ParagraphStyle("h2", parent=ss["Heading2"], textColor=GREEN, fontSize=13)
 
     story = []
-    title = form_type.upper() + (" — CONFIDENTIAL" if FORMS.get(form_type, {}).get("confidential") else "")
+    title = form_type.upper() + (" — CONFIDENTIAL" if FORMS.get(form_type, {}).get("confidential")
+                                 else " — NEEDS FOLLOW-UP" if data.get("attention") else "")
     head_left = [Paragraph(escape(title), h1),
                  Paragraph(f"Receipt <b>{escape(report['receipt'])}</b> &nbsp;·&nbsp; "
                            f"Received {escape(local_time(report['submitted_at']))}"
@@ -89,7 +90,13 @@ def build_pdf(report, staff_name: str, data: dict, photos: list) -> bytes:
         doc.build(story, onFirstPage=_footer(form_type, report, extra), onLaterPages=_footer(form_type, report, extra))
         return buf.getvalue()
 
+    spec = FORMS.get(form_type, {})
     rows = [("Submitted by", staff_name)] + display_rows(form_type, data)
+    # Done/N/A checklists get their own compact grid; "tail" fields (customer acceptance) go with the signature
+    done_items = {t for f in spec.get("fields", []) if f["type"] == "donena" for _, t in f["items"]}
+    tail_labels = {f["label"] for f in spec.get("fields", []) if f.get("tail")}
+    acceptance = [(a, b) for a, b in rows if a in tail_labels]
+    rows = [(a, b) for a, b in rows if a not in done_items and a not in tail_labels]
     tbl = Table([[Paragraph(escape(a), lab), Paragraph(escape(str(b)).replace("\n", "<br/>"), cell)] for a, b in rows],
                 colWidths=[2.3 * inch, 5.0 * inch], splitInRow=1)
     tbl.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
@@ -99,6 +106,17 @@ def build_pdf(report, staff_name: str, data: dict, photos: list) -> bytes:
                             + [("BACKGROUND", (1, i), (1, i), colors.HexColor("#fdecea"))
                                for i, (a, b) in enumerate(rows) if b == "DEFECTIVE" or (a == "Defective items" and b != "None")]))
     story.append(tbl)
+    for f in spec.get("fields", []):
+        if f["type"] == "donena" and data.get(f["key"]):
+            res = data[f["key"]]
+            tick = ParagraphStyle("tick", parent=cell, fontSize=9, leading=11)
+            cells = [Paragraph(('<font color="#2f6f1f"><b>DONE</b></font>' if v == "Done" else '<font color="#8a949e"><b>N/A</b></font>')
+                               + f"&nbsp;&nbsp;{escape(k)}", tick) for k, v in res.items()]
+            grid_rows = [cells[i:i + 2] + [""] * (2 - len(cells[i:i + 2])) for i in range(0, len(cells), 2)]
+            ct = Table(grid_rows, colWidths=[3.65 * inch] * 2)
+            ct.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LINEBELOW", (0, 0), (-1, -1), 0.4, colors.HexColor("#e3e7ea")),
+                                    ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
+            story += [Spacer(1, 10), Paragraph(escape(f["label"]), h2), ct]
 
     slots = {s["slot"]: s for s in photo_slots(form_type, data)} if form_type in FORMS else {}
     labels = {k: v["label"] for k, v in slots.items()}
@@ -106,9 +124,42 @@ def build_pdf(report, staff_name: str, data: dict, photos: list) -> bytes:
     for p in photos:
         title = slots.get(p["slot"], {}).get("group", "Photos")
         groups.setdefault(title, []).append(p)
+    grid = FORMS.get(form_type, {}).get("photo_grid")
+    sig_group = next((g for g in spec.get("photos", []) if g.get("signature")), None)
+    accept_block = None
+    if acceptance and sig_group:
+        sig = [p for p in photos if p["slot"] == sig_group["signature"] and os.path.exists(p["path"])]
+        blk = [Spacer(1, 14), Paragraph("Customer acceptance", h2)]
+        if sig_group.get("help"):
+            blk.append(Paragraph(escape(sig_group["help"]), small))
+        at = Table([[Paragraph(escape(a), lab), Paragraph(escape(str(b)).replace("\n", "<br/>"), cell)] for a, b in acceptance],
+                   colWidths=[2.3 * inch, 5.0 * inch])
+        at.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
+                                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#f2f9eb")), ("VALIGN", (0, 0), (-1, -1), "TOP")]))
+        blk += [Spacer(1, 4), at]
+        for p in sig:
+            blk += [Spacer(1, 6), _img(p["path"], 3.2 * inch, 1.4 * inch), Paragraph(_caption(p, labels, report["submitted_at"], data), small)]
+        if not sig and data.get("cust_present") == "No":
+            blk.append(Paragraph('<font color="#c62828"><b>Not signed by the customer.</b></font>', cell))
+        accept_block = KeepTogether(blk)
+        groups.pop(sig_group["title"], None)
     for title, items in groups.items():
         story.append(Spacer(1, 14))
-        story.append(Paragraph(escape(title), h2))
+        heading = Paragraph(escape(title), h2)
+        pics = [p for p in items if os.path.exists(p["path"]) and not slots.get(p["slot"], {}).get("signature")]
+        if not (grid and pics):
+            story.append(heading)
+        if grid and pics:
+            # photos three across, captions short (full time/location is printed on each photo)
+            cells = [[_img(p["path"], 2.3 * inch, 2.3 * inch),
+                      Paragraph(f"<b>{escape(labels.get(p['slot'], p['slot']))}</b>", small)] for p in pics]
+            rows = [cells[i:i + 3] for i in range(0, len(cells), 3)]
+            rows[-1] += [""] * (3 - len(rows[-1]))
+            gt = Table(rows, colWidths=[2.43 * inch] * 3)
+            gt.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                                    ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
+            story.append(KeepTogether([heading, gt]))      # a heading never sits alone at the bottom of a page
+            items = [p for p in items if p not in pics]
         for p in items:
             if not os.path.exists(p["path"]):
                 story.append(Paragraph(f"(missing file for {escape(p['slot'])})", small))
@@ -117,6 +168,8 @@ def build_pdf(report, staff_name: str, data: dict, photos: list) -> bytes:
             story.append(KeepTogether([_img(p["path"], 3.2 * inch if is_sig else 7.2 * inch, 1.4 * inch if is_sig else 4.6 * inch),
                                        Paragraph(_caption(p, labels, report["submitted_at"], data), small), Spacer(1, 8)]))
 
+    if accept_block:
+        story.append(accept_block)
     footer = _footer(form_type, report)
     doc.build(story, onFirstPage=footer, onLaterPages=footer)
     return buf.getvalue()

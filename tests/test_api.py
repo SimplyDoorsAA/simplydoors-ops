@@ -356,7 +356,7 @@ def test_staff_only_see_enabled_forms(client):
     assert r.status_code == 403
     login(client, "Adem Atis", "246810")
     slugs = [f["slug"] for f in client.get("/ops/api/me").json()["forms"]]
-    assert slugs == ["receiving", "delivery", "eos", "inspection", "vincident", "incident", "disciplinary", "measure"]
+    assert slugs == ["receiving", "delivery", "install", "eos", "inspection", "vincident", "incident", "disciplinary", "measure"]
     r = client.put("/ops/api/admin/forms-enabled", json={"forms": ["Receiving Report", "End of Shift", "Disciplinary Action"]}, headers=H)
     assert r.json()["forms"] == ["Receiving Report", "End of Shift"]  # admin-only form can't be switched on for staff
     login(client, "Jaime Mendoza", "135790")
@@ -644,3 +644,33 @@ def test_owner_address_stays_private(client, smtp):
     from app.forms import split_recipients
     to, bcc = split_recipients("End of Shift", {})
     assert "adem@simplydoors.com" in to and "adem@simplydoors.com" not in bcc
+
+
+def test_installation_completion(client):
+    login(client, "Adem Atis", "246810")
+    checks = {f"checklist:{k}": "Done" for k, _ in F.INSTALL_CHECKS}
+    base = {"po": "SD-1", "customer": "Lee", "work": "1 entry door", "punch": "No, all done", **checks}
+    photos = {"after1": ("a.jpg", jpeg(), "image/jpeg"), "after2": ("b.jpg", jpeg((1, 2, 3)), "image/jpeg")}
+    # customer present -> signature + name required
+    r = client.post("/ops/api/reports/install", data={**base, "submission_id": "sub-ins-0001", "cust_present": "Yes",
+                                                     "signer": "Pat Lee"}, files=photos, headers=H)
+    assert r.status_code == 422 and "signature" in r.json()["detail"].lower()
+    sig = io.BytesIO(); Image.new("RGBA", (600, 200), (0, 0, 0, 0)).save(sig, "PNG")
+    r = client.post("/ops/api/reports/install", data={**base, "submission_id": "sub-ins-0002", "cust_present": "Yes",
+                    "signer": "Pat Lee"}, files={**photos, "sig": ("s.png", sig.getvalue(), "image/png")}, headers=H)
+    assert r.status_code == 200, r.text
+    e = conn().execute("SELECT subject FROM emails ORDER BY id DESC LIMIT 1").fetchone()[0]
+    assert e.startswith("Install Complete: SD-1 - Lee")
+    # not present -> no signature, but a reason; flagged for follow-up
+    r = client.post("/ops/api/reports/install", data={**base, "submission_id": "sub-ins-0003", "cust_present": "No"},
+                    files=photos, headers=H)
+    assert r.status_code == 422 and "Why no signature" in r.json()["detail"]
+    r = client.post("/ops/api/reports/install", data={**base, "submission_id": "sub-ins-0004", "cust_present": "No",
+                    "no_sign_reason": "Not home"}, files=photos, headers=H)
+    assert r.status_code == 200, r.text
+    e = conn().execute("SELECT subject FROM emails ORDER BY id DESC LIMIT 1").fetchone()[0]
+    assert e.startswith("NEEDS FOLLOW-UP") and "(not signed)" in e
+    # every checklist item must be answered
+    bad = {**base, "submission_id": "sub-ins-0005", "cust_present": "No", "no_sign_reason": "x"}
+    bad.pop("checklist:plumb")
+    assert client.post("/ops/api/reports/install", data=bad, files=photos, headers=H).status_code == 422

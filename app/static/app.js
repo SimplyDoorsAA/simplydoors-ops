@@ -425,6 +425,15 @@
         inner = `<fieldset><legend>${ask}</legend>${help}` +
           f.items.map(([k, t]) => `<label class="check"><input type="checkbox" name="${esc(k)}"><span>${esc(t)}</span></label>`).join("") + `</fieldset>`;
         break;
+      case "donena":
+        inner = `<div class="okdef-head"><b>${esc(f.label)}${req}</b><button type="button" class="link" data-allok="${esc(f.key)}" data-allval="Done">Mark all done</button></div>` +
+          f.items.map(([ik, text]) => {
+            const n = `${f.key}:${ik}`;
+            return `<div class="okrow" data-row="${esc(n)}"><span>${esc(text)}</span><div class="okbtns">
+              <label><input type="radio" name="${esc(n)}" value="Done"><span>Done</span></label>
+              <label class="na"><input type="radio" name="${esc(n)}" value="N/A"><span>N/A</span></label></div></div>`;
+          }).join("");
+        break;
       case "okdef":
         inner = `<div class="okdef-head"><b>${esc(f.label)}${req}</b><button type="button" class="link" data-allok="${esc(f.key)}">Mark all OK</button></div>` +
           Object.entries(f.groups).map(([g, items]) => `<h3>${esc(g)}</h3>` + items.map(it => {
@@ -440,8 +449,18 @@
   }
 
   function photosHTML() {
-    return spec.photos.map(g => g.signature
-      ? `<div class="fld"><h2>${esc(g.title)}</h2>${g.help ? `<p class="muted small">${esc(g.help)}</p>` : ""}
+    const cond = (g) => g.show_if ? ` data-show-field="${esc(g.show_if.field)}" data-show-in="${esc(g.show_if.in.join("|"))}"` : "";
+    const tail = spec.fields.filter(f => f.tail).map(fieldHTML).join("");
+    const groups = spec.photos.filter(g => !g.signature).concat(spec.photos.filter(g => g.signature));
+    let tailDone = false;
+    return groups.map(g => {
+      const pre = g.signature && !tailDone ? (tailDone = true, tail) : "";
+      return pre + groupHTML(g, cond(g));
+    }).join("") + (tailDone ? "" : tail);
+  }
+  function groupHTML(g, cond) {
+    return g.signature
+      ? `<div class="fld"${cond}><h2>${esc(g.title)}${g.required ? " *" : ""}</h2>${g.help ? `<p class="muted small">${esc(g.help)}</p>` : ""}
           <div class="sigwrap" data-sigslot="${esc(g.signature)}">
             <button type="button" class="sigopen" data-sigopen="${esc(g.signature)}"><span class="sigpen" aria-hidden="true">✍</span> Tap to sign</button>
             <div class="sigdone hidden"><img alt="Signature"><div class="sigacts">
@@ -449,7 +468,7 @@
               <button type="button" class="link danger" data-sigclear="${esc(g.signature)}">Remove</button></div></div>
           </div></div>`
       : `<div class="fld"><h2>${esc(g.title)}${g.min ? ` <span class="muted small">(at least ${g.min})</span>` : ""}</h2>
-          ${g.help ? `<p class="muted small">${esc(g.help)}</p>` : ""}<div class="photos" data-group="${esc(g.group)}"></div></div>`).join("");
+          ${g.help ? `<p class="muted small">${esc(g.help)}</p>` : ""}<div class="photos" data-group="${esc(g.group)}"></div></div>`;
   }
 
   function applyConditions() {
@@ -681,7 +700,7 @@
 
   function openSigPad(slot) {
     sig.slot = slot; sig.strokes = []; sig.cur = null; sig.scrollY = window.scrollY;
-    const who = form.elements.received_by && form.elements.received_by.value.trim();
+    const who = ((form.elements.received_by && form.elements.received_by.value) || (form.elements.signer && form.elements.signer.value) || "").trim();
     $("#sigWho").textContent = who ? `Signing as ${who}` : "";
     sigBox.classList.remove("hidden");
     document.documentElement.classList.add("sigopen-lock");
@@ -819,7 +838,8 @@
   form.addEventListener("click", (e) => {
     const all = e.target.closest("[data-allok]");
     if (!all) return;
-    $$(`input[type=radio][value="OK"]`, form).forEach(r => { if (r.name.startsWith(all.dataset.allok + ":")) r.checked = true; });
+    const val = all.dataset.allval || "OK";
+    $$(`input[type=radio][value="${val}"]`, form).forEach(r => { if (r.name.startsWith(all.dataset.allok + ":")) r.checked = true; });
     $$(".okrow.invalid", form).forEach(r => r.classList.remove("invalid"));
     saveDraftSoon();
   });
@@ -835,7 +855,7 @@
     Object.values(previews).forEach(u => URL.revokeObjectURL(u));
     photos = {}; previews = {}; photoMeta = {};
     $("#formTitle").textContent = spec.type;
-    $("#formFields").innerHTML = spec.fields.map(fieldHTML).join("") + photosHTML();
+    $("#formFields").innerHTML = spec.fields.filter(f => !f.tail).map(fieldHTML).join("") + photosHTML();
     $("#submitBtn").textContent = "Submit " + spec.type;
     $("#formError").classList.add("hidden");
     let draft = prefill || null;
@@ -874,6 +894,15 @@
         if (f.required) f.items.forEach(([k, t]) => { if (!vals[k]) { const l = form.elements[k].closest("label"); l.classList.add("invalid"); problems.push(t.length > 40 ? t.slice(0, 38) + "…" : t); } });
         continue;
       }
+      if (f.type === "donena") {
+        let left = 0;
+        f.items.forEach(([ik]) => {
+          const n = `${f.key}:${ik}`;
+          if (!vals[n]) { left++; const row = $(`.okrow[data-row="${CSS.escape(n)}"]`, form); if (row) row.classList.add("invalid"); }
+        });
+        if (f.required && left) problems.push(`${left} checklist item${left > 1 ? "s" : ""} not marked`);
+        continue;
+      }
       if (f.type === "okdef") {
         let left = 0;
         Object.entries(f.groups).forEach(([g, items]) => items.forEach(it => {
@@ -890,6 +919,13 @@
     }
     spec.fields.filter(f => f.required_if_defective).forEach(f => {
       if (anyDefective && !String(vals[f.key] || "").trim()) { markDiv(f.key); problems.push(`${f.label} (something is Defective)`); }
+    });
+    spec.photos.filter(g => g.signature && g.required).forEach(g => {
+      const shown = !g.show_if || g.show_if.in.includes(vals[g.show_if.field] || "");
+      if (shown && !photos[g.signature]) {
+        problems.push(g.title);
+        const w = $(`.sigwrap[data-sigslot="${CSS.escape(g.signature)}"]`, form); if (w) w.closest(".fld").classList.add("invalid");
+      }
     });
     spec.photos.filter(g => g.min).forEach(g => {
       const have = g.slots.filter(([s]) => photos[s]).length;

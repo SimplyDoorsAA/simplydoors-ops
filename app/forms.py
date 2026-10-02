@@ -52,6 +52,21 @@ EOS_CHECKS = {
 
 YES_NO = ["No", "Yes"]
 
+INSTALL_CHECKS = [
+    ("plumb", "Unit is plumb, level and square"),
+    ("operates", "Door opens, closes and latches smoothly (no rubbing)"),
+    ("seal", "Weatherstrip and sweep seal; no daylight showing"),
+    ("hardware", "Lockset and deadbolt installed and working; keys handed over"),
+    ("screws", "Hinge screws set, long screws into the framing"),
+    ("threshold", "Threshold adjusted and sealed"),
+    ("exterior", "Exterior trim installed and caulked"),
+    ("interior", "Interior casing / trim installed"),
+    ("cleanup", "Old unit and debris removed; work area clean"),
+    ("walkthrough", "Customer shown how everything works"),
+]
+ACCEPT_TEXT = ("By signing, the customer confirms the work listed above was completed and accepts the installation, "
+               "except for anything listed on the punch list.")
+
 FORMS = {
     "Receiving Report": {
         "slug": "receiving", "prefix": "RCV", "order": 1,
@@ -102,6 +117,46 @@ FORMS = {
             {"group": "signature", "title": "Customer signature (optional)", "signature": "sig",
              "help": "Hand the phone to the customer to sign with their finger."},
         ],
+        "summary": ["po", "customer"],
+    },
+    "Installation Completion": {
+        "slug": "install", "prefix": "INS", "order": 3,
+        "blurb": "Close out an install: checklist, before/after photos, notes and the customer's sign-off.",
+        "fields": [
+            {"key": "po", "label": "Job / PO Number", "type": "text", "required": True},
+            {"key": "customer", "label": "Customer", "type": "text", "required": True},
+            {"key": "address", "label": "Job address", "type": "text", "placeholder": "Street, city"},
+            {"key": "work", "label": "Work completed", "type": "textarea", "required": True,
+             "placeholder": "e.g. 1 front entry door with 2 sidelites, new storm door"},
+            {"key": "crew", "label": "Install crew", "type": "text", "placeholder": "Who did the install"},
+            {"key": "checklist", "label": "Completion checklist", "type": "donena", "required": True,
+             "items": INSTALL_CHECKS},
+            {"key": "punch", "label": "Punch list", "ask": "Anything left to finish or come back for?", "type": "choice",
+             "options": ["No, all done", "Yes"], "required": True},
+            {"key": "punch_items", "label": "What's left", "type": "textarea", "required": True,
+             "show_if": {"field": "punch", "in": ["Yes"]}, "placeholder": "Parts on order, touch-up paint, return visit…"},
+            {"key": "sales_notify", "label": "Sales Rep Notified", "ask": "Notify a sales rep (optional)",
+             "type": "select", "options": "sales_reps", "none_label": "Don't notify anyone", "notify": True},
+            {"key": "notes", "label": "Notes", "type": "textarea", "placeholder": "Anything the office should know"},
+            # customer acceptance: shown after the photos, right above the signature
+            {"key": "cust_present", "label": "Customer present to sign", "ask": "Is the customer here to sign off?",
+             "type": "choice", "options": ["Yes", "No"], "required": True, "tail": True},
+            {"key": "signer", "label": "Signed by (print name)", "type": "text", "required": True, "tail": True,
+             "show_if": {"field": "cust_present", "in": ["Yes"]}},
+            {"key": "no_sign_reason", "label": "Why no signature", "type": "textarea", "required": True, "tail": True,
+             "show_if": {"field": "cust_present", "in": ["No"]}, "placeholder": "e.g. customer not home, left with contractor"},
+        ],
+        "photos": [
+            {"group": "before", "title": "Before photos (optional)", "help": "The opening before you started.",
+             "slots": [("before1", "Before 1"), ("before2", "Before 2")]},
+            {"group": "after", "title": "Finished install", "help": "Outside, inside, and the lock / hardware.",
+             "slots": [("after1", "Outside"), ("after2", "Inside"), ("after3", "Lock / hardware"), ("after4", "Extra")], "min": 2},
+            {"group": "signature", "title": "Customer signature", "signature": "sig", "required": True,
+             "show_if": {"field": "cust_present", "in": ["Yes"]},
+             "help": ACCEPT_TEXT},
+        ],
+        "photo_grid": True,
+        "email_keys": ["po", "customer", "address", "work", "crew", "punch", "punch_items", "signer", "no_sign_reason"],
         "summary": ["po", "customer"],
     },
     "End of Shift": {
@@ -216,6 +271,9 @@ FORMS = {
 }
 
 FORM_BY_SLUG = {v["slug"]: k for k, v in FORMS.items()}
+# keep the home screen order: Installation Completion sits right after Delivery Proof
+for _i, _k in enumerate(sorted(FORMS, key=lambda k: (FORMS[k]["order"], k != "Installation Completion")), 1):
+    FORMS[_k]["order"] = _i
 MAX_TEXT = 4000
 
 # Extra email lists beyond each form's main list (editable in Admin > Email lists)
@@ -296,7 +354,7 @@ def public_spec(form_type: str) -> dict:
         out = {k: v for k, v in f.items() if k not in ("options", "groups", "items")}
         if f["type"] in ("select", "choice"):
             out["options"] = options_for(f)
-        if f["type"] == "checks":
+        if f["type"] in ("checks", "donena"):
             out["items"] = f["items"]
         if f["type"] == "okdef":
             out["groups"] = f["groups"]
@@ -394,6 +452,17 @@ def clean(form_type: str, raw: dict) -> tuple[dict, list[str]]:
                 if need and not ticked:
                     errors.append(f"Check the box: {text}")
                 data[ikey] = ticked
+        elif t == "donena":
+            results, missing = {}, 0
+            for ikey, text in f["items"]:
+                v = (raw.get(f"{key}:{ikey}") or "").strip()
+                if v not in ("Done", "N/A"):
+                    missing += 1
+                else:
+                    results[text] = v
+            if need and missing:
+                errors.append(f"Mark every checklist item Done or N/A ({missing} left).")
+            data[key] = results
         elif t == "okdef":
             results = {}
             missing = 0
@@ -413,6 +482,8 @@ def clean(form_type: str, raw: dict) -> tuple[dict, list[str]]:
             errors.append(f"{f['label']} is required when something is Defective.")
     if form_type == "Vehicle Inspection":
         data["defective"] = any_defective
+    if form_type == "Installation Completion":
+        data["attention"] = data.get("punch") == "Yes" or data.get("cust_present") == "No"
     return data, errors
 
 
@@ -428,6 +499,13 @@ def display_rows(form_type: str, data: dict) -> list[tuple[str, str]]:
                 continue
             for ik, text in f["items"]:
                 rows.append((text, "Yes" if data.get(ik) else "No"))
+            continue
+        if t == "donena":
+            res = data.get(key) or {}
+            na = [k for k, v in res.items() if v == "N/A"]
+            rows.append((f["label"], f"{len(res) - len(na)} done" + (f", {len(na)} N/A" if na else "")))
+            for k, v in res.items():
+                rows.append((k, "Done" if v == "Done" else "N/A"))
             continue
         if t == "okdef":
             res = data.get(key) or {}
@@ -445,6 +523,24 @@ def display_rows(form_type: str, data: dict) -> list[tuple[str, str]]:
     return rows
 
 
+def email_rows(form_type: str, data: dict) -> list[tuple[str, str]]:
+    """Short version for the email body; the PDF attachment has everything."""
+    keys = FORMS.get(form_type, {}).get("email_keys")
+    if not keys:
+        return display_rows(form_type, data)
+    by = {f["key"]: f for f in FORMS[form_type]["fields"]}
+    rows = []
+    for k in keys:
+        if data.get(k) not in ("", None):
+            rows.append((by[k]["label"], data[k]))
+    for f in FORMS[form_type]["fields"]:
+        if f["type"] == "donena" and data.get(f["key"]):
+            res = data[f["key"]]
+            na = [k for k, v in res.items() if v == "N/A"]
+            rows.append((f["label"], f"{len(res) - len(na)} of {len(res)} done" + (f" ({len(na)} N/A)" if na else "")))
+    return rows
+
+
 def summary(form_type: str, data: dict) -> str:
     if FORMS.get(form_type, {}).get("kind") == "measure":
         return " · ".join(x for x in (data.get("customer"), data.get("po"),
@@ -458,6 +554,8 @@ def subject_for(form_type: str, data: dict, staff_name: str, receipt: str) -> st
     s = {
         "Receiving Report": f"Receiving Report: {d.get('po')} - {d.get('customer')}",
         "Delivery Proof": f"Delivery Proof: {d.get('po')} - {d.get('customer')}",
+        "Installation Completion": f"{'NEEDS FOLLOW-UP - ' if d.get('attention') else ''}Install Complete: {d.get('po')} - {d.get('customer')}"
+                                   f"{' (punch list)' if d.get('punch') == 'Yes' else ''}{' (not signed)' if d.get('cust_present') == 'No' else ''}",
         "End of Shift": f"End of Shift: {d.get('role')} - {staff_name}",
         "Vehicle Inspection": f"{'DEFECTIVE - ' if d.get('defective') else ''}Vehicle {d.get('trip')}: {d.get('vehicle')} - {staff_name}",
         "Vehicle Incident": f"URGENT: Vehicle Incident - {d.get('vehicle')} ({staff_name})",

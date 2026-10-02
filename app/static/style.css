@@ -297,3 +297,4 @@ label.tog input { width: 24px; height: 24px; accent-color: var(--red); }
 .tilecard .card-sub { display: none; }
 .card.tilecard { min-height: 108px; justify-content: flex-start; }
 .tilecard .card-title { font-size: 17px; }
+.okbtns .na input:checked + span { background: #5f6b76; border-color: #5f6b76; color: #fff; }

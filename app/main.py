@@ -42,7 +42,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-12"
+APP_VERSION = "stage3-13"
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -344,6 +344,11 @@ async def submit_report(slug: str, request: Request, staff=Depends(current_staff
         g = None if ps["signature"] else geo.parse_geo(str(form.get(f"geo_{slot}") or ""), now_iso())
         photo_blobs.append((slot, b, g))
     got = {s for s, _, _ in photo_blobs}
+    for g in spec.get("photos", []):
+        cond = g.get("show_if")
+        shown = not cond or str(raw.get(cond["field"]) or "") in cond["in"]
+        if g.get("signature") and g.get("required") and shown and g["signature"] not in got:
+            errors.append(f"{g['title']} is needed.")
     if spec.get("kind") == "measure":
         kept = _kept_photos(c, staff, form.get("keep"), {p["slot"] for p in photo_slots(form_type, data)} - got, errors)
     for title, slots, need in photo_minimums(form_type):
