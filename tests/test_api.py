@@ -674,3 +674,27 @@ def test_installation_completion(client):
     bad = {**base, "submission_id": "sub-ins-0005", "cust_present": "No", "no_sign_reason": "x"}
     bad.pop("checklist:operates")
     assert client.post("/ops/api/reports/install", data=bad, files=photos, headers=H).status_code == 422
+
+
+def test_reset_test_data_is_console_only_and_one_time(client, monkeypatch):
+    # keep this test last: it wipes the reports
+    from app import cli
+    c = conn()
+    assert c.execute("SELECT COUNT(*) FROM reports").fetchone()[0] > 0
+    monkeypatch.setattr("builtins.input", lambda *_: "no")
+    assert cli.reset_test_data() == 1                              # anything but RESET cancels
+    assert c.execute("SELECT COUNT(*) FROM reports").fetchone()[0] > 0
+    monkeypatch.setattr("builtins.input", lambda *_: "RESET")
+    assert cli.reset_test_data() == 0
+    for t in ("reports", "photos", "emails"):
+        assert c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] == 0
+    log = c.execute("SELECT action, actor_name FROM audit").fetchall()
+    assert [tuple(r) for r in log] == [("test_data_reset", "server console")]
+    assert any(f.startswith("ops-") for f in os.listdir(os.path.join(TMP, "before-reset")))
+    with pytest.raises(sqlite3.IntegrityError):                    # log is locked again
+        c.execute("DELETE FROM audit")
+    assert cli.reset_test_data() == 1                              # won't run twice by accident
+    assert c.execute("SELECT COUNT(*) FROM audit").fetchone()[0] >= 1
+    login(client, "Jaime Mendoza", "135790")
+    r = receiving(client, "sub-after-reset")
+    assert r.status_code == 200 and r.json()["receipt"] == "RCV-00001"

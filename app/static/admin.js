@@ -38,7 +38,7 @@
     audit_viewed: "Looked at the activity log", photo_viewed: "Opened a photo",
     app_started: "App started", staff_seeded: "Staff list created",
     owner_set: "App owner set (server console)", private_copies_changed: "Changed their private copies",
-    owner_copies_set_up: "Owner's address moved to private copies", list_changed: "Changed a pick list", forms_switched: "Changed which forms staff see", measure_reopened: "Reopened a measure",
+    owner_copies_set_up: "Owner's address moved to private copies", test_data_reset: "Test data cleared (server console)", list_changed: "Changed a pick list", forms_switched: "Changed which forms staff see", measure_reopened: "Reopened a measure",
   };
 
   // ------------------------------------------------------------ tabs

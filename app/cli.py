@@ -8,10 +8,13 @@
 import csv
 import getpass
 import os
+import shutil
+import sqlite3
 import sys
+import time
 
 from . import auth
-from .db import audit, conn, init_db
+from .db import DATA_DIR, DB_PATH, audit, conn, get_setting, init_db, set_setting
 
 
 def set_pin(name: str) -> int:
@@ -107,6 +110,62 @@ def set_owner(name: str) -> int:
     return 0
 
 
+RESET_DIR = os.path.join(DATA_DIR, "before-reset")
+
+
+def reset_test_data(again: bool = False) -> int:
+    """One-time clean slate before go-live. Wipes every report, photo, email and the
+    activity log, so numbering starts again at 00001. Keeps staff, PINs, sign-ins,
+    email lists, dropdown lists and settings. A full copy of everything is kept in
+    opsapp-data/before-reset/ first. Server console only - there is no button for this."""
+    c = conn()
+    done = get_setting("test_reset_done")
+    if done and not again:
+        print(f"This was already done on {done}. It is meant to run once, before go-live,")
+        print("so it won't run again by accident and wipe real reports.")
+        print("If you really mean it, run:  python -m app.cli reset-test-data --again")
+        return 1
+    n = {t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("reports", "photos", "emails", "audit")}
+    print("This permanently clears, from the app:")
+    print(f"  {n['reports']} reports, {n['photos']} photos, {n['emails']} emails, {n['audit']} activity-log entries")
+    print("It keeps: staff, PINs, who is signed in, email lists, dropdown lists, settings.")
+    print("Report numbers start again at 00001.")
+    print(f"A full copy is saved first in opsapp-data/before-reset/ in case you need it back.")
+    if input('Type RESET to go ahead (anything else cancels): ').strip() != "RESET":
+        print("Cancelled. Nothing was changed.")
+        return 1
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    os.makedirs(RESET_DIR, exist_ok=True)
+    src, dst = sqlite3.connect(DB_PATH), sqlite3.connect(os.path.join(RESET_DIR, f"ops-{stamp}.db"))
+    src.backup(dst)
+    dst.close()
+    src.close()
+    c.execute("BEGIN IMMEDIATE")
+    try:
+        c.execute("DELETE FROM emails")
+        c.execute("DELETE FROM photos")
+        c.execute("DELETE FROM reports")
+        c.execute("DELETE FROM ip_failures")
+        c.execute("DROP TRIGGER IF EXISTS audit_no_delete")
+        c.execute("DELETE FROM audit")
+        c.execute("CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit "
+                  "BEGIN SELECT RAISE(ABORT, 'activity log is append-only'); END")
+        c.execute("COMMIT")
+    except Exception:
+        c.execute("ROLLBACK")
+        raise
+    photos = os.path.join(DATA_DIR, "photos")
+    if os.path.isdir(photos):
+        shutil.move(photos, os.path.join(RESET_DIR, f"photos-{stamp}"))
+    os.makedirs(photos, exist_ok=True)
+    set_setting("test_reset_done", time.strftime("%Y-%m-%d %H:%M"))
+    audit(None, "server console", "test_data_reset", None,
+          {"cleared": n, "copy_kept": f"before-reset/ops-{stamp}.db"})
+    print("Done. The app is clean and the activity log is locked again.")
+    print(f"Copy of the old data: ~/ai-server/opsapp-data/before-reset/ (ops-{stamp}.db and photos-{stamp})")
+    return 0
+
+
 def main(argv):
     init_db()
     if len(argv) >= 2 and argv[0] == "set-pin":
@@ -115,6 +174,8 @@ def main(argv):
         return import_pins(argv[1])
     if len(argv) >= 2 and argv[0] == "set-owner":
         return set_owner(argv[1])
+    if argv and argv[0] == "reset-test-data":
+        return reset_test_data(again="--again" in argv)
     if argv and argv[0] == "staff":
         return list_staff()
     print(__doc__)
