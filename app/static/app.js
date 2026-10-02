@@ -379,11 +379,11 @@
         <span class="card-title">${esc(f.type)}</span>
         <span class="card-sub">${esc(f.blurb)}</span>
         ${me.is_admin && !f.staff_can_see ? '<span class="pillnote">hidden from staff</span>' : ""}</button>`).join("") || `<p class="muted">No forms are switched on yet.</p>`;
-    if (me.studio_url) cards.insertAdjacentHTML("beforeend", `<a class="card tilecard studio" href="${esc(me.studio_url)}" target="_blank" rel="noopener" title="Edit PDFs, designs and quotes, and send for signature">
+    if (me.studio_url) cards.insertAdjacentHTML("afterbegin", `<a class="card tilecard studio" href="${esc(me.studio_url)}" target="_blank" rel="noopener" title="Open Simply Studio">
         <span class="card-icon" aria-hidden="true">${FORM_ICONS.studio}</span>
-        <span class="card-title">Simply Studio</span>
-        <span class="card-sub">Edit PDFs, designs and quotes, and send for signature.</span>
-        <span class="pillnote out">Opens Simply Studio ↗</span></a>`);
+        <span class="studio-txt"><span class="card-title">Simply Studio</span>
+        <span class="studio-tag">Edit · Design · Sign</span></span>
+        <span class="studio-go" aria-hidden="true">↗</span></a>`);
     const list = $("#recentList");
     const pending = (await outboxAll()).filter(e => e.userId === me.id);
     let rows = pending.map(e => `<li><span>${esc(e.type)}</span><span class="tag wait">${e.error ? "Needs fixing" : "Waiting to send"}</span></li>`);

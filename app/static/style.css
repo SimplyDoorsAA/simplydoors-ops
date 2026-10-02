@@ -306,7 +306,12 @@ label.tog input { width: 24px; height: 24px; accent-color: var(--red); }
 .testbox.on { background: var(--amber-bg); border-color: #e7c66b; }
 body.testmode { box-shadow: inset 0 6px 0 #f0b400; }
 body.testmode #viewForm h1::after, body.testmode #viewMeasure h1::after { content: " · TEST"; color: var(--amber); }
-/* link out to Simply Studio */
-a.card.tilecard.studio { text-decoration: none; color: inherit; border-style: solid; }
-.card.tilecard.studio .card-icon { color: #fff; background: var(--green-dark); }
-.tilecard .pillnote.out { color: var(--green-dark); background: var(--green-bg); }
+/* link out to Simply Studio: a full-width tile across both columns, at the top */
+a.card.tilecard.studio { grid-column: 1 / -1; flex-direction: row; align-items: center; gap: 14px; min-height: 84px; padding: 14px 16px;
+  text-decoration: none; color: #fff; background: linear-gradient(135deg, #3d7520, #4f8a2a); border-color: #3d7520; }
+.card.tilecard.studio .card-icon { width: 46px; height: 46px; flex: none; color: var(--green-dark); background: #fff; border-radius: 12px; }
+.card.tilecard.studio .card-icon svg { width: 28px; height: 28px; }
+.studio-txt { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.card.tilecard.studio .card-title { margin: 0; font-size: 19px; color: #fff; }
+.studio-tag { font-size: 14px; font-weight: 600; opacity: .92; }
+.studio-go { font-size: 22px; font-weight: 700; flex: none; }
