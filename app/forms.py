@@ -34,6 +34,7 @@ INSPECTION_ITEMS = {
 EOS_CHECKS = {
     "Warehouse": [
         "All units and slabs needed for next-day delivery/pickups are completed.",
+        "All deliveries received today are entered in the system, tagged, and put up in the racks.",
         "Warehouse is cleaned and swept.",
         "Extra materials are put away. Floor and walls are cleared of leaning trim, doors, and boxes.",
     ],
