@@ -46,7 +46,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-21"
+APP_VERSION = "stage3-22"
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -148,11 +148,11 @@ def manifest():
         "id": base, "name": "SimplyDoors Operations", "short_name": "SD Ops",
         "description": "Receiving, delivery, installs, measures and the other job reports.",
         "start_url": base, "scope": base, "display": "standalone",
-        "background_color": "#f4f7f6", "theme_color": "#76c043",
+        "background_color": "#1f2933", "theme_color": "#76c043",
         "icons": [{"src": base + "static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
                   {"src": base + "static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
-                  # the door sits well inside the middle, so the same picture works when a phone crops it to a circle
-                  {"src": base + "static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}],
+                  # same picture with more room around it, so a phone can crop it to a circle without cutting "OPS"
+                  {"src": base + "static/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}],
         # long-press the app icon (Android) / right-click it (computer)
         "shortcuts": [{"name": n, "url": base + "?open=" + s, "icons": icon} for n, s in
                       (("Receiving Report", "receiving"), ("Delivery Proof", "delivery"),
