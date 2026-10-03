@@ -8,7 +8,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="SD Ops">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="apple-touch-icon" href="static/icon-192.png">
+<link rel="apple-touch-icon" href="static/apple-touch-icon.png">
 <link rel="icon" href="static/icon-192.png">
 <link rel="stylesheet" href="static/style.css?v={{VERSION}}">
 <title>SimplyDoors Operations</title>
@@ -120,6 +120,12 @@
 
   <!-- HOME -->
   <section id="viewHome" class="view hidden">
+    <div class="install-bar" id="installBar" hidden>
+      <img src="static/icon-192.png" alt="" width="40" height="40">
+      <span id="installText"><b>Install SD Ops</b> on this phone: its own icon, full screen, and it opens even with no signal.</span>
+      <span class="install-btns"><button type="button" class="btn small" id="installGo">Install</button>
+      <button type="button" class="link" id="installLater">Not now</button></span>
+    </div>
     <h1>What are you doing?</h1>
     <label class="testbox hidden" id="testBox"><input type="checkbox" id="testSwitch">
       <span><b>Test mode</b><small>Reports are marked TEST, go only to you, and can be deleted in Admin.</small></span></label>

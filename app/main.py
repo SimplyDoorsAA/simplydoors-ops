@@ -46,7 +46,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-20"
+APP_VERSION = "stage3-21"
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -143,12 +143,21 @@ def service_worker():
 @app.get("/manifest.webmanifest", include_in_schema=False)
 def manifest():
     base = (BASE_PATH or "") + "/"
+    icon = [{"src": base + "static/icon-192.png", "sizes": "192x192", "type": "image/png"}]
     return JSONResponse({
-        "name": "SimplyDoors Operations", "short_name": "SD Ops", "start_url": base, "scope": base,
-        "display": "standalone", "background_color": "#f4f7f6", "theme_color": "#76c043",
-        "icons": [{"src": base + "static/icon-192.png", "sizes": "192x192", "type": "image/png"},
-                  {"src": base + "static/icon-512.png", "sizes": "512x512", "type": "image/png"}],
-    }, media_type="application/manifest+json")
+        "id": base, "name": "SimplyDoors Operations", "short_name": "SD Ops",
+        "description": "Receiving, delivery, installs, measures and the other job reports.",
+        "start_url": base, "scope": base, "display": "standalone",
+        "background_color": "#f4f7f6", "theme_color": "#76c043",
+        "icons": [{"src": base + "static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+                  {"src": base + "static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+                  # the door sits well inside the middle, so the same picture works when a phone crops it to a circle
+                  {"src": base + "static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}],
+        # long-press the app icon (Android) / right-click it (computer)
+        "shortcuts": [{"name": n, "url": base + "?open=" + s, "icons": icon} for n, s in
+                      (("Receiving Report", "receiving"), ("Delivery Proof", "delivery"),
+                       ("Installation Completion", "install"), ("Measure Report", "measure"))],
+    }, media_type="application/manifest+json", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/static/{name}", include_in_schema=False)

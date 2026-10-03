@@ -6,6 +6,7 @@
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 
+  let pendingOpen = null;   // ?open=<form> from an app-icon shortcut
   let me = null;            // {name, dept, is_admin, sales_reps, locations}
   let photos = {};          // slot -> Blob for the open form
   let photoMeta = {};       // slot -> {status, lat, lon, acc, at, fileAge}
@@ -138,8 +139,12 @@
       if (!me) return showLogin();
     }
     setUser();
+    // app-icon shortcuts (long-press the SD Ops icon): ?open=receiving etc. Opened once the home screen is up.
+    pendingOpen = new URLSearchParams(location.search).get("open");
+    if (pendingOpen) history.replaceState(null, "", location.pathname);
     if (!(await maybeShowLocationScreen())) showHome();
     flushOutbox();
+
   }
 
   // ------------------------------------------------------------ photo location
@@ -365,6 +370,34 @@
     showHome();
   });
 
+  // ------------------------------------------------------------ install as an app
+  // Chrome / Edge / Android offer a real "Install" button; iPhone and iPad need Share > Add to Home Screen, so we say how.
+  const installed = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  const isApple = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+  const laterUntil = () => { try { return +localStorage.getItem("sdops_install_later") || 0; } catch (e) { return 0; } };
+  let installEvt = null;
+  function showInstall() {
+    const bar = $("#installBar");
+    if (!bar) return;
+    const offer = !installed() && Date.now() > laterUntil() && (installEvt || isApple);
+    bar.hidden = !offer;
+    if (!offer) return;
+    $("#installGo").hidden = !installEvt;
+    if (!installEvt) $("#installText").innerHTML = `<b>Install SD Ops</b> on this ${/iPad/.test(navigator.userAgent) || navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent) ? "iPad" : "phone"}: tap <b>Share</b> <span class="shareico" aria-label="Share">⬆︎</span> then <b>Add to Home Screen</b>. It gets its own icon and opens full screen.`;
+  }
+  window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installEvt = e; showInstall(); });
+  window.addEventListener("appinstalled", () => { installEvt = null; $("#installBar").hidden = true; });
+  $("#installGo").addEventListener("click", async () => {
+    if (!installEvt) return;
+    installEvt.prompt();
+    await installEvt.userChoice.catch(() => null);
+    installEvt = null; showInstall();
+  });
+  $("#installLater").addEventListener("click", () => {
+    try { localStorage.setItem("sdops_install_later", String(Date.now() + 14 * 86400000)); } catch (e) { /* private mode */ }
+    $("#installBar").hidden = true;
+  });
+
   // Simply Studio tile: ask the server for a one-time sign-in link, then open it in a new tab.
   // The tab is opened first (straight from the tap) so the phone doesn't block it as a pop-up.
   document.addEventListener("click", async (ev) => {
@@ -380,8 +413,14 @@
     }
   });
 
+
   async function showHome() {
     show("viewHome");
+    showInstall();
+    if (pendingOpen) {
+      const want = pendingOpen; pendingOpen = null;
+      if ((me.forms || []).some(f => f.slug === want)) return want === "measure" ? openMeasures() : openForm(want);
+    }
     updateGeoNote();
     const tb = $("#testBox");
     tb.classList.toggle("hidden", !me.is_owner);
