@@ -124,21 +124,17 @@ FORMS = {
         "slug": "install", "prefix": "INS", "order": 3,
         "blurb": "Close out an install: checklist, before/after photos, notes and the customer's sign-off.",
         "fields": [
-            {"key": "po", "label": "Job / PO Number", "type": "text", "required": True},
+            {"key": "po", "label": "Job / PO # (last 4)", "ask": "Job / PO Number (last 4 numbers)", "type": "text",
+             "required": True, "digits": 4, "placeholder": "e.g. 1234"},
             {"key": "customer", "label": "Customer", "type": "text", "required": True},
-            {"key": "address", "label": "Job address", "type": "text", "placeholder": "Street, city"},
-            {"key": "work", "label": "Work completed", "type": "textarea", "required": True,
-             "placeholder": "e.g. 1 front entry door with 2 sidelites, new storm door"},
-            {"key": "crew", "label": "Install crew", "type": "text", "placeholder": "Who did the install"},
+            {"key": "work", "label": "All work completed", "ask": "All work completed?", "type": "choice",
+             "options": ["Yes", "No"], "required": True},
+            {"key": "punch_items", "label": "Outstanding punch list", "type": "textarea", "required": True,
+             "show_if": {"field": "work", "in": ["No"]}, "placeholder": "What's left: parts on order, touch-up paint, return visit…"},
             {"key": "checklist", "label": "Completion checklist", "type": "donena", "required": True,
              "items": INSTALL_CHECKS},
-            {"key": "punch", "label": "Punch list", "ask": "Anything left to finish or come back for?", "type": "choice",
-             "options": ["No, all done", "Yes"], "required": True},
-            {"key": "punch_items", "label": "What's left", "type": "textarea", "required": True,
-             "show_if": {"field": "punch", "in": ["Yes"]}, "placeholder": "Parts on order, touch-up paint, return visit…"},
             {"key": "sales_notify", "label": "Sales Rep Notified", "ask": "Notify a sales rep (optional)",
              "type": "select", "options": "sales_reps", "none_label": "Don't notify anyone", "notify": True},
-            {"key": "notes", "label": "Notes", "type": "textarea", "placeholder": "Anything the office should know"},
             {"key": "cust_comments", "label": "Customer comments or concerns", "type": "textarea", "tail": True,
              "placeholder": "Anything the customer said about the job, good or bad"},
             # customer acceptance: shown after the photos, right above the signature
@@ -159,7 +155,7 @@ FORMS = {
              "help": ACCEPT_TEXT},
         ],
         "photo_grid": True,
-        "email_keys": ["po", "customer", "address", "work", "crew", "punch", "punch_items", "cust_comments", "signer", "no_sign_reason"],
+        "email_keys": ["po", "customer", "work", "punch_items", "cust_comments", "signer", "no_sign_reason"],
         "summary": ["po", "customer"],
     },
     "RMA": {
@@ -456,6 +452,8 @@ def clean(form_type: str, raw: dict) -> tuple[dict, list[str]]:
             v = (raw.get(key) or "").strip()[:MAX_TEXT if t == "textarea" else 300]
             if need and not v:
                 errors.append(f"{label} is required.")
+            elif v and f.get("digits") and not re.fullmatch(rf"\d{{{f['digits']}}}", v):
+                errors.append(f"{label}: type exactly {f['digits']} numbers.")
             data[key] = v
         elif t == "number":
             v = (raw.get(key) or "").strip().replace(",", "")
@@ -542,7 +540,7 @@ def clean(form_type: str, raw: dict) -> tuple[dict, list[str]]:
     if form_type == "Vehicle Inspection":
         data["defective"] = any_defective
     if form_type == "Installation Completion":
-        data["attention"] = data.get("punch") == "Yes" or data.get("cust_present") == "No"
+        data["attention"] = data.get("work") == "No" or data.get("cust_present") == "No"
     return data, errors
 
 
@@ -614,7 +612,7 @@ def subject_for(form_type: str, data: dict, staff_name: str, receipt: str) -> st
         "Receiving Report": f"Receiving Report: {d.get('po')} - {d.get('customer')}",
         "Delivery Proof": f"Delivery Proof: {d.get('po')} - {d.get('customer')}",
         "Installation Completion": f"{'NEEDS FOLLOW-UP - ' if d.get('attention') else ''}Install Complete: {d.get('po')} - {d.get('customer')}"
-                                   f"{' (punch list)' if d.get('punch') == 'Yes' else ''}{' (not signed)' if d.get('cust_present') == 'No' else ''}",
+                                   f"{' (punch list)' if d.get('work') == 'No' else ''}{' (not signed)' if d.get('cust_present') == 'No' else ''}",
         "End of Shift": f"End of Shift: {d.get('role')} - {staff_name}",
         "Vehicle Inspection": f"{'DEFECTIVE - ' if d.get('defective') else ''}Vehicle {d.get('trip')}: {d.get('vehicle')} - {staff_name}",
         "Vehicle Incident": f"URGENT: Vehicle Incident - {d.get('vehicle')} ({staff_name})",

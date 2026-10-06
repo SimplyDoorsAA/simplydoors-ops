@@ -649,7 +649,7 @@ def test_owner_address_stays_private(client, smtp):
 def test_installation_completion(client):
     login(client, "Adem Atis", "246810")
     checks = {f"checklist:{k}": "Done" for k, _ in F.INSTALL_CHECKS}
-    base = {"po": "SD-1", "customer": "Lee", "work": "1 entry door", "punch": "No, all done", **checks}
+    base = {"po": "1234", "customer": "Lee", "work": "Yes", **checks}
     photos = {"after1": ("a.jpg", jpeg(), "image/jpeg"), "after2": ("b.jpg", jpeg((1, 2, 3)), "image/jpeg")}
     # customer present -> signature + name required
     r = client.post("/ops/api/reports/install", data={**base, "submission_id": "sub-ins-0001", "cust_present": "Yes",
@@ -660,7 +660,7 @@ def test_installation_completion(client):
                     "signer": "Pat Lee"}, files={**photos, "sig": ("s.png", sig.getvalue(), "image/png")}, headers=H)
     assert r.status_code == 200, r.text
     e = conn().execute("SELECT subject FROM emails ORDER BY id DESC LIMIT 1").fetchone()[0]
-    assert e.startswith("Install Complete: SD-1 - Lee")
+    assert e.startswith("Install Complete: 1234 - Lee")
     # not present -> no signature, but a reason; flagged for follow-up
     r = client.post("/ops/api/reports/install", data={**base, "submission_id": "sub-ins-0003", "cust_present": "No"},
                     files=photos, headers=H)
@@ -674,6 +674,21 @@ def test_installation_completion(client):
     bad = {**base, "submission_id": "sub-ins-0005", "cust_present": "No", "no_sign_reason": "x"}
     bad.pop("checklist:operates")
     assert client.post("/ops/api/reports/install", data=bad, files=photos, headers=H).status_code == 422
+    # PO must be exactly the last 4 numbers
+    ok = {**base, "cust_present": "No", "no_sign_reason": "x"}
+    for po in ("SD-1234", "123", "12345"):
+        r = client.post("/ops/api/reports/install", data={**ok, "submission_id": f"sub-ins-po{po}", "po": po},
+                        files=photos, headers=H)
+        assert r.status_code == 422 and "4 numbers" in r.json()["detail"]
+    # work not complete -> outstanding punch list required, flagged for follow-up
+    r = client.post("/ops/api/reports/install", data={**ok, "submission_id": "sub-ins-0006", "work": "No"},
+                    files=photos, headers=H)
+    assert r.status_code == 422 and "Outstanding punch list" in r.json()["detail"]
+    r = client.post("/ops/api/reports/install", data={**ok, "submission_id": "sub-ins-0007", "work": "No",
+                    "punch_items": "Storm door on order"}, files=photos, headers=H)
+    assert r.status_code == 200, r.text
+    e = conn().execute("SELECT subject FROM emails ORDER BY id DESC LIMIT 1").fetchone()[0]
+    assert e.startswith("NEEDS FOLLOW-UP") and "(punch list)" in e
 
 
 def test_rma_vendor_and_customer(client):
