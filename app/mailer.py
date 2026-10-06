@@ -97,11 +97,22 @@ def _customer_html(r, data) -> str:
 <p style="margin:20px 0 0">Thank you,<br><b>The SimplyDoors team</b></p></div></div>"""
 
 
+def customer_reply_to(data) -> list[str]:
+    """A customer's reply always reaches the office, plus the sales rep picked on the form.
+    The owner's own address is never shown to a customer (same rule as the staff emails)."""
+    from .forms import owner_email
+    out = [CUSTOMER_REPLY_TO]
+    rep, owner = str(data.get("sales_notify_email") or "").strip(), owner_email().lower()
+    if rep and rep.lower() != CUSTOMER_REPLY_TO.lower() and rep.lower() != owner:
+        out.append(rep)
+    return out
+
+
 def _send_customer(email_row, r, data, photos) -> EmailMessage:
     msg = EmailMessage()
     msg["From"] = formataddr((CUSTOMER_FROM_NAME, SMTP_USER))
     msg["To"] = email_row["recipients"]
-    msg["Reply-To"] = CUSTOMER_REPLY_TO
+    msg["Reply-To"] = ", ".join(customer_reply_to(data))
     msg["Subject"] = email_row["subject"]
     msg.set_content("Thank you for choosing SimplyDoors. Your signed installation record is attached as a PDF. "
                     "Questions? Just reply to this email.")

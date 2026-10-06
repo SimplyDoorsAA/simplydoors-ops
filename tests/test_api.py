@@ -730,6 +730,10 @@ def test_install_customer_copy(client):
     html = msg.get_body(("html",)).get_content()
     assert "Storm door on order" in html and "Adem" not in html and "NEEDS FOLLOW-UP" not in html
     assert msg["Reply-To"] == mailer.CUSTOMER_REPLY_TO and msg["From"].startswith("SimplyDoors")
+    # a sales rep picked on the form is added to Reply-To; the office always stays
+    assert mailer.customer_reply_to({**data, "sales_notify_email": "rep@simplydoors.com"}) == \
+        [mailer.CUSTOMER_REPLY_TO, "rep@simplydoors.com"]
+    assert mailer.customer_reply_to({**data, "sales_notify_email": "adem@simplydoors.com"}) == [mailer.CUSTOMER_REPLY_TO]
     # no email given, or customer not there -> no customer copy
     r = client.post("/ops/api/reports/install", data={**base, "submission_id": "sub-cc-0003"},
                     files={**photos, "sig": ("s.png", sig.getvalue(), "image/png")}, headers=H)
