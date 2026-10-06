@@ -119,6 +119,8 @@ FORMS = {
         "slug": "install", "prefix": "INS", "order": 3,
         "blurb": "Close out an install: checklist, before/after photos, notes and the customer's sign-off.",
         "fields": [
+            {"key": "job", "label": "Service Fusion job", "type": "joblookup", "lookup": "install",
+             "fills": {"po": "last4", "customer": "customer", "cust_email": "email"}},
             {"key": "po", "label": "Job / PO # (last 4)", "ask": "Job / PO Number (last 4 numbers)", "type": "text",
              "required": True, "digits": 4, "placeholder": "e.g. 1234"},
             {"key": "customer", "label": "Customer", "type": "text", "required": True},
@@ -321,6 +323,7 @@ FORMS = {
         "slug": "measure", "prefix": "MSR", "order": 8, "kind": "measure",
         "blurb": "Measure doors and windows on site: sizes, trim, labor, photos. Reopen and fix later.",
         "fields": [], "photos": [],
+        "lookup_fills": {"customer": "customer", "po": "last4"},
     },
 }
 
@@ -418,6 +421,8 @@ def public_spec(form_type: str) -> dict:
            "staff_can_see": form_type in enabled_forms() and not spec.get("admin_only")}
     if spec.get("kind") == "measure":
         out["measure"] = M.public()
+    if spec.get("lookup_fills"):
+        out["lookup_fills"] = spec["lookup_fills"]
     return out
 
 
@@ -435,17 +440,43 @@ def _slug(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
 
 
+def lookup_changes(raw: dict, data: dict, fills: dict, labels: dict) -> None:
+    """Job picked from the Service Fusion list: keep its number, and note any pre-filled field the crew changed,
+    so the office can fix Service Fusion. Shown on the internal email/PDF only, never on the customer's copy."""
+    num = re.sub(r"\D", "", str(raw.get("sf_job") or ""))[:20]
+    if not num:
+        return
+    data["sf_job"] = num
+    try:
+        filled = json.loads(raw.get("sf_filled") or "{}")
+    except Exception:
+        filled = {}
+    changes = []
+    for key in fills:
+        if key not in data or not isinstance(filled, dict) or key not in filled:
+            continue                      # field hidden (e.g. customer not there to sign) or nothing was filled
+        was, now = " ".join(str(filled[key] or "").split())[:300], " ".join(str(data[key] or "").split())
+        if was != now and (was or now):
+            changes.append(f"{labels.get(key, key)}: {was or '(empty)'} → {now or '(cleared)'}")
+    if changes:
+        data["sf_changes"] = changes
+
+
 def clean(form_type: str, raw: dict) -> tuple[dict, list[str]]:
     """Validate submitted fields against the form definition. Returns (data, errors)."""
     spec = FORMS[form_type]
     if spec.get("kind") == "measure":
-        return M.clean(raw)
+        data, errors = M.clean(raw)
+        lookup_changes(raw, data, spec.get("lookup_fills") or {}, {"customer": "Customer", "po": "PO / Reference #"})
+        return data, errors
     data, errors = {}, []
     any_defective = False
     for f in spec["fields"]:
         key, label, t = f["key"], f["label"], f["type"]
         if not _shown(f, raw):
             continue
+        if t == "joblookup":
+            continue                      # handled after every field is cleaned (lookup_changes)
         need = f.get("required", False)
         if t in ("text", "textarea"):
             v = (raw.get(key) or "").strip()[:MAX_TEXT if t == "textarea" else 300]
@@ -538,6 +569,9 @@ def clean(form_type: str, raw: dict) -> tuple[dict, list[str]]:
     for f in spec["fields"]:
         if f.get("required_if_defective") and any_defective and not data.get(f["key"]):
             errors.append(f"{f['label']} is required when something is Defective.")
+    for f in spec["fields"]:
+        if f["type"] == "joblookup":
+            lookup_changes(raw, data, f.get("fills") or {}, {x["key"]: x["label"] for x in spec["fields"]})
     if form_type == "Vehicle Inspection":
         data["defective"] = any_defective
     if form_type == "Installation Completion":
@@ -566,6 +600,12 @@ def display_rows(form_type: str, data: dict) -> list[tuple[str, str]]:
             for k, v in res.items():
                 rows.append((k, "Done" if v == "Done" else "N/A"))
             continue
+        if t == "joblookup":
+            if data.get("sf_job"):
+                rows.append(("Service Fusion job", data["sf_job"]))
+            if data.get("sf_changes"):
+                rows.append(("Changed from Service Fusion", "\n".join(data["sf_changes"])))
+            continue
         if t == "okdef":
             res = data.get(key) or {}
             bad = [k for k, v in res.items() if v == "Defective"]
@@ -592,6 +632,10 @@ def email_rows(form_type: str, data: dict) -> list[tuple[str, str]]:
     for k in keys:
         if data.get(k) not in ("", None):
             rows.append((by[k]["label"], data[k]))
+    if data.get("sf_job"):
+        rows.append(("Service Fusion job", data["sf_job"]))
+    if data.get("sf_changes"):
+        rows.append(("Changed from Service Fusion", "; ".join(data["sf_changes"])))
     for f in FORMS[form_type]["fields"]:
         if f["type"] == "donena" and data.get(f["key"]):
             res = data[f["key"]]

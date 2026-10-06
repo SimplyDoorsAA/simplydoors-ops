@@ -893,3 +893,166 @@ def test_reset_test_data_is_console_only_and_one_time(client, monkeypatch):
     login(client, "Jaime Mendoza", "135790")
     r = receiving(client, "sub-after-reset")
     assert r.status_code == 200 and r.json()["receipt"] == "RCV-00001"
+
+
+# ---------------------------------------------------------------- job lookup (fake Service Fusion)
+import threading as _th  # noqa: E402
+from http.server import BaseHTTPRequestHandler, HTTPServer  # noqa: E402
+from urllib.parse import parse_qs, urlparse  # noqa: E402
+
+FAKE = {"fail": False, "calls": []}
+
+
+def _sf_jobs():
+    jobs = [
+        {"number": "10236418931", "customer_id": 1, "customer_name": "Angela Heimer", "status": "2 Scheduled Consult",
+         "sub_status": None, "contact_first_name": "Angela", "contact_last_name": "Heimer", "start_date": "2026-10-06",
+         "street_1": "12 Oak St", "city": "Schertz", "state_prov": "TX", "postal_code": "78154", "category": "Exterior Doors",
+         "description": "Front door consult", "po_number": ""},
+        {"number": "10236418000", "customer_id": 2, "customer_name": "Bill Tom", "status": "10 Install Scheduled",
+         "sub_status": None, "contact_first_name": "Bill", "contact_last_name": "Tom", "start_date": "2026-10-07",
+         "street_1": None, "city": None, "state_prov": None, "postal_code": None, "category": "Windows",
+         "description": "3 windows", "po_number": ""},
+        {"number": "10236417555", "customer_id": 3, "customer_name": "Old Done Job", "status": "17 Completed",
+         "sub_status": None, "contact_first_name": "", "contact_last_name": "", "start_date": None},
+    ]
+    jobs += [{"number": f"1023640{i:04d}", "customer_id": 9, "customer_name": f"Builder {i}", "status": "4 Need to Order",
+              "contact_first_name": "", "contact_last_name": "", "start_date": None} for i in range(60)]
+    return jobs
+
+
+class _SF(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, body):
+        b = json.dumps(body).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b)
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("content-length") or 0))
+        self._send(200, {"access_token": "tok", "expires_in": 3600})
+
+    def do_GET(self):
+        FAKE["calls"].append(self.path)
+        if FAKE["fail"]:
+            return self._send(503, {"message": "down"})
+        if self.headers.get("Authorization") != "Bearer tok":
+            return self._send(401, {})
+        u = urlparse(self.path)
+        q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        if u.path == "/v1/job-statuses":
+            names = ["2 Scheduled Consult", "10 Install Scheduled", "17 Completed", "4 Need to Order", "Paid in Full"]
+            return self._send(200, {"items": [{"id": i, "name": n} for i, n in enumerate(names)], "_meta": {"pageCount": 1}})
+        if u.path == "/v1/jobs":
+            rows = [j for j in _sf_jobs() if j["status"] == q.get("filters[status]")]
+            per, page = int(q.get("per-page", 50)), int(q.get("page", 1))
+            assert per <= 50
+            pages = max(1, -(-len(rows) // per))
+            return self._send(200, {"items": rows[(page - 1) * per: page * per], "_meta": {"pageCount": pages}})
+        if u.path.startswith("/v1/customers/"):
+            cid = int(u.path.rsplit("/", 1)[1])
+            return self._send(200, {"id": cid, "customer_name": "x", "contacts": [
+                {"fname": "Bill", "lname": "Tom", "is_primary": True,
+                 "emails": [{"email": f"cust{cid}@example.com"}], "phones": [{"phone": "(210) 555-0100"}]}],
+                "locations": [{"street_1": "9 Elm Rd", "city": "Cibolo", "state_prov": "TX", "postal_code": "78108",
+                               "is_primary": True}]})
+        return self._send(404, {})
+
+
+@pytest.fixture(scope="module")
+def fake_sf():
+    from app import sfjobs
+    srv = HTTPServer(("127.0.0.1", 0), _SF)
+    t = _th.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    old = (sfjobs.API, sfjobs.CLIENT_ID, sfjobs.CLIENT_SECRET)
+    sfjobs.API, sfjobs.CLIENT_ID, sfjobs.CLIENT_SECRET = f"http://127.0.0.1:{srv.server_port}", "id", "secret"
+    sfjobs._token["value"] = None
+    yield sfjobs
+    sfjobs.API, sfjobs.CLIENT_ID, sfjobs.CLIENT_SECRET = old
+    srv.shutdown()
+
+
+def test_job_lookup_off_until_connected(client):
+    from app import sfjobs
+    login(client, "Jaime Mendoza", "135790")
+    if not sfjobs.configured():
+        assert client.get("/ops/api/jobs", headers=H).json() == {"connected": False, "results": []}
+        assert client.get("/ops/api/me", headers=H).json()["job_lookup"] is False
+
+
+def test_job_lookup_refresh_search_and_pick(client, fake_sf, smtp):
+    r = fake_sf.refresh("test")
+    assert r["ok"] and r["jobs"] == 62                      # 1 consult + 1 install + 60 (two pages); closed jobs skipped
+    assert not any("17+Completed" in c or "Paid+in+Full" in c for c in FAKE["calls"])
+    login(client, "Jaime Mendoza", "135790")
+    assert client.get("/ops/api/me", headers=H).json()["job_lookup"] is True
+    # Measure: only scheduled consults
+    m = client.get("/ops/api/jobs?form=measure", headers=H).json()["results"]
+    assert [j["number"] for j in m] == ["10236418931"]
+    # Install, nothing typed: install-stage / near-dated jobs only; then by last 4 and by name
+    i = client.get("/ops/api/jobs?form=install", headers=H).json()["results"]
+    assert [j["number"] for j in i] == ["10236418000"]
+    assert [j["number"] for j in client.get("/ops/api/jobs?form=install&q=8931", headers=H).json()["results"]] == ["10236418931"]
+    assert [j["customer"] for j in client.get("/ops/api/jobs?form=install&q=bill%20t", headers=H).json()["results"]] == ["Bill Tom"]
+    assert client.get("/ops/api/jobs?form=install&q=7555", headers=H).json()["results"] == []   # completed: not offered
+    # search results never carry contact details
+    assert set(i[0]) == {"number", "last4", "customer", "status", "date", "category"}
+    # picking a job: address from the job, email/phone from the customer record; the pick is logged
+    d = client.get("/ops/api/jobs/10236418931?form=measure", headers=H).json()
+    assert d["address"] == "12 Oak St, Schertz, TX 78154" and d["email"] == "cust1@example.com" and d["phone"]
+    a = conn().execute("SELECT actor_name, target FROM audit WHERE action='job_details_opened' ORDER BY id DESC LIMIT 1").fetchone()
+    assert tuple(a) == ("Jaime Mendoza", "job:10236418931")
+    # no address on the job: falls back to the customer's service location
+    d2 = client.get("/ops/api/jobs/10236418000", headers=H).json()
+    assert d2["address"] == "9 Elm Rd, Cibolo, TX 78108"
+    assert client.get("/ops/api/jobs/99999999", headers=H).status_code == 404
+    # a failed refresh keeps the last good copy and says why
+    FAKE["fail"] = True
+    fake_sf._token["value"] = None
+    bad = fake_sf.refresh("test")
+    FAKE["fail"] = False
+    assert not bad["ok"] and fake_sf.status()["last_error"]
+    assert len(client.get("/ops/api/jobs?form=install&q=bill", headers=H).json()["results"]) == 1
+
+
+def test_job_lookup_changes_flagged_internally_only(client, fake_sf, smtp):
+    login(client, "Adem Atis", "246810")
+    sig = io.BytesIO(); Image.new("RGBA", (600, 200), (0, 0, 0, 0)).save(sig, "PNG")
+    photos = {"after1": ("a.jpg", jpeg(), "image/jpeg"), "after2": ("b.jpg", jpeg((1, 2, 3)), "image/jpeg"),
+              "sig": ("s.png", sig.getvalue(), "image/png")}
+    filled = {"po": "8000", "customer": "Bill Tom", "cust_email": "cust2@example.com"}
+    data = {"submission_id": "sub-jl-0001", "po": "8000", "customer": "Bill Tom", "work": "Yes", "walkthrough": "Yes",
+            "cust_present": "Yes", "signer": "Bill Tom", "cust_email": "bill.home@example.com",
+            "sf_job": "10236418000", "sf_filled": json.dumps(filled)}
+    r = client.post("/ops/api/reports/install", data=data, files=photos, headers=H)
+    assert r.status_code == 200, r.text
+    rid = conn().execute("SELECT id, data FROM reports WHERE submission_id='sub-jl-0001'").fetchone()
+    d = json.loads(rid["data"])
+    assert d["sf_job"] == "10236418000"
+    assert d["sf_changes"] == ["Customer email: cust2@example.com → bill.home@example.com"]
+    rep, dd, ph = mailer._report_bundle(rid["id"])
+    staff_html = mailer._body_html(rep, dd)
+    assert "Changed from Service Fusion" in staff_html and "10236418000" in staff_html
+    cust = conn().execute("SELECT * FROM emails WHERE report_id=? AND audience='customer'", (rid["id"],)).fetchone()
+    assert cust["recipients"] == "bill.home@example.com"
+    cust_html = mailer._send_customer(cust, rep, dd, ph).get_body(("html",)).get_content()
+    assert "Service Fusion" not in cust_html
+    # nothing changed -> no change row
+    data2 = {**data, "submission_id": "sub-jl-0002", "cust_email": "cust2@example.com"}
+    assert client.post("/ops/api/reports/install", data=data2, files=photos, headers=H).status_code == 200
+    d2 = json.loads(conn().execute("SELECT data FROM reports WHERE submission_id='sub-jl-0002'").fetchone()[0])
+    assert d2["sf_job"] == "10236418000" and "sf_changes" not in d2
+    # Measure: the link and a changed customer name show in the job rows
+    r = _measure(client, "sub-jl-msr1", [_door()], customer="Angela Heimer-Ruiz", po="8931", sf_job="10236418931",
+                 sf_filled=json.dumps({"customer": "Angela Heimer", "po": "8931"}))
+    assert r.status_code == 200, r.text
+    dm = json.loads(conn().execute("SELECT data FROM reports WHERE submission_id='sub-jl-msr1'").fetchone()[0])
+    from app import measure as M
+    rows = dict(M.job_rows(dm))
+    assert rows["Service Fusion job"] == "10236418931"
+    assert rows["Changed from Service Fusion"] == "Customer: Angela Heimer → Angela Heimer-Ruiz"

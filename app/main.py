@@ -32,7 +32,7 @@ Image.MAX_IMAGE_PIXELS = 40_000_000           # phone photos are ~12-50 MP; refu
 warnings.simplefilter("error", Image.DecompressionBombWarning)
 PHOTO_FORMATS = ["JPEG", "PNG", "WEBP"]
 
-from . import alerts, auth, geo, mailer
+from . import alerts, auth, geo, mailer, sfjobs
 from .db import DATA_DIR, DB_PATH, audit, conn, delete_audit_rows, get_setting, init_db, now_iso, set_setting
 from . import forms as forms_mod
 from .forms import (FORM_BY_SLUG, FORMS, EXTRA_RULES, LIST_LABELS, DEFAULT_LISTS, clean, get_list, photo_minimums,
@@ -46,7 +46,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-29"
+APP_VERSION = "stage3-30"
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -329,7 +329,46 @@ def me(staff=Depends(current_staff)):
         "test_mode": bool(staff["is_owner"]) and get_setting("owner_test_mode") == "1",
         "studio_url": STUDIO_URL if shows_studio(staff) else None,
         "forms": [public_spec(t) for t in visible_forms(staff)],
+        "job_lookup": sfjobs.configured(),
     }
+
+
+# ---------------------------------------------------------------- job lookup (Service Fusion copy)
+JOB_FORMS = {"install", "measure"}
+
+
+@app.get("/api/jobs")
+def job_search(request: Request, form: str = "install", q: str = "", staff=Depends(current_staff)):
+    if not sfjobs.configured():
+        return {"connected": False, "results": []}
+    form = form if form in JOB_FORMS else "install"
+    return {"results": sfjobs.search(form, q[:60]), **sfjobs.status()}
+
+
+@app.post("/api/jobs/refresh")
+async def job_refresh(request: Request, staff=Depends(current_staff)):
+    if not sfjobs.configured():
+        raise HTTPException(400, "The job lookup isn't connected to Service Fusion yet.")
+    r = await run_in_threadpool(sfjobs.manual_refresh)
+    if not r.get("skipped"):
+        audit(staff["id"], staff["name"], "jobs_refreshed", None,
+              {"ok": bool(r.get("ok")), "jobs": r.get("jobs")}, client_ip(request), ua(request))
+    return r
+
+
+@app.get("/api/jobs/{number}")
+async def job_details(number: str, request: Request, form: str = "install", staff=Depends(current_staff)):
+    if not sfjobs.configured():
+        raise HTTPException(400, "The job lookup isn't connected to Service Fusion yet.")
+    if not re.fullmatch(r"\d{4,20}", number):
+        raise HTTPException(404, "No such job.")
+    d = await run_in_threadpool(sfjobs.details, number)
+    if not d:
+        raise HTTPException(404, "That job isn't in the open-jobs list any more. Tap Refresh, or type it in.")
+    # every pick is logged: who opened which customer's details, and from which form
+    audit(staff["id"], staff["name"], "job_details_opened", f"job:{number}",
+          {"form": form if form in JOB_FORMS else "?"}, client_ip(request), ua(request))
+    return d
 
 
 # ---------------------------------------------------------------- reports
@@ -1133,6 +1172,7 @@ def admin_status(admin=Depends(current_admin)):
         "reports": c.execute("SELECT COUNT(*) FROM reports").fetchone()[0],
         "last_backup": _last_backup(),
         "offsite": offsite_status(),
+        "job_lookup": sfjobs.status(),
     }
 
 
@@ -1214,6 +1254,8 @@ def nightly():
 def startup():
     os.makedirs(PHOTO_DIR, exist_ok=True)
     init_db()
+    sfjobs.init()
     audit(None, "system", "app_started", None, {"version": APP_VERSION})
     mailer.start_worker()
+    sfjobs.start_worker()
     threading.Thread(target=nightly, daemon=True, name="nightly").start()

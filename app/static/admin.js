@@ -321,6 +321,7 @@
         ${s.email_configured ? "" : '<p class="error">Email sending is not set up yet. Reports are saved, and their emails are waiting until it is.</p>'}
         ${!s.offsite.configured ? '<p class="error">Off-site backup is not set up. Reports and photos exist only on the OptiPlex.</p>'
           : !s.offsite.ok ? `<p class="error">Last off-site backup failed (${esc(when(s.offsite.finished))}): ${esc(s.offsite.error || "")}</p>` : ""}
+        ${s.job_lookup && s.job_lookup.connected && s.job_lookup.last_error ? `<p class="error">Job lookup couldn't refresh from Service Fusion: ${esc(s.job_lookup.last_error)}</p>` : ""}
         ${s.staff_without_pin.length ? `<p class="error" style="background:var(--amber-bg);color:var(--amber)">No PIN yet: ${esc(s.staff_without_pin.join(", "))}</p>` : ""}
         <div class="stat">
           <div>Reports<b>${s.reports}</b></div>
@@ -333,6 +334,7 @@
         <p class="muted small">Sending from: ${esc(s.email_from || "not set")} · Phone alerts: ${s.alerts_configured ? "on" : "off"} ·
           Last database snapshot: ${esc(s.last_backup || "none yet")} ·
           Last off-site copy: ${s.offsite.configured ? esc(s.offsite.last_ok ? when(s.offsite.last_ok) : "never") + (s.offsite.dest ? ` to ${esc(s.offsite.dest)}` : "") : "not set up"} ·
+          Job lookup: ${!s.job_lookup || !s.job_lookup.connected ? "not connected" : s.job_lookup.last_ok ? `${s.job_lookup.jobs} open jobs, updated ${esc(when(s.job_lookup.last_ok))}` : "connected, not loaded yet"} ·
           Version ${esc(s.version)}</p>
         <h3>Recent emails</h3>
         ${s.recent_emails.map(e => `<div class="rule">${emailBadge(e.status)} ${esc(e.subject)}<div class="det">To: ${esc(e.recipients)} · tries: ${e.attempts}

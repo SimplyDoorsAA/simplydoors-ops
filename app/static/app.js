@@ -514,6 +514,10 @@
               <label class="na"><input type="radio" name="${esc(n)}" value="N/A"><span>N/A</span></label></div></div>`;
           }).join("");
         break;
+      case "joblookup":
+        if (!me.job_lookup) return "";
+        inner = `<div class="jl" data-jl="${esc(f.lookup || "install")}"></div><input type="hidden" name="sf_job"><input type="hidden" name="sf_filled">`;
+        break;
       case "okdef":
         inner = `<div class="okdef-head"><b>${esc(f.label)}${req}</b><button type="button" class="link" data-allok="${esc(f.key)}">Mark all OK</button></div>` +
           Object.entries(f.groups).map(([g, items]) => `<h3>${esc(g)}</h3>` + items.map(it => {
@@ -870,6 +874,138 @@
     }
   });
 
+  // ------------------------------------------------------------ job lookup (copy of Service Fusion's open jobs)
+  // Search shows job #, customer, status and date only; address, phone and email come back once a job is picked.
+  // Everything it fills in stays editable; what it filled is sent along so the office sees any change.
+  function agoText(iso) {
+    if (!iso) return "never";
+    const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+    if (m < 1) return "just now";
+    if (m < 60) return `${m} min ago`;
+    const h = Math.round(m / 60);
+    return h < 24 ? `${h} hour${h > 1 ? "s" : ""} ago` : fmtTime(iso);
+  }
+  function shortDate(d) {
+    if (!d) return "";
+    const x = new Date(d + "T12:00:00");
+    return x.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  }
+  function mountLookup(box, opts) {
+    // opts: { form, get(): {job, filled}, set(job, filled), fill(details) -> {key: value filled} }
+    if (!box || !me.job_lookup) return;
+    box.innerHTML = `<label class="jl-label">Find the job</label>
+      <p class="muted small jl-help">Type the last 4 of the job # or the customer's name, then tap the job. Everything it fills in can still be changed.</p>
+      <div class="jl-find"><div class="jl-row"><input type="search" class="jl-q" placeholder="Last 4 of job # or name" autocomplete="off" aria-label="Find the job">
+        <button type="button" class="mini jl-refresh">Refresh</button></div>
+        <p class="muted small jl-status"></p><ul class="jl-results"></ul>
+        <p class="muted small jl-manual">Not listed? Type the details in below.</p></div>
+      <div class="jl-picked hidden"></div>`;
+    const q = $(".jl-q", box), res = $(".jl-results", box), st = $(".jl-status", box), find = $(".jl-find", box), picked = $(".jl-picked", box);
+    let timer = null, seq = 0;
+    const setStatus = (r) => {
+      if (!r || !r.last_ok) { st.textContent = r && r.last_error ? "The job list hasn't loaded yet. Tap Refresh, or type the details in." : ""; return; }
+      const stale = (Date.now() - new Date(r.last_ok).getTime()) > 2 * 3600 * 1000;
+      st.textContent = `Job list updated ${agoText(r.last_ok)}${stale && r.last_error ? " (couldn't update since, so new jobs may be missing)" : ""}`;
+    };
+    async function run() {
+      const my = ++seq;
+      try {
+        const r = await api(`api/jobs?form=${encodeURIComponent(opts.form)}&q=${encodeURIComponent(q.value.trim())}`);
+        if (my !== seq) return;
+        setStatus(r);
+        res.innerHTML = r.results.map(j => `<li><button type="button" class="jl-item" data-num="${esc(j.number)}">
+            <b>${esc(j.customer || "(no name)")}</b> <span class="jl-num">…${esc(j.last4)}</span>
+            <span class="muted small">${esc([j.status, shortDate(j.date), j.category].filter(Boolean).join(" · "))}</span></button></li>`).join("")
+          || `<li class="muted small">${q.value.trim() ? "No open job matches. Check the number, tap Refresh, or type the details in below." : (opts.form === "measure" ? "No scheduled consults right now." : "Type to search all open jobs.")}</li>`;
+      } catch (e) {
+        if (my !== seq) return;
+        res.innerHTML = `<li class="muted small">${e.status === 0 ? "No signal, so the job list can't load. Type the details in below." : esc(e.message)}</li>`;
+      }
+    }
+    function showPicked(d, filled) {
+      find.classList.add("hidden"); picked.classList.remove("hidden");
+      const lines = [];
+      if (d) {
+        if (d.contact && d.contact.toLowerCase() !== (d.customer || "").toLowerCase()) lines.push(`<div>${esc(d.contact)}</div>`);
+        if (d.address) lines.push(`<div><a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(d.address)}" target="_blank" rel="noopener">${esc(d.address)}</a></div>`);
+        if (d.phone) lines.push(`<div><a href="tel:${esc(d.phone.replace(/[^\d+]/g, ""))}">${esc(d.phone)}</a></div>`);
+        if (d.email) lines.push(`<div class="jl-email">${esc(d.email)}</div>`);
+        if (d.description) lines.push(`<div class="muted small">${esc(d.description)}</div>`);
+        if (d.note) lines.push(`<div class="small jl-note">${esc(d.note)}</div>`);
+      }
+      const cur = opts.get();
+      const name = (d && d.customer) || (filled && filled.customer) || "";
+      picked.innerHTML = `<div class="jl-card"><div class="jl-head"><b>${esc(name || "Linked job")}</b>
+          <span class="jl-num">Job ${esc(cur.job)}</span></div>
+        ${d && d.status ? `<div class="muted small">${esc([d.status, shortDate(d.date)].filter(Boolean).join(" · "))}</div>` : ""}
+        ${lines.join("")}
+        <div class="jl-acts">${d ? "" : `<button type="button" class="link jl-more">Show address and phone</button>`}
+          <button type="button" class="link jl-unlink">Not this job</button></div></div>`;
+      const more = $(".jl-more", picked);
+      if (more) more.onclick = () => pick(cur.job, true);
+      $(".jl-unlink", picked).onclick = () => {
+        opts.set("", "");
+        picked.classList.add("hidden"); picked.innerHTML = ""; find.classList.remove("hidden");
+        q.value = ""; run();
+      };
+    }
+    async function pick(num, keepFields) {
+      res.innerHTML = `<li class="muted small">Opening job…</li>`;
+      try {
+        const d = await api(`api/jobs/${encodeURIComponent(num)}?form=${encodeURIComponent(opts.form)}`);
+        let filled;
+        if (keepFields) { filled = opts.get().filled; }
+        else { filled = opts.fill(d); opts.set(d.number, JSON.stringify(filled)); }
+        showPicked(d, filled && typeof filled === "string" ? JSON.parse(filled) : filled);
+      } catch (e) {
+        if (keepFields) { alert(e.status === 0 ? "No signal right now." : e.message); return; }
+        res.innerHTML = `<li class="muted small">${e.status === 0 ? "No signal, so the job can't open. Type the details in below." : esc(e.message)}</li>`;
+      }
+    }
+    q.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(run, 250); });
+    q.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); clearTimeout(timer); run(); } });
+    res.addEventListener("click", (e) => { const b = e.target.closest("[data-num]"); if (b) pick(b.dataset.num, false); });
+    $(".jl-refresh", box).onclick = async (e) => {
+      const b = e.currentTarget; b.disabled = true; b.textContent = "Refreshing…";
+      try { const r = await api("api/jobs/refresh", { method: "POST" }); setStatus(r); if (r.ok === false && r.error) st.textContent = r.error; }
+      catch (err) { st.textContent = err.status === 0 ? "No signal right now." : err.message; }
+      b.disabled = false; b.textContent = "Refresh"; run();
+    };
+    const cur = opts.get();
+    if (cur.job) {
+      let f = null; try { f = JSON.parse(cur.filled || "{}"); } catch (e) { f = null; }
+      showPicked(null, f);
+    } else run();
+  }
+  function lookupFill(d, fills, setVal) {
+    const src = { last4: d.last4, customer: d.customer, email: d.email, number: d.number };
+    const out = {};
+    Object.entries(fills || {}).forEach(([key, from]) => {
+      const v = src[from] || "";
+      if (!v) return;                 // nothing in Service Fusion: leave what was typed
+      if (setVal(key, v)) out[key] = v;
+    });
+    return out;
+  }
+  function mountFormLookup() {
+    const f = spec.fields.find(x => x.type === "joblookup");
+    if (!f) return;
+    mountLookup($(".jl", form), {
+      form: f.lookup || "install",
+      get: () => ({ job: form.elements.sf_job ? form.elements.sf_job.value : "", filled: form.elements.sf_filled ? form.elements.sf_filled.value : "" }),
+      set: (job, filled) => { form.elements.sf_job.value = job; form.elements.sf_filled.value = filled; saveDraftSoon(); },
+      fill: (d) => {
+        const out = lookupFill(d, f.fills, (key, v) => {
+          const el = form.elements[key];
+          if (!el || el instanceof RadioNodeList) return false;
+          el.value = v; clearMark(el); return true;
+        });
+        applyConditions(); saveDraftSoon();
+        return out;
+      },
+    });
+  }
+
   function readFields() {
     const f = {};
     for (const el of form.elements) {
@@ -954,6 +1090,7 @@
     show("viewForm");
     renderTiles();
     setupSignatures();
+    mountFormLookup();
   }
 
   $("#clearBtn").addEventListener("click", async () => {
@@ -1361,7 +1498,7 @@
   }
   function mState() {
     return { job: readJob(), cards: readCards(), photos: { ...photos }, photoMeta: { ...photoMeta }, startedAt,
-      revision_of: mJob.revision_of || "", measured_by: mJob.measured_by || "" };
+      revision_of: mJob.revision_of || "", measured_by: mJob.measured_by || "", sf_job: mJob.sf_job || "", sf_filled: mJob.sf_filled || "" };
   }
   function mSaveDraftSoon(now) {
     clearTimeout(mDraftTimer);
@@ -1433,7 +1570,8 @@
         if (x && cards[x[1] - 1]) ph[`${cards[x[1] - 1].id}:${x[2]}`] = { keep: p.id };
       });
       await openMeasureEditor({ job: { customer: m.data.customer, po: m.data.po, date: m.data.date }, cards, photos: ph, photoMeta: {},
-        startedAt: new Date().toISOString(), revision_of: m.receipt, measured_by: m.data.measured_by, fresh: true });
+        startedAt: new Date().toISOString(), revision_of: m.receipt, measured_by: m.data.measured_by, fresh: true,
+        sf_job: m.data.sf_job || "", sf_filled: "" });
       mSaveDraftSoon(true);
     } catch (e) {
       btn.disabled = false; btn.textContent = "Reopen";
@@ -1447,7 +1585,8 @@
     Object.values(previews).forEach(u => URL.revokeObjectURL(u));
     photos = { ...((state && state.photos) || {}) }; photoMeta = { ...((state && state.photoMeta) || {}) }; previews = {};
     startedAt = (state && state.startedAt) || new Date().toISOString();
-    mJob = { revision_of: (state && state.revision_of) || "", measured_by: (state && state.measured_by) || me.name };
+    mJob = { revision_of: (state && state.revision_of) || "", measured_by: (state && state.measured_by) || me.name,
+      sf_job: (state && state.sf_job) || "", sf_filled: (state && state.sf_filled) || "" };
     const job = (state && state.job) || { customer: "", po: "", date: todayISO() };
     $("#m_customer").value = job.customer || ""; $("#m_po").value = job.po || ""; $("#m_date").value = job.date || todayISO();
     $("#m_by").value = mJob.measured_by;
@@ -1461,6 +1600,17 @@
     if (state) delete state.fresh;
     renderCards(((state && state.cards) || []).map(upgradeDoor));
     show("viewMeasure");
+    const mf = { customer: $("#m_customer"), po: $("#m_po") };
+    mountLookup($("#mLookup"), {
+      form: "measure",
+      get: () => ({ job: mJob.sf_job || "", filled: mJob.sf_filled || "" }),
+      set: (job, filled) => { mJob.sf_job = job; mJob.sf_filled = filled; mSaveDraftSoon(); },
+      fill: (d) => {
+        const out = lookupFill(d, MS.lookup_fills, (key, v) => { const el = mf[key]; if (!el) return false; el.value = v; el.classList.remove("invalid"); return true; });
+        mSaveDraftSoon();
+        return out;
+      },
+    });
   }
 
   // editing
@@ -1674,7 +1824,8 @@
     btn.disabled = true; btn.textContent = "Saving…";
     clearTimeout(mDraftTimer);
     const entry = { id: newId(), slug: "measure", type: MS.type, userId: me.id, user: me.name, test: !!me.test_mode,
-      fields: { ...job, items: JSON.stringify(items), keep: JSON.stringify(keep), revision_of: mJob.revision_of || "" },
+      fields: { ...job, items: JSON.stringify(items), keep: JSON.stringify(keep), revision_of: mJob.revision_of || "",
+        sf_job: mJob.sf_job || "", sf_filled: mJob.sf_filled || "" },
       photos: ph, photoMeta: meta, measured_by: mJob.measured_by, startedAt, createdAt: new Date().toISOString(), tries: 0 };
     try {
       await outboxPut(entry);
@@ -1706,7 +1857,8 @@
       }
     });
     return { job: { customer: entry.fields.customer, po: entry.fields.po, date: entry.fields.date }, cards, photos: ph, photoMeta: meta,
-      startedAt: entry.startedAt, revision_of: entry.fields.revision_of || "", measured_by: entry.measured_by || me.name };
+      startedAt: entry.startedAt, revision_of: entry.fields.revision_of || "", measured_by: entry.measured_by || me.name,
+      sf_job: entry.fields.sf_job || "", sf_filled: entry.fields.sf_filled || "" };
   }
   async function openAny(slug, back, message) {
     if (slug === "measure") {

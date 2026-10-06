@@ -6,6 +6,18 @@ GitHub Pages portal + Google Apps Script, one form at a time.
 - **Staff app:** https://optiplex-ai.tailf0af63.ts.net:10000/ops/
 - **Admin (Adem, Paz):** https://optiplex-ai.tailf0af63.ts.net:10000/ops/admin
 
+## Job lookup (Service Fusion)
+
+- **Install** and **Measure** start with "Find the job": type the last 4 of the job # or the customer's name, tap the job,
+  and the form fills in (Install: last 4, customer, customer email; Measure: customer, PO). Everything stays editable.
+- The server keeps a copy of Service Fusion's **open jobs**, refreshed every 20 minutes Mon-Sat 6 AM-7 PM, plus a
+  Refresh button (at most once a minute). Measure lists only Scheduled Consult jobs; Install searches every open job.
+- Search shows job #, name, status and date only. Address, phone and email appear after picking a job, and every pick
+  is in the activity log. Read-only: nothing is ever written to Service Fusion.
+- If a crew changes a pre-filled field, the internal email/PDF shows "Changed from Service Fusion" so the office can fix
+  Service Fusion. The customer's copy never shows it.
+- Key: `SF_CLIENT_ID` / `SF_CLIENT_SECRET` in `~/ai-server/opsapp/.env`, saved by `deploy/sf-setup.sh`. Health: Admin → Status.
+
 ## Stage 3 (this version): Measure
 
 - **Measure** form on the phone: one job (customer, PO, date), then any number of **door** and **window** cards. Field names and choices are copied from the old Measure App.

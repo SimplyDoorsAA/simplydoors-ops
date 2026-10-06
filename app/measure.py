@@ -341,6 +341,10 @@ def job_rows(data: dict) -> list[tuple[str, str]]:
             ("Date measured", data.get("date") or "—"), ("Measured by", data.get("measured_by") or "—")]
     if data.get("revised_by"):
         rows.append(("Revised by", data["revised_by"]))
+    if data.get("sf_job"):
+        rows.append(("Service Fusion job", data["sf_job"]))
+    if data.get("sf_changes"):
+        rows.append(("Changed from Service Fusion", "; ".join(data["sf_changes"])))
     if data.get("revision_of"):
         rows.append(("REVISED", f"This replaces {data['revision_of']}"))
     d, w = data.get("doors", 0), data.get("windows", 0)
