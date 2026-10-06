@@ -421,7 +421,7 @@ def build_customer_pdf(report, data: dict, photos: list) -> bytes:
     story += [head, Spacer(1, 12)]
 
     facts = [("CUSTOMER", data.get("customer") or "—"), ("JOB #", data.get("po") or "—"),
-             ("COMPLETED", local_time(report["submitted_at"]).rsplit(" ", 2)[0]), ("REFERENCE", report["receipt"])]
+             ("COMPLETED" if data.get("work") != "No" else "INSTALL DATE", local_time(report["submitted_at"]).rsplit(" ", 2)[0]), ("REFERENCE", report["receipt"])]
     ft = Table([[Paragraph(a, lab) for a, _ in facts], [Paragraph(escape(str(b)), val) for _, b in facts]],
                colWidths=[W * 0.34, W * 0.18, W * 0.24, W * 0.24])
     ft.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), SOFT), ("VALIGN", (0, 0), (-1, -1), "TOP"),
