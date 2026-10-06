@@ -8,10 +8,10 @@ GitHub Pages portal + Google Apps Script, one form at a time.
 
 ## Job lookup (Service Fusion)
 
-- **Install** and **Measure** start with "Find the job": type the last 4 of the job # or the customer's name, tap the job,
-  and the form fills in (Install: last 4, customer, customer email; Measure: customer, PO). Everything stays editable.
+- **Install**, **Delivery Proof** and **Measure** start with "Find the job": type the last 4 of the job # or the customer's name, tap the job,
+  and the form fills in (Install: last 4, customer, customer email; Delivery: last 4, customer, delivery address; Measure: customer, PO). Everything stays editable.
 - The server keeps a copy of Service Fusion's **open jobs**, refreshed every 20 minutes Mon-Sat 6 AM-7 PM, plus a
-  Refresh button (at most once a minute). Measure lists only Scheduled Consult jobs; Install searches every open job.
+  Refresh button (at most once a minute). Measure lists only Scheduled Consult jobs; Delivery lists "15 Delivery Scheduled" jobs; Install and Delivery search every open job once you type.
 - Search shows job #, name, status and date only. Address, phone and email appear after picking a job, and every pick
   is in the activity log. Read-only: nothing is ever written to Service Fusion.
 - If a crew changes a pre-filled field, the internal email/PDF shows "Changed from Service Fusion" so the office can fix

@@ -427,7 +427,7 @@ def test_delivery_signature_and_lists(client):
     login(client, "Adem Atis", "246810")
     sig = io.BytesIO()
     Image.new("RGBA", (600, 200), (0, 0, 0, 0)).save(sig, "PNG")
-    data = {"submission_id": "sub-dlv-0001", "po": "PO-9", "customer": "Lee", "address": "1 Elm", "condition": "Yes"}
+    data = {"submission_id": "sub-dlv-0001", "po": "1234", "customer": "Lee", "address": "1 Elm", "condition": "Yes"}
     r = client.post("/ops/api/reports/delivery", data=data, headers=H,
                     files={"sig": ("sig.png", sig.getvalue(), "image/png")})
     assert r.status_code == 422  # needs at least one site photo
@@ -913,6 +913,9 @@ def _sf_jobs():
          "sub_status": None, "contact_first_name": "Bill", "contact_last_name": "Tom", "start_date": "2026-10-07",
          "street_1": None, "city": None, "state_prov": None, "postal_code": None, "category": "Windows",
          "description": "3 windows", "po_number": ""},
+        {"number": "10236418777", "customer_id": 4, "customer_name": "Karen Woody", "status": "15Delivery Scheduled",
+         "sub_status": None, "contact_first_name": "Karen", "contact_last_name": "Woody", "start_date": "2026-10-08",
+         "street_1": "77 Pecan Ln", "city": "Converse", "state_prov": "TX", "postal_code": "78109", "category": "Retail"},
         {"number": "10236417555", "customer_id": 3, "customer_name": "Old Done Job", "status": "17 Completed",
          "sub_status": None, "contact_first_name": "", "contact_last_name": "", "start_date": None},
     ]
@@ -945,7 +948,8 @@ class _SF(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         if u.path == "/v1/job-statuses":
-            names = ["2 Scheduled Consult", "10 Install Scheduled", "17 Completed", "4 Need to Order", "Paid in Full"]
+            names = ["2 Scheduled Consult", "10 Install Scheduled", "15Delivery Scheduled", "17 Completed",
+                     "4 Need to Order", "Paid in Full"]
             return self._send(200, {"items": [{"id": i, "name": n} for i, n in enumerate(names)], "_meta": {"pageCount": 1}})
         if u.path == "/v1/jobs":
             rows = [j for j in _sf_jobs() if j["status"] == q.get("filters[status]")]
@@ -987,7 +991,7 @@ def test_job_lookup_off_until_connected(client):
 
 def test_job_lookup_refresh_search_and_pick(client, fake_sf, smtp):
     r = fake_sf.refresh("test")
-    assert r["ok"] and r["jobs"] == 62                      # 1 consult + 1 install + 60 (two pages); closed jobs skipped
+    assert r["ok"] and r["jobs"] == 63              # consult + install + delivery + 60 (two pages); closed jobs skipped
     assert not any("17+Completed" in c or "Paid+in+Full" in c for c in FAKE["calls"])
     login(client, "Jaime Mendoza", "135790")
     assert client.get("/ops/api/me", headers=H).json()["job_lookup"] is True
@@ -1000,6 +1004,12 @@ def test_job_lookup_refresh_search_and_pick(client, fake_sf, smtp):
     assert [j["number"] for j in client.get("/ops/api/jobs?form=install&q=8931", headers=H).json()["results"]] == ["10236418931"]
     assert [j["customer"] for j in client.get("/ops/api/jobs?form=install&q=bill%20t", headers=H).json()["results"]] == ["Bill Tom"]
     assert client.get("/ops/api/jobs?form=install&q=7555", headers=H).json()["results"] == []   # completed: not offered
+    # Delivery, nothing typed: only "15 Delivery Scheduled" jobs; typing searches every open job
+    dl = client.get("/ops/api/jobs?form=delivery", headers=H).json()["results"]
+    assert [j["number"] for j in dl] == ["10236418777"]
+    assert [j["number"] for j in client.get("/ops/api/jobs?form=delivery&q=8000", headers=H).json()["results"]] == ["10236418000"]
+    dd = client.get("/ops/api/jobs/10236418777?form=delivery", headers=H).json()
+    assert dd["address"] == "77 Pecan Ln, Converse, TX 78109"
     # search results never carry contact details
     assert set(i[0]) == {"number", "last4", "customer", "status", "date", "category"}
     # picking a job: address from the job, email/phone from the customer record; the pick is logged

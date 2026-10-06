@@ -93,7 +93,10 @@ FORMS = {
         "slug": "delivery", "prefix": "DLV", "order": 2,
         "blurb": "Prove a delivery to a customer: photos at the site, who received it, signature.",
         "fields": [
-            {"key": "po", "label": "Job / PO Number", "type": "text", "required": True},
+            {"key": "job", "label": "Service Fusion job", "type": "joblookup", "lookup": "delivery",
+             "fills": {"po": "last4", "customer": "customer", "address": "address"}},
+            {"key": "po", "label": "Job / PO # (last 4)", "ask": "Job / PO Number (last 4 numbers)", "type": "text",
+             "required": True, "digits": 4, "placeholder": "e.g. 1234"},
             {"key": "customer", "label": "Customer", "type": "text", "required": True},
             {"key": "address", "label": "Delivery address", "type": "text", "required": True,
              "placeholder": "Street, city"},

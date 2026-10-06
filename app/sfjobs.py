@@ -34,9 +34,19 @@ PER_PAGE = 50                       # Service Fusion refuses more than 50
 
 # Statuses whose jobs are finished. Everything else in Service Fusion's status list counts as open.
 CLOSED = {"17 completed", "18 invoiced", "19 cancelled", "job closed", "paid in full"}
-# Statuses the install crew is most likely looking for; shown first on the Install form.
-INSTALL_STAGE = {"10 install scheduled", "13 ready for install", "16 partial completed", "warranty",
-                 "18warranty scheduled", "18 warranty scheduled"}
+
+
+def _norm(status: str) -> str:
+    """Status names compared without case, spaces or dashes ("15Delivery Scheduled" == "15 - Delivery Scheduled")."""
+    return re.sub(r"[\s\-]+", "", (status or "").lower())
+
+
+# Statuses each form's crew is most likely looking for; shown first, and the only ones listed before anything is typed.
+STAGE = {
+    "install": {_norm(x) for x in ("10 Install Scheduled", "13 Ready for Install", "16 Partial Completed", "Warranty",
+                                   "18 Warranty Scheduled")},
+    "delivery": {_norm("15 Delivery Scheduled")},
+}
 # Used only if Service Fusion's status list can't be read.
 FALLBACK_OPEN = ["1 Unscheduled", "2 Scheduled Consult", "3 Awaiting Deposit", "4 Need to Order", "5 Ordered Pend ACK",
                  "6 In Prod no ETA", "7 Awaiting Product", "8 Needs Attention", "9 In Warehouse", "10 Install Scheduled",
@@ -328,12 +338,16 @@ def search(form: str, q: str, limit: int = 25) -> list[dict]:
             words = q.split()
             rows = [r for r in rows if all(w in (r["customer_name"] + " " + r["contact"]).lower() for w in words)]
     today = datetime.now(TZ).strftime("%Y-%m-%d")
-    if form == "install":
-        rows.sort(key=lambda r: (0 if r["status"].lower() in INSTALL_STAGE else 1, _date_distance(r["start_date"], today),
-                                 r["customer_name"].lower()))
-        if not q:     # nothing typed: only the jobs most likely to be today's install
-            rows = [r for r in rows if r["status"].lower() in INSTALL_STAGE
-                    or (not is_consult(r) and _date_distance(r["start_date"], today) <= 14)]
+    stage = STAGE.get(form)
+    if stage:
+        in_stage = lambda r: _norm(r["status"]) in stage  # noqa: E731
+        rows.sort(key=lambda r: (0 if in_stage(r) else 1, _date_distance(r["start_date"], today), r["customer_name"].lower()))
+        if not q:     # nothing typed: only the jobs most likely to be today's work
+            if form == "install":
+                rows = [r for r in rows if in_stage(r) or (not is_consult(r) and _norm(r["status"]) not in STAGE["delivery"]
+                                                           and _date_distance(r["start_date"], today) <= 14)]
+            else:
+                rows = [r for r in rows if in_stage(r)]
     else:
         rows.sort(key=lambda r: (_date_distance(r["start_date"], today), r["customer_name"].lower()))
     return [_brief(r) for r in rows[:limit]]

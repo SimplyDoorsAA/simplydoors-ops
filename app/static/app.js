@@ -916,7 +916,7 @@
         res.innerHTML = r.results.map(j => `<li><button type="button" class="jl-item" data-num="${esc(j.number)}">
             <b>${esc(j.customer || "(no name)")}</b> <span class="jl-num">…${esc(j.last4)}</span>
             <span class="muted small">${esc([j.status, shortDate(j.date), j.category].filter(Boolean).join(" · "))}</span></button></li>`).join("")
-          || `<li class="muted small">${q.value.trim() ? "No open job matches. Check the number, tap Refresh, or type the details in below." : (opts.form === "measure" ? "No scheduled consults right now." : "Type to search all open jobs.")}</li>`;
+          || `<li class="muted small">${q.value.trim() ? "No open job matches. Check the number, tap Refresh, or type the details in below." : (opts.form === "measure" ? "No scheduled consults right now." : opts.form === "delivery" ? "No deliveries scheduled right now. Type to search all open jobs." : "Type to search all open jobs.")}</li>`;
       } catch (e) {
         if (my !== seq) return;
         res.innerHTML = `<li class="muted small">${e.status === 0 ? "No signal, so the job list can't load. Type the details in below." : esc(e.message)}</li>`;
@@ -978,7 +978,7 @@
     } else run();
   }
   function lookupFill(d, fills, setVal) {
-    const src = { last4: d.last4, customer: d.customer, email: d.email, number: d.number };
+    const src = { last4: d.last4, customer: d.customer, email: d.email, number: d.number, address: d.address };
     const out = {};
     Object.entries(fills || {}).forEach(([key, from]) => {
       const v = src[from] || "";
