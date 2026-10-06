@@ -92,7 +92,7 @@ print("== Sign-in: OK")
 def items(body):
     return body.get("items", body) if isinstance(body, dict) else body
 
-st, _, b = req("/v1/job-statuses?per-page=100", token=T)
+st, _, b = req("/v1/job-statuses?per-page=50", token=T)
 print(f"\n== Job statuses (HTTP {st})")
 for it in (items(b) or []):
     if isinstance(it, dict):
