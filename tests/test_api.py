@@ -648,8 +648,7 @@ def test_owner_address_stays_private(client, smtp):
 
 def test_installation_completion(client):
     login(client, "Adem Atis", "246810")
-    checks = {f"checklist:{k}": "Done" for k, _ in F.INSTALL_CHECKS}
-    base = {"po": "1234", "customer": "Lee", "work": "Yes", **checks}
+    base = {"po": "1234", "customer": "Lee", "work": "Yes", "walkthrough": "Yes"}
     photos = {"after1": ("a.jpg", jpeg(), "image/jpeg"), "after2": ("b.jpg", jpeg((1, 2, 3)), "image/jpeg")}
     # customer present -> signature + name required
     r = client.post("/ops/api/reports/install", data={**base, "submission_id": "sub-ins-0001", "cust_present": "Yes",
@@ -670,10 +669,16 @@ def test_installation_completion(client):
     assert r.status_code == 200, r.text
     e = conn().execute("SELECT subject FROM emails ORDER BY id DESC LIMIT 1").fetchone()[0]
     assert e.startswith("NEEDS FOLLOW-UP") and "(not signed)" in e
-    # every checklist item must be answered
+    # the walkthrough question must be answered; "No" is flagged for follow-up
     bad = {**base, "submission_id": "sub-ins-0005", "cust_present": "No", "no_sign_reason": "x"}
-    bad.pop("checklist:operates")
-    assert client.post("/ops/api/reports/install", data=bad, files=photos, headers=H).status_code == 422
+    bad.pop("walkthrough")
+    r = client.post("/ops/api/reports/install", data=bad, files=photos, headers=H)
+    assert r.status_code == 422 and "Walkthrough" in r.json()["detail"]
+    r = client.post("/ops/api/reports/install", data={**base, "submission_id": "sub-ins-0005b", "walkthrough": "No",
+                    "cust_present": "No", "no_sign_reason": "x"}, files=photos, headers=H)
+    assert r.status_code == 200, r.text
+    e = conn().execute("SELECT subject FROM emails ORDER BY id DESC LIMIT 1").fetchone()[0]
+    assert e.startswith("NEEDS FOLLOW-UP") and "(no walkthrough)" in e
     # PO must be exactly the last 4 numbers
     ok = {**base, "cust_present": "No", "no_sign_reason": "x"}
     for po in ("SD-1234", "123", "12345"):
@@ -695,8 +700,7 @@ def test_install_customer_copy(client):
     from app import mailer
     from app.pdf import build_customer_pdf
     login(client, "Adem Atis", "246810")
-    checks = {f"checklist:{k}": "Done" for k, _ in F.INSTALL_CHECKS}
-    checks["checklist:trim"] = "N/A"
+    checks = {"walkthrough": "Yes"}
     photos = {"after1": ("a.jpg", jpeg(), "image/jpeg"), "after2": ("b.jpg", jpeg((1, 2, 3)), "image/jpeg"),
               "before1": ("c.jpg", jpeg((9, 9, 9)), "image/jpeg")}
     sig = io.BytesIO(); Image.new("RGBA", (600, 200), (0, 0, 0, 0)).save(sig, "PNG")

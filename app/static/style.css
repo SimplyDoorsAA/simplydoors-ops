@@ -28,7 +28,7 @@ h2 { font-size: 18px; margin: 28px 0 6px; }
 .banner button { margin-left: 8px; }
 
 label { display: block; font-weight: 600; margin: 18px 0 6px; }
-input[type=text], input[type=password], input[type=date], input[type=time], select, textarea {
+input[type=text], input[type=email], input[type=password], input[type=date], input[type=time], select, textarea {
   width: 100%; font: inherit; padding: 13px 12px; min-height: 50px; border: 1.5px solid var(--line);
   border-radius: 10px; background: #fff; color: var(--ink); }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--green); box-shadow: 0 0 0 3px rgba(118,192,67,.25); }

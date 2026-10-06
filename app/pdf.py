@@ -443,18 +443,12 @@ def build_customer_pdf(report, data: dict, photos: list) -> bytes:
                             ("LEFTPADDING", (0, 0), (-1, -1), 12)]))
     story += [Spacer(1, 10), st]
 
-    # what we checked (N/A items are left out; they don't apply to this job)
-    for f in spec.get("fields", []):
-        if f["type"] == "donena" and data.get(f["key"]):
-            done = [k for k, v in data[f["key"]].items() if v == "Done"]
-            if done:
-                rows = [[_tick(), Paragraph(escape(k), body)]
-                        for k in done]
-                ct = Table(rows, colWidths=[0.3 * inch, W - 0.3 * inch])
-                ct.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LINEBELOW", (0, 0), (-1, -1), 0.4, LINE),
-                                        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                                        ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
-                story += [KeepTogether([Paragraph("What we checked with you", h2), ct])]
+    # walkthrough of the new product
+    if data.get("walkthrough") == "Yes":
+        wt = Table([[_tick(), Paragraph("We walked you through your new product and showed you how it works.", body)]],
+                   colWidths=[0.3 * inch, W - 0.3 * inch])
+        wt.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
+        story += [Spacer(1, 10), wt]
 
     if data.get("cust_comments"):
         story += [Paragraph("Your comments", h2),

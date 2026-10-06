@@ -54,20 +54,13 @@ EOS_CHECKS = {
 
 YES_NO = ["No", "Yes"]
 
-INSTALL_CHECKS = [
-    ("walkthrough", "Walkthrough and demo of the new product completed with the customer"),
-    ("operates", "Door opens, closes and latches smoothly"),
-    ("hardware", "Lockset and deadbolt installed and working"),
-    ("trim", "Interior and exterior trim installed and caulked"),
-    ("cleanup", "Work area cleaned and old material hauled away"),
-]
 RMA_VENDOR, RMA_CUSTOMER = "Return to vendor", "Return from customer"
 _V = {"field": "direction", "in": [RMA_VENDOR]}
 _C = {"field": "direction", "in": [RMA_CUSTOMER]}
 RMA_RETURN_TEXT = "By signing, the customer confirms the items listed above were returned to SimplyDoors."
 
-ACCEPT_TEXT = ("By signing, the customer confirms the work above was completed, the new product was demonstrated to them, "
-               "and accepts the installation, except for anything listed on the punch list.")
+ACCEPT_TEXT = ("By signing, the customer confirms the work above was completed and accepts the installation, "
+               "except for anything listed on the punch list.")
 EMAIL_RE = re.compile(r"[^@\s,;<>]+@[^@\s,;<>]+\.[A-Za-z]{2,}")
 
 FORMS = {
@@ -133,8 +126,8 @@ FORMS = {
              "options": ["Yes", "No"], "required": True},
             {"key": "punch_items", "label": "Outstanding punch list", "type": "textarea", "required": True,
              "show_if": {"field": "work", "in": ["No"]}, "placeholder": "What's left: parts on order, touch-up paint, return visit…"},
-            {"key": "checklist", "label": "Completion checklist", "type": "donena", "required": True,
-             "items": INSTALL_CHECKS},
+            {"key": "walkthrough", "label": "Walkthrough and demo", "type": "choice", "required": True,
+             "ask": "Walkthrough and demo of the new product completed with the customer?", "options": ["Yes", "No"]},
             {"key": "sales_notify", "label": "Sales Rep Notified", "ask": "Notify a sales rep (optional)",
              "type": "select", "options": "sales_reps", "none_label": "Don't notify anyone", "notify": True},
             {"key": "cust_comments", "label": "Customer comments or concerns", "type": "textarea", "tail": True,
@@ -161,7 +154,7 @@ FORMS = {
         ],
         "photo_grid": True,
         "customer_copy": True,   # once signed, the customer gets their own friendly copy (see mailer / pdf.build_customer_pdf)
-        "email_keys": ["po", "customer", "work", "punch_items", "cust_comments", "signer", "cust_email", "no_sign_reason"],
+        "email_keys": ["po", "customer", "work", "punch_items", "walkthrough", "cust_comments", "signer", "cust_email", "no_sign_reason"],
         "summary": ["po", "customer"],
     },
     "RMA": {
@@ -548,7 +541,8 @@ def clean(form_type: str, raw: dict) -> tuple[dict, list[str]]:
     if form_type == "Vehicle Inspection":
         data["defective"] = any_defective
     if form_type == "Installation Completion":
-        data["attention"] = data.get("work") == "No" or data.get("cust_present") == "No"
+        data["attention"] = (data.get("work") == "No" or data.get("cust_present") == "No"
+                             or data.get("walkthrough") == "No")
     return data, errors
 
 
@@ -620,7 +614,8 @@ def subject_for(form_type: str, data: dict, staff_name: str, receipt: str) -> st
         "Receiving Report": f"Receiving Report: {d.get('po')} - {d.get('customer')}",
         "Delivery Proof": f"Delivery Proof: {d.get('po')} - {d.get('customer')}",
         "Installation Completion": f"{'NEEDS FOLLOW-UP - ' if d.get('attention') else ''}Install Complete: {d.get('po')} - {d.get('customer')}"
-                                   f"{' (punch list)' if d.get('work') == 'No' else ''}{' (not signed)' if d.get('cust_present') == 'No' else ''}",
+                                   f"{' (punch list)' if d.get('work') == 'No' else ''}{' (not signed)' if d.get('cust_present') == 'No' else ''}"
+                                   f"{' (no walkthrough)' if d.get('walkthrough') == 'No' else ''}",
         "End of Shift": f"End of Shift: {d.get('role')} - {staff_name}",
         "Vehicle Inspection": f"{'DEFECTIVE - ' if d.get('defective') else ''}Vehicle {d.get('trip')}: {d.get('vehicle')} - {staff_name}",
         "Vehicle Incident": f"URGENT: Vehicle Incident - {d.get('vehicle')} ({staff_name})",
