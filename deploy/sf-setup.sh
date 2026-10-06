@@ -23,7 +23,9 @@ if [[ "${ANS:-n}" =~ ^[Yy] ]]; then
   echo "Saved in $ENVF (only you can read that file)."
 fi
 
-set -a; . "$ENVF"; set +a
+# read only the two Service Fusion lines (the file has other settings with spaces that the shell can't load)
+export SF_CLIENT_ID="$(grep '^SF_CLIENT_ID=' "$ENVF" | tail -1 | cut -d= -f2-)"
+export SF_CLIENT_SECRET="$(grep '^SF_CLIENT_SECRET=' "$ENVF" | tail -1 | cut -d= -f2-)"
 python3 - <<'PY' 2>&1 | tee "$HOME/sf-probe.txt"
 import json, os, sys, urllib.parse, urllib.request, urllib.error
 
