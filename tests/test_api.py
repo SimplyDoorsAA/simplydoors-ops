@@ -691,6 +691,57 @@ def test_installation_completion(client):
     assert e.startswith("NEEDS FOLLOW-UP") and "(punch list)" in e
 
 
+def test_install_customer_copy(client):
+    from app import mailer
+    from app.pdf import build_customer_pdf
+    login(client, "Adem Atis", "246810")
+    checks = {f"checklist:{k}": "Done" for k, _ in F.INSTALL_CHECKS}
+    checks["checklist:trim"] = "N/A"
+    photos = {"after1": ("a.jpg", jpeg(), "image/jpeg"), "after2": ("b.jpg", jpeg((1, 2, 3)), "image/jpeg"),
+              "before1": ("c.jpg", jpeg((9, 9, 9)), "image/jpeg")}
+    sig = io.BytesIO(); Image.new("RGBA", (600, 200), (0, 0, 0, 0)).save(sig, "PNG")
+    base = {"po": "4321", "customer": "Pat Lee", "work": "No", "punch_items": "Storm door on order",
+            "cust_present": "Yes", "signer": "Pat Lee", "cust_comments": "Great crew", **checks}
+    # a bad customer email is refused
+    r = client.post("/ops/api/reports/install", data={**base, "submission_id": "sub-cc-0001", "cust_email": "pat@"},
+                    files={**photos, "sig": ("s.png", sig.getvalue(), "image/png")}, headers=H)
+    assert r.status_code == 422 and "email address" in r.json()["detail"]
+    r = client.post("/ops/api/reports/install", data={**base, "submission_id": "sub-cc-0002", "cust_email": "pat@example.com"},
+                    files={**photos, "sig": ("s.png", sig.getvalue(), "image/png")}, headers=H)
+    assert r.status_code == 200, r.text
+    rid = conn().execute("SELECT id FROM reports WHERE submission_id='sub-cc-0002'").fetchone()[0]
+    em = conn().execute("SELECT recipients, subject, audience FROM emails WHERE report_id=? ORDER BY id", (rid,)).fetchall()
+    assert [e["audience"] for e in em] == ["staff", "customer"]
+    assert em[1]["recipients"] == "pat@example.com" and "pat@example.com" not in em[0]["recipients"]
+    assert em[1]["subject"].startswith("Your SimplyDoors installation record (Job 4321)")
+    # unstamped copies kept for the customer's PDF
+    assert os.path.exists(os.path.join(os.path.dirname(conn().execute(
+        "SELECT path FROM photos WHERE report_id=? AND slot='after1'", (rid,)).fetchone()[0]), "after1.clean.jpg"))
+    # the customer's PDF leaves out internal details
+    rep, data, ph = mailer._report_bundle(rid)
+    pdf = build_customer_pdf(rep, data, ph)
+    assert pdf.startswith(b"%PDF")
+    msg = mailer._send_customer(conn().execute("SELECT * FROM emails WHERE report_id=? AND audience='customer'",
+                                               (rid,)).fetchone(), rep, data, ph)
+    html = msg.get_body(("html",)).get_content()
+    assert "Storm door on order" in html and "Adem" not in html and "NEEDS FOLLOW-UP" not in html
+    assert msg["Reply-To"] == mailer.CUSTOMER_REPLY_TO and msg["From"].startswith("SimplyDoors")
+    # no email given, or customer not there -> no customer copy
+    r = client.post("/ops/api/reports/install", data={**base, "submission_id": "sub-cc-0003"},
+                    files={**photos, "sig": ("s.png", sig.getvalue(), "image/png")}, headers=H)
+    rid = conn().execute("SELECT id FROM reports WHERE submission_id='sub-cc-0003'").fetchone()[0]
+    assert conn().execute("SELECT COUNT(*) FROM emails WHERE report_id=? AND audience='customer'", (rid,)).fetchone()[0] == 0
+    # test mode: the customer copy goes to the owner, never the customer
+    client.put("/ops/api/owner/test-mode", json={"on": True}, headers=H)
+    r = client.post("/ops/api/reports/install", data={**base, "submission_id": "sub-cc-0004", "cust_email": "pat@example.com",
+                    "is_test": "1"}, files={**photos, "sig": ("s.png", sig.getvalue(), "image/png")}, headers=H)
+    assert r.status_code == 200, r.text
+    rid = conn().execute("SELECT id FROM reports WHERE submission_id='sub-cc-0004'").fetchone()[0]
+    e = conn().execute("SELECT recipients, subject FROM emails WHERE report_id=? AND audience='customer'", (rid,)).fetchone()
+    assert "pat@example.com" not in e["recipients"] and e["subject"].startswith("TEST - customer copy")
+    client.put("/ops/api/owner/test-mode", json={"on": False}, headers=H)
+
+
 def test_rma_vendor_and_customer(client):
     login(client, "Adem Atis", "246810")
     photos = {"product1": ("a.jpg", jpeg(), "image/jpeg")}

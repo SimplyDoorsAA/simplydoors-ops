@@ -477,7 +477,9 @@
     const ph = f.placeholder ? ` placeholder="${esc(f.placeholder)}"` : "";
     let inner = "";
     switch (f.type) {
-      case "text": inner = f.digits
+      case "text": inner = f.email
+        ? `<label for="${id}">${ask}</label>${help}<input id="${id}" name="${esc(f.key)}" type="email" inputmode="email" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="200" autocomplete="off"${ph}>`
+        : f.digits
         ? `<label for="${id}">${ask}</label>${help}<input id="${id}" name="${esc(f.key)}" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="${Number(f.digits)}" autocomplete="off"${ph}>`
         : `<label for="${id}">${ask}</label>${help}<input id="${id}" name="${esc(f.key)}" type="text" maxlength="300" autocomplete="off"${ph}>`; break;
       case "textarea": inner = `<label for="${id}">${ask}</label>${help}<textarea id="${id}" name="${esc(f.key)}" rows="4" maxlength="4000"${ph}></textarea>`; break;

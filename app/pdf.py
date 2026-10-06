@@ -371,3 +371,144 @@ def _measure_body(story, report, staff_name, data, photos, cell, lab, small, h2)
             continue
         block.append(Paragraph("No photos for this one.", small))
         story.append(KeepTogether(block + [Spacer(1, 6), HRFlowable(width="100%", thickness=0.6, color=grey, dash=(3, 3)), Spacer(1, 6)]))
+
+
+# ------------------------------------------------------------------ the customer's own copy
+INK, MUTED, LINE, SOFT = (colors.HexColor(x) for x in ("#1f2a33", "#5b6670", "#e3e7ea", "#f4f9ef"))
+
+
+def _tick():
+    """A drawn check mark (no font needed, so it looks the same in every PDF viewer)."""
+    from reportlab.graphics.shapes import Drawing, PolyLine
+    d = Drawing(12, 11)
+    d.add(PolyLine([1.5, 5.5, 4.5, 2.5, 10.5, 9.5], strokeColor=colors.HexColor("#2f6f1f"), strokeWidth=2,
+                   strokeLineCap=1, strokeLineJoin=1))
+    return d
+
+
+def _clean(path: str) -> str:
+    """The unstamped copy of a photo when there is one (no GPS bar, no staff name), else the stamped one."""
+    c = path[:-4] + ".clean.jpg" if path.endswith(".jpg") else ""
+    return c if c and os.path.exists(c) else path
+
+
+def build_customer_pdf(report, data: dict, photos: list) -> bytes:
+    """Installation record for the customer: what was done, what was checked, photos, their signature.
+    Leaves out everything internal: who filed it, sales rep, follow-up flags, photo stamps, locations."""
+    form_type = report["form_type"]
+    spec = FORMS.get(form_type, {})
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=0.7 * inch, rightMargin=0.7 * inch,
+                            topMargin=0.6 * inch, bottomMargin=0.7 * inch,
+                            title="SimplyDoors installation record", author="SimplyDoors")
+    ss = getSampleStyleSheet()
+    body = ParagraphStyle("cbody", parent=ss["Normal"], fontSize=10.5, leading=15, textColor=INK)
+    muted = ParagraphStyle("cmuted", parent=body, fontSize=9, leading=12, textColor=MUTED)
+    lab = ParagraphStyle("clab", parent=body, fontSize=8.5, leading=11, textColor=MUTED, fontName="Helvetica-Bold")
+    val = ParagraphStyle("cval", parent=body, fontSize=11, leading=14, fontName="Helvetica-Bold")
+    h1 = ParagraphStyle("ch1", parent=body, fontSize=22, leading=26, fontName="Helvetica-Bold", textColor=INK)
+    h2 = ParagraphStyle("ch2", parent=body, fontSize=13, leading=16, fontName="Helvetica-Bold", textColor=GREEN,
+                        spaceBefore=16, spaceAfter=6)
+    W = doc.width
+    story = []
+
+    logo = _img(LOGO, 1.8 * inch, 0.65 * inch) if os.path.exists(LOGO) else ""
+    head = Table([[[Paragraph("Installation Record", h1),
+                    Paragraph("Thank you for choosing SimplyDoors.", muted)], logo]], colWidths=[W - 2 * inch, 2 * inch])
+    head.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+                              ("LINEBELOW", (0, 0), (-1, 0), 2, GREEN), ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
+                              ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
+    story += [head, Spacer(1, 12)]
+
+    facts = [("CUSTOMER", data.get("customer") or "—"), ("JOB #", data.get("po") or "—"),
+             ("COMPLETED", local_time(report["submitted_at"]).rsplit(" ", 2)[0]), ("REFERENCE", report["receipt"])]
+    ft = Table([[Paragraph(a, lab) for a, _ in facts], [Paragraph(escape(str(b)), val) for _, b in facts]],
+               colWidths=[W * 0.34, W * 0.18, W * 0.24, W * 0.24])
+    ft.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), SOFT), ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                            ("TOPPADDING", (0, 0), (-1, 0), 8), ("BOTTOMPADDING", (0, -1), (-1, -1), 9),
+                            ("TOPPADDING", (0, 1), (-1, 1), 1), ("LEFTPADDING", (0, 0), (-1, -1), 10)]))
+    story.append(ft)
+
+    # status: all done, or what's still to come
+    if data.get("work") == "No":
+        box = [Paragraph("<b>A few items are still to be finished.</b> We'll be in touch to schedule them:", body),
+               Spacer(1, 4), Paragraph(escape(str(data.get("punch_items") or "")).replace("\n", "<br/>"), body)]
+        tint, edge = colors.HexColor("#fff8e6"), colors.HexColor("#e0b23a")
+    else:
+        box = [Paragraph("<b>All work is complete.</b> Your new installation is ready to enjoy.", body)]
+        tint, edge = SOFT, GREEN
+    st = Table([[box]], colWidths=[W])
+    st.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), tint), ("LINEBEFORE", (0, 0), (0, -1), 4, edge),
+                            ("TOPPADDING", (0, 0), (-1, -1), 9), ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 12)]))
+    story += [Spacer(1, 10), st]
+
+    # what we checked (N/A items are left out; they don't apply to this job)
+    for f in spec.get("fields", []):
+        if f["type"] == "donena" and data.get(f["key"]):
+            done = [k for k, v in data[f["key"]].items() if v == "Done"]
+            if done:
+                rows = [[_tick(), Paragraph(escape(k), body)]
+                        for k in done]
+                ct = Table(rows, colWidths=[0.3 * inch, W - 0.3 * inch])
+                ct.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LINEBELOW", (0, 0), (-1, -1), 0.4, LINE),
+                                        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                                        ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
+                story += [KeepTogether([Paragraph("What we checked with you", h2), ct])]
+
+    if data.get("cust_comments"):
+        story += [Paragraph("Your comments", h2),
+                  Paragraph(escape(str(data["cust_comments"])).replace("\n", "<br/>"), body)]
+
+    # photos: finished work first, then before
+    slots = {s["slot"]: s for s in photo_slots(form_type, data)}
+    sig_slot = next((g["signature"] for g in spec.get("photos", []) if g.get("signature")), None)
+    pics = [p for p in photos if p["slot"] != sig_slot and os.path.exists(p["path"])]
+    groups = [g for g in spec.get("photos", []) if not g.get("signature")]
+    titles = {"after": "Your finished installation", "before": "Before we started"}
+    for g in sorted(groups, key=lambda g: 0 if g["group"] == "after" else 1):
+        mine = [p for p in pics if p["slot"] in {s for s, _ in g.get("slots", [])}]
+        if not mine:
+            continue
+        cw = W / 2
+        cap = ParagraphStyle("ccap", parent=muted, alignment=1)
+        cells = [[_img(_clean(p["path"]), cw - 12, 2.5 * inch),
+                  Paragraph(escape(slots.get(p["slot"], {}).get("label", "")), cap)] for p in mine]
+        rows = [cells[i:i + 2] for i in range(0, len(cells), 2)]
+        rows[-1] += [""] * (2 - len(rows[-1]))
+        for i, row in enumerate(rows):      # one row per table, so a page break can fall between rows
+            gt = Table([row], colWidths=[cw, cw])
+            gt.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "BOTTOM"), ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                                    ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
+            story.append(KeepTogether([Paragraph(titles.get(g["group"], g["title"]), h2), gt]) if i == 0 else gt)
+
+    # sign-off
+    sig = [p for p in photos if p["slot"] == sig_slot and os.path.exists(p["path"])]
+    if sig or data.get("signer"):
+        blk = [Paragraph("Customer acceptance", h2)]
+        acc = next((g.get("help") for g in spec.get("photos", []) if g.get("signature")), "")
+        if acc:
+            blk += [Paragraph(escape(acc.replace("the customer confirms", "I confirm").replace("to them", "to me")
+                                     .replace("and accepts", "and accept")
+                                     .replace("listed on the punch list", "listed above as still to be finished")), body), Spacer(1, 8)]
+        for p in sig:
+            im = _img(p["path"], 3.0 * inch, 1.2 * inch)
+            im.hAlign = "LEFT"
+            blk.append(im)
+        line = Table([[Paragraph(escape(str(data.get("signer") or "")), val),
+                       Paragraph(escape(local_time(report["submitted_at"])), body)],
+                      [Paragraph("Signed by", lab), Paragraph("Date", lab)]], colWidths=[W * 0.55, W * 0.45])
+        line.setStyle(TableStyle([("LINEABOVE", (0, 1), (-1, 1), 0.8, INK), ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                                  ("TOPPADDING", (0, 1), (-1, 1), 3)]))
+        blk.append(line)
+        story.append(KeepTogether(blk))
+
+    def footer(canvas, d):
+        canvas.saveState()
+        canvas.setFont("Helvetica", 8)
+        canvas.setFillColor(MUTED)
+        canvas.drawString(doc.leftMargin, 0.4 * inch, f"SimplyDoors · Installation record · {report['receipt']}")
+        canvas.drawRightString(letter[0] - doc.rightMargin, 0.4 * inch, f"Page {d.page}")
+        canvas.restoreState()
+    doc.build(story, onFirstPage=footer, onLaterPages=footer)
+    return buf.getvalue()

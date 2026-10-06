@@ -55,18 +55,20 @@ EOS_CHECKS = {
 YES_NO = ["No", "Yes"]
 
 INSTALL_CHECKS = [
-    ("operates", "Door opens, closes and latches smoothly (no rubbing)"),
+    ("walkthrough", "Walkthrough and demo of the new product completed with the customer"),
+    ("operates", "Door opens, closes and latches smoothly"),
     ("hardware", "Lockset and deadbolt installed and working"),
-    ("trim", "Exterior and interior trim installed and caulked"),
-    ("cleanup", "Work area cleaned and old material hauled off"),
+    ("trim", "Interior and exterior trim installed and caulked"),
+    ("cleanup", "Work area cleaned and old material hauled away"),
 ]
 RMA_VENDOR, RMA_CUSTOMER = "Return to vendor", "Return from customer"
 _V = {"field": "direction", "in": [RMA_VENDOR]}
 _C = {"field": "direction", "in": [RMA_CUSTOMER]}
 RMA_RETURN_TEXT = "By signing, the customer confirms the items listed above were returned to SimplyDoors."
 
-ACCEPT_TEXT = ("By signing, the customer confirms the work listed above was completed and accepts the installation, "
-               "except for anything listed on the punch list.")
+ACCEPT_TEXT = ("By signing, the customer confirms the work above was completed, the new product was demonstrated to them, "
+               "and accepts the installation, except for anything listed on the punch list.")
+EMAIL_RE = re.compile(r"[^@\s,;<>]+@[^@\s,;<>]+\.[A-Za-z]{2,}")
 
 FORMS = {
     "Receiving Report": {
@@ -142,6 +144,9 @@ FORMS = {
              "type": "choice", "options": ["Yes", "No"], "required": True, "tail": True},
             {"key": "signer", "label": "Signed by (print name)", "type": "text", "required": True, "tail": True,
              "show_if": {"field": "cust_present", "in": ["Yes"]}},
+            {"key": "cust_email", "label": "Customer email", "ask": "Customer email (we'll send them a copy)",
+             "type": "text", "email": True, "tail": True, "show_if": {"field": "cust_present", "in": ["Yes"]},
+             "placeholder": "Leave empty if they don't want a copy"},
             {"key": "no_sign_reason", "label": "Why no signature", "type": "textarea", "required": True, "tail": True,
              "show_if": {"field": "cust_present", "in": ["No"]}, "placeholder": "e.g. customer not home, left with contractor"},
         ],
@@ -155,7 +160,8 @@ FORMS = {
              "help": ACCEPT_TEXT},
         ],
         "photo_grid": True,
-        "email_keys": ["po", "customer", "work", "punch_items", "cust_comments", "signer", "no_sign_reason"],
+        "customer_copy": True,   # once signed, the customer gets their own friendly copy (see mailer / pdf.build_customer_pdf)
+        "email_keys": ["po", "customer", "work", "punch_items", "cust_comments", "signer", "cust_email", "no_sign_reason"],
         "summary": ["po", "customer"],
     },
     "RMA": {
@@ -454,6 +460,8 @@ def clean(form_type: str, raw: dict) -> tuple[dict, list[str]]:
                 errors.append(f"{label} is required.")
             elif v and f.get("digits") and not re.fullmatch(rf"\d{{{f['digits']}}}", v):
                 errors.append(f"{label}: type exactly {f['digits']} numbers.")
+            elif v and f.get("email") and not EMAIL_RE.fullmatch(v):
+                errors.append(f"{label} doesn't look like an email address.")
             data[key] = v
         elif t == "number":
             v = (raw.get(key) or "").strip().replace(",", "")

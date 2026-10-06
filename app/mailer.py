@@ -13,7 +13,7 @@ from . import alerts
 from .db import audit, conn, now_iso
 from . import measure as measure_mod
 from .forms import FORMS, display_rows, email_rows
-from .pdf import build_pdf, local_time
+from .pdf import build_customer_pdf, build_pdf, local_time
 
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
@@ -22,6 +22,9 @@ SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 MAIL_FROM_NAME = os.environ.get("MAIL_FROM_NAME", "SimplyDoors Portal [DO NOT REPLY]")
 MAIL_REPLY_TO = os.environ.get("MAIL_REPLY_TO", "noreply@simplydoors.com")
+# the customer's own copy: from "SimplyDoors", and a reply reaches the office instead of a no-reply box
+CUSTOMER_FROM_NAME = os.environ.get("CUSTOMER_FROM_NAME", "SimplyDoors")
+CUSTOMER_REPLY_TO = os.environ.get("CUSTOMER_REPLY_TO", "admin@simplydoors.com")
 MAX_ATTEMPTS = 6
 RETRY_SECONDS = [0, 60, 300, 900, 1800, 3600]  # wait before attempt n+1
 
@@ -32,12 +35,14 @@ def configured() -> bool:
     return bool(SMTP_USER and SMTP_PASSWORD)
 
 
-def queue_report_email(report_id: int, recipients: list[str], subject: str, bcc: list[str] = ()) -> None:
+def queue_report_email(report_id: int, recipients: list[str], subject: str, bcc: list[str] = (),
+                       audience: str = "staff") -> None:
     if not recipients and not bcc:
         audit(None, "system", "email_skipped_no_recipients", f"report:{report_id}")
         return
-    conn().execute("INSERT INTO emails(report_id, recipients, subject, created_at, next_try_at, bcc) VALUES (?,?,?,?,?,?)",
-                   (report_id, ", ".join(recipients), subject, now_iso(), now_iso(), ", ".join(bcc)))
+    conn().execute("INSERT INTO emails(report_id, recipients, subject, created_at, next_try_at, bcc, audience)"
+                   " VALUES (?,?,?,?,?,?,?)",
+                   (report_id, ", ".join(recipients), subject, now_iso(), now_iso(), ", ".join(bcc), audience))
     _wake.set()
 
 
@@ -70,8 +75,48 @@ def _body_html(r, data) -> str:
 <p style="font-size:12px;color:#666;margin-top:20px">The full report with every photo is attached as a PDF.</p></div></div>"""
 
 
+def _customer_html(r, data) -> str:
+    """The customer's email: short, warm, no internal details. The PDF carries the full record."""
+    name = str(data.get("signer") or data.get("customer") or "").strip().split(" ")[0]
+    done = data.get("work") == "Yes"
+    msg = ("Your installation is complete. Thank you for choosing SimplyDoors!" if done else
+           "Thank you for choosing SimplyDoors! Most of your installation is done, and we'll be in touch to schedule "
+           "what's left.")
+    punch = "" if done or not data.get("punch_items") else (
+        "<p style='margin:16px 0 4px;font-weight:bold'>Still to finish</p>"
+        f"<p style='margin:0;white-space:pre-line'>{escape(str(data['punch_items']))}</p>")
+    job = f"Job {escape(str(data['po']))} · " if data.get("po") else ""
+    return f"""<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #e3e7ea;border-radius:10px;overflow:hidden;color:#1f2a33">
+<div style="background:#2f6f1f;color:#ffffff;padding:18px 22px"><h2 style="margin:0;color:#ffffff;font-size:20px">Your installation record</h2>
+<div style="font-size:13px;color:#ffffff;opacity:.9">{job}{escape(local_time(r['submitted_at']))}</div></div>
+<div style="padding:22px;font-size:15px;line-height:1.5">
+<p style="margin:0 0 12px">Hi{(' ' + escape(name)) if name else ''},</p>
+<p style="margin:0">{msg}</p>{punch}
+<p style="margin:16px 0 0">Your signed installation record, with photos of the finished work, is attached as a PDF for your files.</p>
+<p style="margin:16px 0 0">Questions about your new door? Just reply to this email and our office will get back to you.</p>
+<p style="margin:20px 0 0">Thank you,<br><b>The SimplyDoors team</b></p></div></div>"""
+
+
+def _send_customer(email_row, r, data, photos) -> EmailMessage:
+    msg = EmailMessage()
+    msg["From"] = formataddr((CUSTOMER_FROM_NAME, SMTP_USER))
+    msg["To"] = email_row["recipients"]
+    msg["Reply-To"] = CUSTOMER_REPLY_TO
+    msg["Subject"] = email_row["subject"]
+    msg.set_content("Thank you for choosing SimplyDoors. Your signed installation record is attached as a PDF. "
+                    "Questions? Just reply to this email.")
+    msg.add_alternative(_customer_html(r, data), subtype="html")
+    po = "".join(ch for ch in str(data.get("po") or r["receipt"]) if ch.isalnum() or ch == "-")
+    msg.add_attachment(build_customer_pdf(r, data, photos), maintype="application", subtype="pdf",
+                       filename=f"SimplyDoors_Installation_{po}.pdf")
+    return msg
+
+
 def _send_one(email_row) -> None:
     r, data, photos = _report_bundle(email_row["report_id"])
+    if (email_row["audience"] if "audience" in email_row.keys() else "staff") == "customer":
+        _smtp_send(_send_customer(email_row, r, data, photos), email_row)
+        return
     msg = EmailMessage()
     msg["From"] = formataddr((MAIL_FROM_NAME, SMTP_USER))
     msg["To"] = email_row["recipients"] or "undisclosed-recipients:;"
@@ -82,6 +127,10 @@ def _send_one(email_row) -> None:
     pdf = build_pdf(r, r["staff_name"], data, photos)
     msg.add_attachment(pdf, maintype="application", subtype="pdf",
                        filename=f"{r['form_type'].replace(' ', '_')}_{r['receipt']}.pdf")
+    _smtp_send(msg, email_row)
+
+
+def _smtp_send(msg, email_row) -> None:
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=60) as s:
         s.ehlo()
         if SMTP_STARTTLS:

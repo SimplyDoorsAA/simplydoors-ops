@@ -46,7 +46,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-24"
+APP_VERSION = "stage3-25"
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -333,9 +333,11 @@ def me(staff=Depends(current_staff)):
 
 
 # ---------------------------------------------------------------- reports
-def _save_photo(upload_bytes: bytes, dest: str, g: dict | None = None, receipt: str = "", who: str = "") -> int:
+def _save_photo(upload_bytes: bytes, dest: str, g: dict | None = None, receipt: str = "", who: str = "",
+                clean_dest: str | None = None) -> int:
     """Re-saves the photo as a clean JPEG with the time/location stamp printed on it.
-    Hidden file data is dropped; the location kept is the one the app recorded."""
+    Hidden file data is dropped; the location kept is the one the app recorded.
+    clean_dest: also keep an unstamped copy (forms that send the customer their own copy)."""
     with Image.open(io.BytesIO(upload_bytes), formats=PHOTO_FORMATS) as im:
         im.draft("RGB", (2000, 2000))           # JPEG: decode at reduced size, saves memory
         im.thumbnail((2000, 2000))
@@ -346,6 +348,8 @@ def _save_photo(upload_bytes: bytes, dest: str, g: dict | None = None, receipt: 
             bg.paste(im, mask=im.split()[-1])
             im = bg
         im = im.convert("RGB")
+        if clean_dest and g is not None:
+            im.save(clean_dest, "JPEG", quality=85, optimize=True)
         if g is not None:
             im = geo.stamp(im, g, receipt, who)
         im.save(dest, "JPEG", quality=85, optimize=True)
@@ -457,7 +461,8 @@ def _store_report(form_type, spec, staff, submission_id, data, photo_blobs, star
         os.makedirs(folder, exist_ok=True)
         for slot, b, g in photo_blobs:
             dest = os.path.join(folder, f"{slot}.jpg")
-            size = _save_photo(b, dest, g, receipt, staff["name"])
+            size = _save_photo(b, dest, g, receipt, staff["name"],
+                               clean_dest=os.path.join(folder, f"{slot}.clean.jpg") if spec.get("customer_copy") else None)
             if g is None:      # signature: no stamp, no location
                 c.execute("INSERT INTO photos(report_id, slot, path, bytes, taken_at, geo_status) VALUES (?,?,?,?,?,?)",
                           (rid, slot, dest, size, now_iso(), "signature"))
@@ -488,6 +493,11 @@ def _store_report(form_type, spec, staff, submission_id, data, photo_blobs, star
         else:
             to, bcc = split_recipients(form_type, data)
         mailer.queue_report_email(rid, to, subject, bcc)
+        cust = customer_copy_to(spec, data, is_test, staff)
+        if cust:
+            mailer.queue_report_email(rid, [cust], customer_subject(form_type, data, is_test), audience="customer")
+            audit(staff["id"], staff["name"], "customer_copy_queued", f"report:{rid}",
+                  {"to": cust, "test": True} if is_test else {"to": cust}, ip, agent)
         c.execute("COMMIT")
     except sqlite3.IntegrityError:
         c.execute("ROLLBACK")
@@ -502,6 +512,21 @@ def _store_report(form_type, spec, staff, submission_id, data, photo_blobs, star
         raise
     mailer._wake.set()
     return {"ok": True, "receipt": receipt, "duplicate": False}
+
+
+def customer_copy_to(spec, data, is_test, staff) -> str:
+    """Where the customer's own copy goes: the email they gave when signing. Test reports send it to the owner
+    instead, so the customer version can be checked without emailing a real customer."""
+    if not spec.get("customer_copy") or data.get("cust_present") != "Yes" or not data.get("cust_email"):
+        return ""
+    return (staff["email"] or "") if is_test else data["cust_email"]
+
+
+def customer_subject(form_type, data, is_test=False) -> str:
+    s = f"Your SimplyDoors installation is complete" if data.get("work") == "Yes" else "Your SimplyDoors installation record"
+    if data.get("po"):
+        s += f" (Job {data['po']})"
+    return ("TEST - customer copy - " + s if is_test else s)[:200]
 
 
 # ---------------------------------------------------------------- measures: who measured, revisions, reopening

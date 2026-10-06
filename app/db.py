@@ -111,7 +111,8 @@ CREATE TABLE IF NOT EXISTS emails (
     created_at TEXT NOT NULL,
     next_try_at TEXT NOT NULL,
     sent_at TEXT,
-    bcc TEXT NOT NULL DEFAULT ''                -- private copies (the owner's), never shown in the email or to other admins
+    bcc TEXT NOT NULL DEFAULT '',               -- private copies (the owner's), never shown in the email or to other admins
+    audience TEXT NOT NULL DEFAULT 'staff'      -- staff | customer (the customer's own copy: friendly PDF, no internal details)
 );
 
 CREATE TABLE IF NOT EXISTS email_rules (
@@ -225,6 +226,8 @@ def init_db() -> None:
     ecols = {r[1] for r in c.execute("PRAGMA table_info(emails)")}
     if "bcc" not in ecols:
         c.execute("ALTER TABLE emails ADD COLUMN bcc TEXT NOT NULL DEFAULT ''")
+    if "audience" not in ecols:
+        c.execute("ALTER TABLE emails ADD COLUMN audience TEXT NOT NULL DEFAULT 'staff'")
     _move_owner_off_lists(c)
 
 
