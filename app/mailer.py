@@ -93,7 +93,7 @@ def _customer_html(r, data) -> str:
 <p style="margin:0 0 12px">Hi{(' ' + escape(name)) if name else ''},</p>
 <p style="margin:0">{msg}</p>{punch}
 <p style="margin:16px 0 0">Your signed installation record, with photos of the finished work, is attached as a PDF for your files.</p>
-<p style="margin:16px 0 0">Questions about your new door? Just reply to this email and our office will get back to you.</p>
+<p style="margin:16px 0 0">Questions about your installation? Just reply to this email and our office will get back to you.</p>
 <p style="margin:20px 0 0">Thank you,<br><b>The SimplyDoors team</b></p></div></div>"""
 
 

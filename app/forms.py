@@ -144,10 +144,10 @@ FORMS = {
              "show_if": {"field": "cust_present", "in": ["No"]}, "placeholder": "e.g. customer not home, left with contractor"},
         ],
         "photos": [
-            {"group": "before", "title": "Before photos (optional)", "help": "The opening before you started.",
+            {"group": "before", "title": "Before photos (optional)", "help": "The area before you started.",
              "slots": [("before1", "Before 1"), ("before2", "Before 2")]},
-            {"group": "after", "title": "Finished install", "help": "Outside, inside, and the lock / hardware.",
-             "slots": [("after1", "Outside"), ("after2", "Inside"), ("after3", "Lock / hardware"), ("after4", "Extra")], "min": 2},
+            {"group": "after", "title": "Finished install", "help": "A wide shot of the finished work, a close-up, and any detail worth showing.",
+             "slots": [("after1", "Overview"), ("after2", "Close-up"), ("after3", "Detail"), ("after4", "Extra")], "min": 2},
             {"group": "signature", "title": "Customer signature", "signature": "sig", "required": True,
              "show_if": {"field": "cust_present", "in": ["Yes"]},
              "help": ACCEPT_TEXT},
