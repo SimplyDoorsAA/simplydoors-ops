@@ -6,6 +6,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 
 import pytest
@@ -226,6 +227,38 @@ def test_lockouts_escalate(client):
     conn().execute("UPDATE staff SET locked_until='9999-12-31T00:00:00Z' WHERE id=?", (sid,))
     assert "Ask Adem or Paz" in login(client, "Elijah Kimmel", "424242").json()["detail"]
     conn().execute("DELETE FROM ip_failures")
+
+
+def test_parallel_wrong_pins_all_count(client):
+    # a burst of wrong PINs at the same moment must still lock the account (and lock it once)
+    from concurrent.futures import ThreadPoolExecutor
+    sid = conn().execute("SELECT id FROM staff WHERE name='Ramiro Zuniga'").fetchone()[0]
+    auth.set_pin(sid, "864213", "admin")
+    conn().execute("DELETE FROM ip_failures")
+    gate = threading.Barrier(12)
+
+    def guess(i):
+        gate.wait()
+        return auth.attempt_login("Ramiro Zuniga", f"00000{i % 10}", f"10.0.0.{i}", "test")
+    with ThreadPoolExecutor(12) as ex:
+        results = list(ex.map(guess, range(12)))
+    st = conn().execute("SELECT locked_until, lock_level FROM staff WHERE id=?", (sid,)).fetchone()
+    assert st["locked_until"] and st["lock_level"] == 1, results
+    assert sum(1 for _, _, newly in results if newly) == 1
+    assert "locked" in login(client, "Ramiro Zuniga", "864213").json()["detail"]     # right PIN refused while locked
+    # one connection firing 30 guesses at once gets at most the usual 20 checks
+    conn().execute("DELETE FROM ip_failures")
+    gate = threading.Barrier(30)
+
+    def from_one_ip(i):
+        gate.wait()
+        return auth.attempt_login("Nobody At All", "000000", "10.9.9.9", "test")
+    with ThreadPoolExecutor(30) as ex:
+        msgs = [m for _, m, _ in ex.map(from_one_ip, range(30))]
+    assert sum(1 for m in msgs if "this connection" not in m) <= auth.IP_MAX_FAILS
+    assert conn().execute("SELECT COUNT(*) FROM ip_failures WHERE ip='10.9.9.9'").fetchone()[0] <= auth.IP_MAX_FAILS
+    conn().execute("DELETE FROM ip_failures")
+    auth.set_pin(sid, "864213", "admin")
 
 
 def test_damaged_photo_refused_cleanly(client):
