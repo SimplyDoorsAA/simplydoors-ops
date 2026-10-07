@@ -33,7 +33,7 @@ INSPECTION_ITEMS = {
 
 EOS_CHECKS = {
     "Warehouse": [
-        "All units and slabs needed for next-day delivery/pickups are completed.",
+        "Units, slabs, hardware & trim need to be pulled and ready to be loaded by 2pm, and loaded as soon as the truck gets back.",
         "All deliveries received today are entered in the system, tagged, and put up in the racks.",
         "Warehouse is cleaned and swept.",
         "Extra materials are put away. Floor and walls are cleared of leaning trim, doors, and boxes.",
@@ -48,7 +48,9 @@ EOS_CHECKS = {
         "All tools have been returned to their designated spots.",
         "Any tools or materials that are damaged or broken have been reported to the supervisor ASAP.",
         "Maintenance needs on the Maverick or any other tools have been reported to the supervisor to get fixed.",
-        "Production area is cleaned, swept, and secured for the end of the shift.",
+        "Production area is swept and cleaned. All wood cleaned up and all trash thrown out from the miter saw, table saw & work table. "
+        "NO MORE BLOWING MACHINES OR FLOOR WITH AIR. Air can only be used on Thursdays to blow off the Maverick and table saw, "
+        "and the A/C must be turned off 30 minutes before using air.",
     ],
 }
 
