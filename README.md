@@ -34,6 +34,24 @@ GitHub Pages portal + Google Apps Script, one form at a time.
   Service Fusion. The customer's copy never shows it.
 - Key: `SF_CLIENT_ID` / `SF_CLIENT_SECRET` in `~/ai-server/opsapp/.env`, saved by `deploy/sf-setup.sh`. Health: Admin → Status.
 
+## Price List (beta)
+
+- A **Price List** tile (marked BETA) on the home screen opens vendor net costs, a buy list and purchase orders: `/ops/pricelist`.
+- **Who sees it:** only people with *Can open the Price List* switched on (Admin → Staff & PINs → Edit), plus the owner.
+  Everyone else gets a 403 from every price endpoint.
+- **Price sheets are never in this repository** (it's public and vendor prices are confidential). An admin loads each vendor's
+  sheet as a CSV in **Admin → Price List**; it lives only in the database on the OptiPlex. Loading a sheet replaces that
+  vendor's items. Columns: `sku, name, category, price` (required) plus `group, mfr, width_in, height_in, thickness, core,
+  stocked, uom, hand, brand, page, flag`. A blank price shows as "Call for price"; a part number used twice is kept and flagged.
+- **Shop:** pick a vendor, then a category, then items (or search). Flagged lines (wrong part number, odd price on the
+  vendor's sheet) show **⚠ Check** with the reason. Non-stock interior slabs add 30% under 10 of one size/style.
+- **Purchase orders:** the buy list (kept on that phone) becomes a PO for one vendor. The PO number is the **PO number already
+  on the Service Fusion job** (picked with Find the job); a job without one can't be ordered. Prices are worked out again on
+  the server from the loaded sheet. Sending emails a PDF to the vendor's PO email (set in Admin → Price List; until it's set, that
+  vendor's POs can't be sent) with a visible copy to **admin@simplydoors.com**. Anyone with access can send. The owner's test mode
+  sends the PO only to the owner. Every PO, sheet load and vendor email change is in the activity log; a vendor email
+  change also reaches the owner's phone.
+
 ## Stage 3 (this version): Measure
 
 - **Measure** form on the phone: one job (customer, PO, date), then any number of **door** and **window** cards. Field names and choices are copied from the old Measure App.

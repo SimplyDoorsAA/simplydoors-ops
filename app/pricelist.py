@@ -1,0 +1,341 @@
+"""Price List (beta): vendor price sheets, a shared buy list per person, and purchase orders sent to the vendor.
+
+- Price sheets are uploaded by an admin (Admin -> Price List) as a CSV and kept only in the database on the OptiPlex.
+  Vendor prices are confidential, so none are ever stored in this repository.
+- Only people with the Price List switch on (Admin -> Staff) can see net costs; the owner always can.
+- A purchase order's number is the PO number already on the Service Fusion job. The app never writes to Service Fusion.
+- Sending a PO emails a PDF to the vendor's order address, with a copy to admin@simplydoors.com.
+- Prices on a PO are always worked out here from the loaded sheet, never taken from the phone.
+"""
+import csv
+import io
+import json
+import re
+
+from .db import conn, now_iso
+
+ADMIN_COPY = "admin@simplydoors.com"
+NONSTOCK_MIN_QTY = 10          # non-stock interior slabs: +30% when fewer than 10 of one size / style
+NONSTOCK_SURCHARGE = 0.30
+NONSTOCK_CATS = ("Interior molded", "Interior flush", "Interior bifolds")
+MAX_LINES = 200
+MAX_QTY = 999
+
+CATS = ("Interior molded", "Interior flush", "Interior stile & rail", "Interior bifolds",
+        "Exterior doors & sidelites", "Exterior glass & lites", "Parts & hardware")
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS pl_vendors (
+    code TEXT PRIMARY KEY,                       -- WG, BC, SP
+    name TEXT NOT NULL,
+    address TEXT NOT NULL DEFAULT '',            -- lines separated by newlines, printed on the PO
+    order_email TEXT NOT NULL DEFAULT '',        -- where POs are emailed (set in Admin -> Price List; kept out of the repo)
+    sort INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS pl_sheets (
+    id INTEGER PRIMARY KEY,
+    vendor TEXT NOT NULL REFERENCES pl_vendors(code),
+    label TEXT NOT NULL,                         -- e.g. "Full Line Catalog eff. 6/15/2026"
+    filename TEXT NOT NULL DEFAULT '',
+    items INTEGER NOT NULL,
+    uploaded_at TEXT NOT NULL,
+    uploaded_by TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1            -- the newest upload for a vendor is the live one
+);
+
+CREATE TABLE IF NOT EXISTS pl_items (
+    id INTEGER PRIMARY KEY,
+    sheet_id INTEGER NOT NULL REFERENCES pl_sheets(id),
+    vendor TEXT NOT NULL,
+    sku TEXT NOT NULL,
+    mfr TEXT NOT NULL DEFAULT '',                -- manufacturer's number (e.g. Therma-Tru), if the sheet has one
+    name TEXT NOT NULL,
+    cat TEXT NOT NULL,
+    grp TEXT NOT NULL DEFAULT '',                -- the table / section it sits in on the sheet
+    w REAL NOT NULL DEFAULT 0,                   -- door width / height in inches (0 = not a door)
+    h REAL NOT NULL DEFAULT 0,
+    th TEXT NOT NULL DEFAULT '',
+    core TEXT NOT NULL DEFAULT '',
+    price REAL,                                  -- NULL = blank on the sheet: call for price
+    stock INTEGER,                               -- 1 stocked, 0 non-stock, NULL not marked
+    uom TEXT NOT NULL DEFAULT '',
+    hand TEXT NOT NULL DEFAULT '',
+    brand TEXT NOT NULL DEFAULT '',
+    page INTEGER,
+    flag TEXT NOT NULL DEFAULT ''                -- why this line needs checking with the rep
+);
+CREATE INDEX IF NOT EXISTS pl_items_sheet ON pl_items(sheet_id);
+
+CREATE TABLE IF NOT EXISTS pl_pos (
+    id INTEGER PRIMARY KEY,
+    po_number TEXT NOT NULL,
+    vendor TEXT NOT NULL REFERENCES pl_vendors(code),
+    job_number TEXT NOT NULL,
+    job_customer TEXT NOT NULL DEFAULT '',
+    order_date TEXT NOT NULL,
+    ship_method TEXT NOT NULL,
+    ship_to TEXT NOT NULL,                       -- 'shop' | 'site'
+    ship_address TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    lines TEXT NOT NULL,                         -- JSON: what was ordered, at the prices of the sheet used
+    total REAL NOT NULL,
+    sheet_label TEXT NOT NULL DEFAULT '',
+    staff_id INTEGER NOT NULL REFERENCES staff(id),
+    sent_to TEXT NOT NULL,
+    is_test INTEGER NOT NULL DEFAULT 0,          -- owner's test mode: emailed only to the owner, never the vendor
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pl_pos_number ON pl_pos(po_number);
+"""
+
+SEED_VENDORS = [
+    ("WG", "Woodgrain – Dallas", "2115 W. Valley View Lane, Ste 120\nFarmers Branch, TX 75234\n972-620-2200",
+     "", 1),
+    ("BC", "Boise Cascade", "", "", 2),
+    ("SP", "Simpson", "", "", 3),
+]
+
+OUR_NAME = "SimplyDoors"
+OUR_ADDRESS = ["17750 Lookout Rd, Unit 150", "Schertz, TX 78154", "(210) 903-8450", "admin@simplydoors.com"]
+SHIP_METHODS = ("Delivery", "Will Call – Dallas")
+
+
+def init(c) -> None:
+    c.executescript(SCHEMA)
+    for code, name, addr, email, sort in SEED_VENDORS:
+        c.execute("INSERT OR IGNORE INTO pl_vendors(code, name, address, order_email, sort) VALUES (?,?,?,?,?)",
+                  (code, name, addr, email, sort))
+
+
+# ------------------------------------------------------------------ who can see it
+def allowed(staff) -> bool:
+    keys = staff.keys()
+    return bool(staff["is_owner"]) or bool("price_list" in keys and staff["price_list"])
+
+
+# ------------------------------------------------------------------ vendors + sheets
+def vendors() -> list[dict]:
+    c = conn()
+    out = []
+    for v in c.execute("SELECT * FROM pl_vendors ORDER BY sort, code"):
+        s = c.execute("SELECT * FROM pl_sheets WHERE vendor=? AND active=1 ORDER BY id DESC LIMIT 1", (v["code"],)).fetchone()
+        out.append({"code": v["code"], "name": v["name"], "address": v["address"].split("\n") if v["address"] else [],
+                    "order_email": v["order_email"],
+                    "sheet": {"id": s["id"], "label": s["label"], "items": s["items"], "uploaded_at": s["uploaded_at"],
+                              "uploaded_by": s["uploaded_by"]} if s else None})
+    return out
+
+
+def _live_sheet_id(vendor: str):
+    r = conn().execute("SELECT id FROM pl_sheets WHERE vendor=? AND active=1 ORDER BY id DESC LIMIT 1", (vendor,)).fetchone()
+    return r["id"] if r else None
+
+
+ITEM_COLS = ("id", "sku", "mfr", "name", "cat", "grp", "w", "h", "th", "core", "price", "stock", "uom", "hand",
+             "brand", "page", "flag")
+
+
+def items(vendor: str) -> list[dict]:
+    sid = _live_sheet_id(vendor)
+    if not sid:
+        return []
+    rows = conn().execute(f"SELECT {', '.join(ITEM_COLS)} FROM pl_items WHERE sheet_id=? ORDER BY id", (sid,))
+    out = []
+    for r in rows:
+        d = {k: r[k] for k in ITEM_COLS}
+        d["stock"] = None if d["stock"] is None else bool(d["stock"])
+        out.append(d)
+    return out
+
+
+# The upload format. One row per item; the first row holds these names (any order, case doesn't matter).
+CSV_COLUMNS = ("sku", "name", "category", "price", "group", "mfr", "width_in", "height_in", "thickness", "core",
+               "stocked", "uom", "hand", "brand", "page", "flag")
+REQUIRED = ("sku", "name", "category", "price")
+
+
+class SheetError(ValueError):
+    pass
+
+
+def _num(v, field, line, allow_blank=True):
+    v = (v or "").strip().replace("$", "").replace(",", "")
+    if not v:
+        if allow_blank:
+            return None
+        raise SheetError(f"Line {line}: {field} is empty.")
+    try:
+        n = float(v)
+    except ValueError:
+        raise SheetError(f"Line {line}: {field} “{v[:20]}” isn't a number.") from None
+    if n < 0 or n > 1_000_000:
+        raise SheetError(f"Line {line}: {field} {n} is out of range.")
+    return n
+
+
+def parse_sheet(raw: bytes) -> list[dict]:
+    """Read an uploaded CSV into item rows. Raises SheetError with a plain-English reason."""
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            text = raw.decode("cp1252")
+        except UnicodeDecodeError:
+            raise SheetError("The file isn't a readable CSV. Save it from Excel as “CSV UTF-8”.") from None
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        raise SheetError("The file is empty.")
+    names = {f.strip().lower(): f for f in reader.fieldnames if f}
+    missing = [c for c in REQUIRED if c not in names]
+    if missing:
+        raise SheetError(f"The first row must name the columns. Missing: {', '.join(missing)}.")
+    get = lambda row, c: (row.get(names[c]) or "").strip() if c in names else ""  # noqa: E731
+    out = []
+    for i, row in enumerate(reader, start=2):
+        if not any((v or "").strip() for v in row.values() if isinstance(v, str)):
+            continue
+        sku = get(row, "sku")[:60]
+        if not sku:
+            raise SheetError(f"Line {i}: the part number (sku) is empty.")
+        cat = get(row, "category")
+        if cat not in CATS:
+            raise SheetError(f"Line {i}: category “{cat[:40]}” isn't one of: {', '.join(CATS)}.")
+        price = _num(get(row, "price"), "price", i)
+        stocked = get(row, "stocked").upper()
+        page = _num(get(row, "page"), "page", i)
+        out.append({
+            "sku": sku, "mfr": get(row, "mfr")[:60], "name": get(row, "name")[:160] or sku, "cat": cat,
+            "grp": get(row, "group")[:120], "w": _num(get(row, "width_in"), "width_in", i) or 0,
+            "h": _num(get(row, "height_in"), "height_in", i) or 0, "th": get(row, "thickness")[:20],
+            "core": get(row, "core")[:40], "price": None if not price else round(price, 2),
+            "stock": 1 if stocked in ("Y", "YES", "1", "TRUE") else 0 if stocked in ("N", "NO", "0", "FALSE") else None,
+            "uom": get(row, "uom")[:30], "hand": get(row, "hand")[:4], "brand": get(row, "brand")[:40],
+            "page": int(page) if page is not None else None, "flag": get(row, "flag")[:300],
+        })
+    if not out:
+        raise SheetError("The file has no items.")
+    # Vendor sheets do reuse a part number for two different items (a typo on their side). Keep both rows, so no
+    # item goes missing, and flag them so nobody orders by that part number without checking.
+    counts: dict[str, int] = {}
+    for r in out:
+        counts[r["sku"].upper()] = counts.get(r["sku"].upper(), 0) + 1
+    for r in out:
+        if counts[r["sku"].upper()] > 1:
+            note = "Same part number is used for another item on this sheet"
+            r["flag"] = (r["flag"] + " · " + note if r["flag"] and note not in r["flag"] else r["flag"] or note)[:300]
+    if len(out) > 20000:
+        raise SheetError("That's more than 20,000 items. Split the file.")
+    return out
+
+
+def load_sheet(vendor: str, label: str, filename: str, rows: list[dict], who: str) -> int:
+    c = conn()
+    c.execute("BEGIN IMMEDIATE")
+    try:
+        c.execute("UPDATE pl_sheets SET active=0 WHERE vendor=?", (vendor,))
+        cur = c.execute("INSERT INTO pl_sheets(vendor, label, filename, items, uploaded_at, uploaded_by) VALUES (?,?,?,?,?,?)",
+                        (vendor, label, filename, len(rows), now_iso(), who))
+        sid = cur.lastrowid
+        c.executemany(
+            "INSERT INTO pl_items(sheet_id, vendor, sku, mfr, name, cat, grp, w, h, th, core, price, stock, uom, hand, brand,"
+            " page, flag) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [(sid, vendor, r["sku"], r["mfr"], r["name"], r["cat"], r["grp"], r["w"], r["h"], r["th"], r["core"],
+              r["price"], r["stock"], r["uom"], r["hand"], r["brand"], r["page"], r["flag"]) for r in rows])
+        # old sheets' items aren't needed any more (every sent PO keeps its own copy of its lines and prices)
+        c.execute("DELETE FROM pl_items WHERE vendor=? AND sheet_id != ?", (vendor, sid))
+        c.execute("COMMIT")
+    except Exception:
+        c.execute("ROLLBACK")
+        raise
+    return sid
+
+
+# ------------------------------------------------------------------ purchase orders
+def line_calc(item: dict, qty: int) -> dict:
+    price = item["price"]
+    base = round((price or 0) * qty, 2)
+    sur = round(base * NONSTOCK_SURCHARGE, 2) if (item["stock"] == 0 and item["cat"] in NONSTOCK_CATS
+                                                  and qty < NONSTOCK_MIN_QTY and price) else 0.0
+    return {"base": base, "surcharge": sur, "total": round(base + sur, 2)}
+
+
+def size_label(w: float, h: float) -> str:
+    if not w or not h:
+        return ""
+    def ft(x):
+        x = int(round(x))
+        return f"{x // 12}/{x % 12}"
+    hh = {80: "6'8\"", 96: "8'0\"", 84: "7'0\""}.get(int(round(h)), ft(h).replace("/", "'") + '"')
+    return f"{ft(w)} × {hh} ({int(round(w))}×{int(round(h))})"
+
+
+def build_lines(vendor: str, wanted: list) -> tuple[list[dict], float, str]:
+    """wanted: [{item_id, qty}] from the phone. Prices come from the live sheet only."""
+    sid = _live_sheet_id(vendor)
+    if not sid:
+        raise ValueError("No price sheet is loaded for this vendor.")
+    if not wanted:
+        raise ValueError("The buy list is empty.")
+    if len(wanted) > MAX_LINES:
+        raise ValueError(f"A PO can have at most {MAX_LINES} lines.")
+    c = conn()
+    label = c.execute("SELECT label FROM pl_sheets WHERE id=?", (sid,)).fetchone()["label"]
+    qty_by_id: dict[int, int] = {}
+    for w in wanted:
+        try:
+            iid, qty = int(w.get("item_id")), int(w.get("qty"))
+        except (TypeError, ValueError, AttributeError):
+            raise ValueError("A line on the buy list isn't readable. Remove it and add it again.") from None
+        if not 1 <= qty <= MAX_QTY:
+            raise ValueError(f"Quantities must be 1 to {MAX_QTY}.")
+        qty_by_id[iid] = qty_by_id.get(iid, 0) + qty
+    lines, total = [], 0.0
+    for iid, qty in qty_by_id.items():
+        r = c.execute("SELECT * FROM pl_items WHERE id=? AND sheet_id=?", (iid, sid)).fetchone()
+        if not r:
+            raise ValueError("An item on the buy list isn't on the current price sheet any more. Remove it and find it again.")
+        it = dict(r)
+        calc = line_calc(it, min(qty, MAX_QTY))
+        lines.append({"item_id": iid, "sku": it["sku"], "name": it["name"], "size": size_label(it["w"], it["h"]),
+                      "qty": min(qty, MAX_QTY), "price": it["price"], "uom": it["uom"], "surcharge": calc["surcharge"],
+                      "total": calc["total"] if it["price"] is not None else None, "flag": it["flag"]})
+        total += calc["total"] if it["price"] is not None else 0
+    return lines, round(total, 2), label
+
+
+def po_out(r, with_lines=False) -> dict:
+    d = {"id": r["id"], "po_number": r["po_number"], "vendor": r["vendor"], "job_number": r["job_number"],
+         "job_customer": r["job_customer"], "order_date": r["order_date"], "ship_method": r["ship_method"],
+         "ship_to": r["ship_to"], "ship_address": r["ship_address"], "notes": r["notes"], "total": r["total"],
+         "sheet_label": r["sheet_label"], "sent_to": r["sent_to"], "created_at": r["created_at"],
+         "is_test": bool(r["is_test"]),
+         "by": r["staff_name"] if "staff_name" in r.keys() else ""}
+    lines = json.loads(r["lines"])
+    d["line_count"] = len(lines)
+    if with_lines:
+        d["lines"] = lines
+    return d
+
+
+def recent_pos(limit=50) -> list[dict]:
+    rows = conn().execute("SELECT p.*, s.name AS staff_name FROM pl_pos p JOIN staff s ON s.id=p.staff_id "
+                          "ORDER BY p.id DESC LIMIT ?", (limit,)).fetchall()
+    return [po_out(r) for r in rows]
+
+
+def get_po(pid: int):
+    return conn().execute("SELECT p.*, s.name AS staff_name FROM pl_pos p JOIN staff s ON s.id=p.staff_id WHERE p.id=?",
+                          (pid,)).fetchone()
+
+
+def sent_before(po_number: str) -> list[dict]:
+    if not po_number:
+        return []
+    rows = conn().execute("SELECT id, order_date, created_at FROM pl_pos WHERE po_number=? AND is_test=0 ORDER BY id",
+                          (po_number,))
+    return [dict(r) for r in rows]
+
+
+def safe_name(s: str) -> str:
+    return re.sub(r"[^A-Za-z0-9-]", "", s or "")[:40] or "PO"

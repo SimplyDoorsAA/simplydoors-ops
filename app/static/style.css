@@ -309,6 +309,14 @@ a.card.tilecard.studio { grid-column: 1 / -1; flex-direction: row; align-items: 
 .studio-tag { font-size: 14px; font-weight: 600; opacity: .92; }
 .studio-go { font-size: 22px; font-weight: 700; flex: none; }
 
+/* Price List (beta): full-width tile like Studio, dark slate so the two don't look alike */
+a.card.tilecard.pricelist { grid-column: 1 / -1; flex-direction: row; align-items: center; gap: 14px; min-height: 84px; padding: 14px 16px;
+  text-decoration: none; color: #fff; background: linear-gradient(135deg, #2f5d50, #3f7564); border-color: #2f5d50; }
+.card.tilecard.pricelist .card-icon { width: 46px; height: 46px; flex: none; color: #2f5d50; background: #fff; border-radius: 12px; }
+.card.tilecard.pricelist .card-icon svg { width: 28px; height: 28px; }
+.card.tilecard.pricelist .card-title { margin: 0; font-size: 19px; color: #fff; }
+.beta { background: #e8590c; color: #fff; font-size: 11px; font-weight: 800; letter-spacing: .08em; border-radius: 6px; padding: 2px 6px; vertical-align: 2px; }
+
 /* "Install SD Ops" offer on the home screen (hidden once it runs as an installed app) */
 .install-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; background: var(--green-bg); border: 1.5px solid #cfe6bd;
   border-radius: 12px; padding: 10px 12px; margin: 4px 0 12px; font-size: 15px; line-height: 1.35; }

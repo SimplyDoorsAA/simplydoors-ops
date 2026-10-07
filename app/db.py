@@ -209,6 +209,9 @@ def init_db() -> None:
     if "is_owner" not in cols:
         # the person who built the app: full admin, can manage other admins; only changed from the server console
         c.execute("ALTER TABLE staff ADD COLUMN is_owner INTEGER NOT NULL DEFAULT 0")
+    if "price_list" not in cols:
+        # 1 = can open the Price List (vendor net costs). Off for everyone until an admin switches it on.
+        c.execute("ALTER TABLE staff ADD COLUMN price_list INTEGER NOT NULL DEFAULT 0")
     if "lock_level" not in cols:
         c.execute("ALTER TABLE staff ADD COLUMN lock_level INTEGER NOT NULL DEFAULT 0")
         c.execute("ALTER TABLE staff ADD COLUMN last_lock_at TEXT")
@@ -234,6 +237,12 @@ def init_db() -> None:
         c.execute("ALTER TABLE emails ADD COLUMN bcc TEXT NOT NULL DEFAULT ''")
     if "audience" not in ecols:
         c.execute("ALTER TABLE emails ADD COLUMN audience TEXT NOT NULL DEFAULT 'staff'")
+    if "po_id" not in ecols:
+        # a purchase order to a vendor (audience 'vendor'); report_id is NULL for these
+        c.execute("ALTER TABLE emails ADD COLUMN po_id INTEGER")
+        c.execute("ALTER TABLE emails ADD COLUMN cc TEXT NOT NULL DEFAULT ''")
+    from . import pricelist
+    pricelist.init(c)
     _move_owner_off_lists(c)
 
 

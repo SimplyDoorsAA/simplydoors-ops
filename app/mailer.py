@@ -46,6 +46,59 @@ def queue_report_email(report_id: int, recipients: list[str], subject: str, bcc:
     _wake.set()
 
 
+def queue_po_email(po_id: int, vendor_email: str, subject: str) -> None:
+    """A purchase order to a vendor. admin@simplydoors.com always gets a visible copy (Cc)."""
+    from .pricelist import ADMIN_COPY
+    cc = ADMIN_COPY if ADMIN_COPY.lower() != vendor_email.lower() else ""
+    conn().execute("INSERT INTO emails(report_id, po_id, recipients, cc, subject, created_at, next_try_at, audience)"
+                   " VALUES (NULL,?,?,?,?,?,?,'vendor')",
+                   (po_id, vendor_email, cc, subject, now_iso(), now_iso()))
+    _wake.set()
+
+
+def _size_html(ln: dict) -> str:
+    return f"<br><span style='color:#666'>{escape(ln['size'])}</span>" if ln.get("size") else ""
+
+
+def _po_html(po: dict) -> str:
+    rows = "".join(
+        f"<tr><td style='padding:6px 10px;border:1px solid #e0e0e0'>{ln['qty']}</td>"
+        f"<td style='padding:6px 10px;border:1px solid #e0e0e0;font-family:monospace'>{escape(ln['sku'])}</td>"
+        f"<td style='padding:6px 10px;border:1px solid #e0e0e0'>{escape(ln['name'])}"
+        f"{_size_html(ln)}</td></tr>"
+        for ln in po["lines"])
+    notes = f"<p style='margin:14px 0 0'><b>Notes:</b> {escape(po['notes'])}</p>" if po.get("notes") else ""
+    return f"""<div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;border:1px solid #ddd;border-radius:8px;overflow:hidden;color:#1f2933">
+<div style="background:#2f5d50;color:#ffffff;padding:16px 20px"><h2 style="margin:0;color:#ffffff">Purchase Order {escape(po['po_number'])}</h2>
+<div style="font-size:13px;color:#ffffff">SimplyDoors · {escape(po['order_date'])} · {escape(po['ship_method'])}</div></div>
+<div style="padding:20px;font-size:14px"><p style="margin:0 0 12px">Please process the attached purchase order and reference
+PO # <b>{escape(po['po_number'])}</b> on the invoice and packing slip.</p>
+<table style="border-collapse:collapse;width:100%;font-size:14px"><tr style="background:#f2f9eb"><th style="padding:6px 10px;border:1px solid #e0e0e0;text-align:left">Qty</th>
+<th style="padding:6px 10px;border:1px solid #e0e0e0;text-align:left">Part #</th><th style="padding:6px 10px;border:1px solid #e0e0e0;text-align:left">Description</th></tr>{rows}</table>{notes}
+<p style="font-size:12px;color:#666;margin-top:18px">The full PO with prices is attached as a PDF. Questions? Reply to this email.</p></div></div>"""
+
+
+def _send_po(email_row) -> EmailMessage:
+    from .pdf import build_po_pdf
+    from .pricelist import get_po, po_out, safe_name, vendors
+    r = get_po(email_row["po_id"])
+    po = po_out(r, with_lines=True)
+    vendor = next((v for v in vendors() if v["code"] == po["vendor"]), {"name": po["vendor"], "address": []})
+    msg = EmailMessage()
+    msg["From"] = formataddr((CUSTOMER_FROM_NAME, SMTP_USER))
+    msg["To"] = email_row["recipients"]
+    if email_row["cc"]:
+        msg["Cc"] = email_row["cc"]
+    msg["Reply-To"] = CUSTOMER_REPLY_TO
+    msg["Subject"] = email_row["subject"]
+    msg.set_content(f"SimplyDoors purchase order {po['po_number']} is attached as a PDF. "
+                    f"Please reference PO # {po['po_number']} on the invoice and packing slip.")
+    msg.add_alternative(_po_html(po), subtype="html")
+    msg.add_attachment(build_po_pdf(po, vendor), maintype="application", subtype="pdf",
+                       filename=f"SimplyDoors_PO_{safe_name(po['po_number'])}.pdf")
+    return msg
+
+
 def _report_bundle(report_id: int):
     c = conn()
     r = c.execute("SELECT r.*, s.name AS staff_name FROM reports r JOIN staff s ON s.id=r.staff_id WHERE r.id=?",
@@ -124,6 +177,9 @@ def _send_customer(email_row, r, data, photos) -> EmailMessage:
 
 
 def _send_one(email_row) -> None:
+    if "po_id" in email_row.keys() and email_row["po_id"]:
+        _smtp_send(_send_po(email_row), email_row)
+        return
     r, data, photos = _report_bundle(email_row["report_id"])
     if (email_row["audience"] if "audience" in email_row.keys() else "staff") == "customer":
         _smtp_send(_send_customer(email_row, r, data, photos), email_row)
@@ -150,8 +206,9 @@ def _smtp_send(msg, email_row) -> None:
         if SMTP_USER and SMTP_PASSWORD:
             s.login(SMTP_USER, SMTP_PASSWORD)
         bcc = [x.strip() for x in (email_row["bcc"] or "").split(",") if x.strip()]
+        cc = [x.strip() for x in ((email_row["cc"] if "cc" in email_row.keys() else "") or "").split(",") if x.strip()]
         to = [x.strip() for x in email_row["recipients"].split(",") if x.strip()]
-        s.send_message(msg, to_addrs=to + bcc)        # private copies go out without appearing in any header
+        s.send_message(msg, to_addrs=to + cc + bcc)        # private copies go out without appearing in any header
 
 
 def process_queue_once() -> None:
@@ -166,6 +223,8 @@ def process_queue_once() -> None:
             c.execute("UPDATE emails SET status='sent', attempts=attempts+1, sent_at=?, last_error=NULL WHERE id=?",
                       (now_iso(), e["id"]))
             details = {"report_id": e["report_id"], "to": e["recipients"], "subject": e["subject"]}
+            if e["po_id"]:
+                details = {"po_id": e["po_id"], "to": e["recipients"], "cc": e["cc"], "subject": e["subject"]}
             if e["bcc"]:
                 details["private_copies"] = len([x for x in e["bcc"].split(",") if x.strip()])
             audit(None, "system", "email_sent", f"email:{e['id']}", details)
@@ -180,7 +239,7 @@ def process_queue_once() -> None:
                   {"report_id": e["report_id"], "attempt": attempts, "error": str(ex)[:300]})
             if attempts == 3 or status == "failed":
                 alerts.push("Ops app: email not sending",
-                            f"Report email '{e['subject']}' failed {attempts}x: {str(ex)[:150]}", "high")
+                            f"{'PO' if e['po_id'] else 'Report'} email '{e['subject']}' failed {attempts}x: {str(ex)[:150]}", "high")
 
 
 def resend(report_id: int, actor, ip=None, agent=None) -> None:

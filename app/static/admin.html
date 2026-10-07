@@ -24,6 +24,7 @@
       <button data-tab="staff">Staff &amp; PINs</button>
       <button data-tab="rules">Email lists</button>
       <button data-tab="lists">Forms &amp; lists</button>
+      <button data-tab="pricelist">Price List <span class="badge warn">beta</span></button>
       <button data-tab="status">Status</button>
     </nav>
 
@@ -79,6 +80,26 @@
       <h3>Pick lists</h3>
       <p class="muted small">The choices staff pick from. One per line.</p>
       <div id="pickLists"></div>
+    </section>
+
+    <section data-panel="pricelist" class="hidden">
+      <p class="muted small">Vendor price sheets and where purchase orders are emailed. Only people with “Can open the Price List” switched on
+        (Staff &amp; PINs → Edit) see net costs. Every PO is also copied to admin@simplydoors.com.</p>
+      <div id="plPeople" class="muted small"></div>
+      <h3>Vendors</h3>
+      <div id="plVendors"></div>
+      <h3>Load a price sheet</h3>
+      <p class="muted small">A CSV file with one item per line. Loading a sheet replaces that vendor's current items (POs already sent keep their own copy).
+        Prices stay on this server only; they are never put on GitHub.</p>
+      <form id="plUpload" class="grid">
+        <label>Vendor<select name="vendor" id="plVendorSel"></select></label>
+        <label>Sheet name<input name="label" placeholder="e.g. Full Line Catalog eff. 6/15/2026" required></label>
+        <label>CSV file<input name="file" type="file" accept=".csv,text/csv" required></label>
+        <button class="mini primary" type="submit">Load sheet</button>
+      </form>
+      <details class="addbox"><summary>CSV columns</summary><div id="plCols" class="det"></div></details>
+      <h3>Recent uploads</h3>
+      <div id="plSheets"></div>
     </section>
 
     <section data-panel="status" class="hidden"><div id="statusBox"></div></section>

@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<base href="{{BASE}}">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#76c043">
+<meta name="robots" content="noindex">
+<link rel="icon" href="static/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="stylesheet" href="static/style.css?v={{VERSION}}">
+<link rel="stylesheet" href="static/pricelist.css?v={{VERSION}}">
+<title>Price List (beta) · SimplyDoors</title>
+</head>
+<body>
+<header class="bar">
+  <div class="bar-left"><a href="./" title="Back to the staff app"><img src="static/logo.png" alt="SimplyDoors" class="bar-logo"></a>
+    <span class="bar-title">Price List</span><span class="beta" title="New: check prices and part numbers before relying on them">BETA</span></div>
+  <div class="bar-right"><span class="lock" title="Net cost: only people assigned to Price List can see this">🔒<span class="lt"> Net cost</span></span><span id="who"></span></div>
+</header>
+<div class="betanote">Beta: new and still being checked. Confirm prices and part numbers with the vendor before relying on them.</div>
+
+<main class="wrap plwrap">
+  <div id="gate" class="hidden"><h1>Price List</h1><p id="gateMsg"></p><p><a class="link" href="./">Back to the staff app</a></p></div>
+
+  <section id="tab-search" class="hidden">
+    <div class="search">
+      <input id="q" type="text" placeholder="Search all vendors: 2868 6 panel, part #…" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button class="clear hidden" id="qclear" type="button" aria-label="Clear">×</button>
+    </div>
+    <div class="examples" id="examples">Try:
+      <button type="button" data-ex="2868 6 panel hc">2868 6 panel HC</button>
+      <button type="button" data-ex="shaker 3080 sc">shaker 3080 SC</button>
+      <button type="button" data-ex="3068 smooth star full lite">3068 Smooth-Star full lite</button>
+      <button type="button" data-ex="sill 3-0">sill 3-0</button>
+    </div>
+    <div class="crumbs" id="crumbs"></div>
+    <div id="browse"></div>
+    <div id="resultsWrap" class="hidden">
+      <div class="chips" id="grps"></div>
+      <div class="row-label">Filters</div>
+      <div class="chips" id="filters"></div>
+      <div class="chips" id="widths"></div>
+      <div class="resbar"><span id="count"></span>
+        <select id="sort" aria-label="Sort">
+          <option value="rel">Best match</option>
+          <option value="price">Lowest price</option>
+          <option value="size">Size</option>
+        </select>
+      </div>
+      <div id="results"></div>
+    </div>
+  </section>
+
+  <section id="tab-list" class="hidden">
+    <h1>Buy list</h1>
+    <p class="muted small">Add items from Shop, then send a purchase order. One PO per vendor. Prices are net cost; the +30% non-stock rule is added automatically. The PO number comes from the job in Service Fusion.</p>
+    <div id="listbody"></div>
+    <div id="poform"></div>
+    <h2>Purchase orders</h2>
+    <div id="pastpos"></div>
+  </section>
+
+  <section id="tab-sheets" class="hidden">
+    <h1>Price sheets</h1>
+    <div id="sheetCards"></div>
+    <div class="box small">
+      <p style="margin-top:0">Each vendor's sheet is loaded by an admin in <b>Admin → Price List</b>, along with the email address its purchase orders go to. Every PO is also copied to admin@simplydoors.com.</p>
+      <p>Lines that looked wrong on the vendor's sheet (wrong part number, odd price, wrong hand) carry a <span class="tag flag">⚠ Check</span> tag with the reason.</p>
+      <p style="margin-bottom:0">Blank prices on the sheet show as <span class="tag cfp">Call for price</span>, never $0.</p>
+    </div>
+  </section>
+</main>
+
+<nav class="nav hidden" id="nav">
+  <button type="button" data-tab="search" class="on"><span class="ic">🏷️</span>Shop</button>
+  <button type="button" data-tab="list"><span class="ic">🧾</span>Buy list / PO<span class="badge hidden" id="listcount"></span></button>
+  <button type="button" data-tab="sheets"><span class="ic">📄</span>Price sheets</button>
+</nav>
+
+<div class="sheet-bg hidden" id="sheetbg"></div>
+<div class="sheet hidden" id="sheet" role="dialog" aria-modal="true"></div>
+<div class="toast hidden" id="toast"></div>
+<div id="podoc" class="hidden"></div>
+<script src="static/pricelist.js?v={{VERSION}}"></script>
+</body>
+</html>
