@@ -174,6 +174,24 @@ def test_admin_views_are_logged_and_pdf_builds(client):
     assert csv.status_code == 200 and "time_utc" in csv.text
 
 
+def test_activity_log_dates_are_local_days(client):
+    # July: Texas is UTC-5, so local Jul 15 runs from 05:00Z on the 15th to 05:00Z on the 16th
+    c = conn()
+    for at in ("2026-07-15T04:30:00Z", "2026-07-15T05:30:00Z", "2026-07-16T04:30:00Z", "2026-07-16T05:30:00Z"):
+        c.execute("INSERT INTO audit(at, actor_name, action, target) VALUES (?, 'system', 'tz_probe', ?)", (at, at))
+    login(client, "Adem Atis", "246810")
+    q = "action=tz_probe&from=2026-07-15&to=2026-07-15"
+    rows = client.get(f"/ops/api/admin/audit?{q}").json()["rows"]
+    assert sorted(r["target"] for r in rows) == ["2026-07-15T05:30:00Z", "2026-07-16T04:30:00Z"]
+    csv = client.get(f"/ops/api/admin/audit.csv?{q}").text
+    assert "2026-07-15T05:30:00Z" in csv and "2026-07-16T04:30:00Z" in csv
+    assert "2026-07-15T04:30:00Z" not in csv and "2026-07-16T05:30:00Z" not in csv
+    # winter: UTC-6
+    c.execute("INSERT INTO audit(at, actor_name, action, target) VALUES ('2026-01-10T05:30:00Z', 'system', 'tz_probe', 'jan')")
+    assert [r["target"] for r in client.get("/ops/api/admin/audit?action=tz_probe&from=2026-01-10&to=2026-01-10").json()["rows"]] == []
+    assert [r["target"] for r in client.get("/ops/api/admin/audit?action=tz_probe&from=2026-01-09&to=2026-01-09").json()["rows"]] == ["jan"]
+
+
 def test_admin_staff_changes(client):
     login(client, "Adem Atis", "246810")
     r = client.post("/ops/api/admin/staff", json={"name": "Test Person", "dept": "Warehouse / Driver",

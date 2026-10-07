@@ -729,6 +729,17 @@ def my_reports(staff=Depends(current_staff)):
 
 
 # ---------------------------------------------------------------- admin: activity log
+def _local_day_start(day: str, after: bool = False) -> str | None:
+    """Start of a YYYY-MM-DD day (or of the day after) in local time, as the UTC time the log is stored in."""
+    try:
+        d = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=geo.TZ)
+    except ValueError:
+        return None
+    if after:
+        d += timedelta(days=1)          # wall-clock day, so it's right across a daylight-saving change
+    return d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _audit_query(params) -> tuple[str, list]:
     where, args = [], []
     if params.get("person"):
@@ -737,12 +748,15 @@ def _audit_query(params) -> tuple[str, list]:
     if params.get("action"):
         where.append("action LIKE ?")
         args.append(f"%{params['action']}%")
+    # the From/To date boxes mean whole local (Texas) days
     if params.get("from"):
+        start = _local_day_start(params["from"])
         where.append("at >= ?")
-        args.append(params["from"] + "T00:00:00Z" if len(params["from"]) == 10 else params["from"])
+        args.append(start or params["from"])
     if params.get("to"):
-        where.append("at <= ?")
-        args.append(params["to"] + "T23:59:59Z" if len(params["to"]) == 10 else params["to"])
+        end = _local_day_start(params["to"], after=True)
+        where.append("at < ?" if end else "at <= ?")
+        args.append(end or params["to"])
     return (" WHERE " + " AND ".join(where)) if where else "", args
 
 
@@ -1300,8 +1314,7 @@ def offsite_status() -> dict:
 
 def nightly():
     """Every 10 min: nightly database snapshot (picked up by the off-site copy), stale-backup alert, tidy-up."""
-    from zoneinfo import ZoneInfo
-    tz = ZoneInfo(os.environ.get("TZ_DISPLAY", "America/Chicago"))
+    tz = geo.TZ
     while True:
         try:
             local_now = datetime.now(tz)
