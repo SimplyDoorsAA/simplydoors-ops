@@ -42,7 +42,7 @@
     test_mode_on: "Turned test mode on", test_mode_off: "Turned test mode off",
     log_lines_deleted: "Deleted own log lines", studio_opened: "Opened Simply Studio", test_report_deleted: "Deleted a test report",
     price_list_viewed: "Opened the Price List", po_sent: "Sent a purchase order", po_pdf_downloaded: "Opened a PO PDF",
-    vendor_changed: "Changed a vendor (Price List)", price_sheet_loaded: "Loaded a price sheet",
+    vendor_changed: "Changed a vendor (Price List)", price_sheet_loaded: "Loaded a price sheet", price_sheet_removed: "Removed a price sheet",
   };
 
   // ------------------------------------------------------------ tabs
@@ -321,12 +321,24 @@
   };
 
   // ------------------------------------------------------------ Price List (beta)
+  let PL = null;
+  // the "Replaces" choices follow the vendor picked: one line per live sheet, plus "add as a new sheet"
+  function plReplaceOptions() {
+    const v = (PL ? PL.vendors : []).find(x => x.code === $("#plVendorSel").value);
+    const sheets = v ? v.sheets : [];
+    $("#plReplaceSel").innerHTML = (sheets.length ? '<option value="">Pick one…</option>' : "") +
+      sheets.map(s => `<option value="${s.id}">Replace: ${esc(s.label)} (${s.items} items)</option>`).join("") +
+      `<option value="new">${sheets.length ? "Add as a new sheet (keep the others)" : "New sheet"}</option>`;
+  }
+  $("#plVendorSel").onchange = plReplaceOptions;
   async function loadPriceList() {
     try {
       const d = await api("api/admin/pricelist");
+      PL = d;
       $("#plPeople").innerHTML = `Can open it now: <b>${esc(d.people.join(", ") || "nobody yet")}</b>`;
       $("#plVendors").innerHTML = d.vendors.map(v => `<div class="rule"><h3>${esc(v.name)} ${v.sheet ? `<span class="badge ok">${v.sheet.items} items</span>` : '<span class="badge">no sheet</span>'}</h3>
-        ${v.sheet ? `<div class="det">Live sheet: ${esc(v.sheet.label)} · loaded ${esc(when(v.sheet.uploaded_at))} by ${esc(v.sheet.uploaded_by)}</div>` : ""}
+        ${v.sheets.map(s => `<div class="det">Live: <b>${esc(s.label)}</b> · ${s.items} items · loaded ${esc(when(s.uploaded_at))} by ${esc(s.uploaded_by)}
+          <button class="mini" type="button" data-remove="${s.id}" data-label="${esc(s.label)}">Remove</button></div>`).join("")}
         <form class="grid" data-vendor="${esc(v.code)}">
           <label>PO email (where purchase orders go)<input name="order_email" type="email" value="${esc(v.order_email)}" placeholder="orders@vendor.com"></label>
           <label>Address printed on the PO<textarea name="address" rows="3">${esc(v.address.join("\n"))}</textarea></label>
@@ -337,9 +349,18 @@
         try { await api(`api/admin/pricelist/vendors/${f.dataset.vendor}`, { method: "PUT", json: { order_email: el.order_email.value.trim(), address: el.address.value } });
           toast("Saved"); loadPriceList(); } catch (e) { fail(e); }
       });
+      $$("#plVendors [data-remove]").forEach(b => b.onclick = async () => {
+        if (!confirm(`Take “${b.dataset.label}” out of the Price List? Its items disappear for everyone. POs already sent keep their copy.`)) return;
+        try { await api(`api/admin/pricelist/sheets/${b.dataset.remove}/remove`, { method: "POST" }); toast("Removed"); loadPriceList(); }
+        catch (e) { fail(e); }
+      });
+      const keep = $("#plVendorSel").value;
       $("#plVendorSel").innerHTML = d.vendors.map(v => `<option value="${esc(v.code)}">${esc(v.name)}</option>`).join("");
+      if (keep && d.vendors.some(v => v.code === keep)) $("#plVendorSel").value = keep;
+      plReplaceOptions();
       $("#plCols").innerHTML = `First row: column names (any order). Needed: <b>${esc(d.required.join(", "))}</b>. Optional: ${esc(d.columns.filter(c => !d.required.includes(c)).join(", "))}.<br>
-        category must be one of: ${esc(d.categories.join(" · "))}. price blank = call for price. stocked: Y / N / blank. width_in / height_in: door size in inches.`;
+        category must be one of: ${esc(d.categories.join(" · "))}. price blank = call for price. stocked: Y / N / blank. width_in / height_in: door size in inches.<br>
+        Other price levels: add columns named <b>compare</b> + a name (e.g. “compare Pallet”, up to 6). They show on the item for comparison; a PO always uses price.`;
       $("#plSheets").innerHTML = d.sheets.length ? `<table class="rows"><thead><tr><th>Vendor</th><th>Sheet</th><th>Items</th><th class="hide-sm">Loaded</th></tr></thead><tbody>` +
         d.sheets.map(s => `<tr${s.active ? "" : ' style="opacity:.55"'}><td>${esc((d.vendors.find(v => v.code === s.vendor) || {}).name || s.vendor)}</td>
           <td>${esc(s.label)}${s.active ? ' <span class="badge ok">live</span>' : ""}<div class="det">${esc(s.filename)}</div></td><td>${s.items}</td>
@@ -351,13 +372,16 @@
     ev.preventDefault();
     const f = ev.target, btn = f.querySelector("button");
     const vendorName = f.elements.vendor.selectedOptions[0].textContent;
-    if (!confirm(`Load this sheet for ${vendorName}? It replaces ${vendorName}'s current items for everyone.`)) return;
+    const rep = f.elements.replace.value;
+    if (!rep) { toast("Pick which sheet this one replaces, or “Add as a new sheet”"); return; }
+    const what = rep === "new" ? `add it to ${vendorName}'s Price List` : `it replaces “${f.elements.replace.selectedOptions[0].textContent.replace(/^Replace: /, "")}” for everyone`;
+    if (!confirm(`Load this sheet? ${what[0].toUpperCase() + what.slice(1)}.`)) return;
     btn.disabled = true; btn.textContent = "Loading…";
     try {
       const r = await fetch("api/admin/pricelist/upload", { method: "POST", credentials: "same-origin", headers: { "X-SD-App": "1" }, body: new FormData(f) });
       const data = await r.json().catch(() => null);
       if (!r.ok) throw new Error((data && data.detail) || `Error ${r.status}`);
-      toast(`Loaded ${data.items} items`); f.reset(); loadPriceList();
+      toast(`Loaded ${data.items} items`); f.elements.label.value = ""; f.elements.file.value = ""; loadPriceList();
     } catch (e) { fail(e); }
     btn.disabled = false; btn.textContent = "Load sheet";
   };

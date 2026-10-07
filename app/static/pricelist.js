@@ -194,10 +194,14 @@
       <div class="meta" style="display:flex;flex-wrap:wrap;gap:6px">${tags(d)}</div>
       ${d.flag ? `<div class="flagbox">⚠ ${esc(d.flag)}<div class="small" style="font-weight:500;margin-top:4px">Confirm with the vendor before ordering.</div></div>` : ""}
       <div class="box"><div class="vendorhead"><b>Compare vendors</b><span class="small muted">net cost</span></div>
-        <div class="vrow"><div><div class="vn">${esc(vname(d.v))}</div><div class="small muted">${esc((VENDORS.find(v => v.code === d.v).sheet || {}).label || "")}</div></div>
+        <div class="vrow"><div><div class="vn">${esc(vname(d.v))}</div><div class="small muted">${esc(d.sheet || "")}</div></div>
           <div class="vp">${d.price == null ? '<span class="small muted">call</span>' : money(d.price)}</div></div>
         ${others.map(v => `<div class="vrow"><div><div class="vn">${esc(v.name)}</div><div class="small muted">${v.sheet ? "Matching across vendors comes in a later version" : "No price sheet yet"}</div></div><div class="vp"><span class="small muted">—</span></div></div>`).join("")}
       </div>
+      ${(d.compare || []).length ? `<div class="box"><div class="vendorhead"><b>Other price levels</b><span class="small muted">for comparison only</span></div>
+        ${d.compare.map(c => `<div class="vrow"><div><div class="vn">${esc(c.label)}</div>${d.price ? `<div class="small muted">${c.price < d.price ? `${money(d.price - c.price)} less` : c.price > d.price ? `${money(c.price - d.price)} more` : "same"} than your price</div>` : ""}</div>
+          <div class="vp">${money(c.price)}</div></div>`).join("")}
+        <div class="small muted" style="margin-top:6px">Your price is ${d.price == null ? "call for price" : money(d.price)}. POs always use it.</div></div>` : ""}
       <div class="box"><div class="kv">
         <div>Part #</div><div class="mono">${esc(d.sku)}</div>
         ${d.mfr ? `<div>${esc(d.brand || "Maker")} #</div><div class="mono">${esc(d.mfr)}</div>` : ""}
@@ -418,7 +422,7 @@
   // ------------------------------------------------------------ sheets tab
   function renderSheets() {
     $("#sheetCards").innerHTML = VENDORS.map(v => `<div class="vcard ${v.sheet ? "live" : ""}"><div class="vt">${esc(v.name)} ${v.sheet ? '<span class="tag stock">Live</span>' : '<span class="tag ns">No sheet yet</span>'}</div>
-      ${v.sheet ? `<div class="muted small">${esc(v.sheet.label)} · loaded ${esc(new Date(v.sheet.uploaded_at).toLocaleDateString())} by ${esc(v.sheet.uploaded_by)}</div>
+      ${v.sheet ? `${(v.sheets || []).map(s => `<div class="muted small">${esc(s.label)} · ${s.items.toLocaleString()} items · loaded ${esc(new Date(s.uploaded_at).toLocaleDateString())} by ${esc(s.uploaded_by)}</div>`).join("")}
         <div class="stats"><div class="stat"><b>${(ITEMS[v.code] || []).length.toLocaleString()}</b><span>items</span></div>
           <div class="stat"><b>${(ITEMS[v.code] || []).filter(d => d.flag).length}</b><span>flagged to check</span></div>
           <div class="stat"><b>${(ITEMS[v.code] || []).filter(d => d.price == null).length}</b><span>call for price</span></div></div>`

@@ -47,7 +47,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-33"
+APP_VERSION = "stage3-34"
 
 
 @asynccontextmanager
@@ -1343,7 +1343,7 @@ def _vendor(code: str) -> dict:
 
 @app.get("/api/pricelist/vendors")
 def pl_vendors(staff=Depends(current_pricelist)):
-    return [{k: v[k] for k in ("code", "name", "address", "sheet")} | {"can_order": bool(v["order_email"])}
+    return [{k: v[k] for k in ("code", "name", "address", "sheet", "sheets")} | {"can_order": bool(v["order_email"])}
             for v in pricelist.vendors()]
 
 
@@ -1497,6 +1497,17 @@ async def admin_pricelist_upload(request: Request, admin=Depends(current_admin))
     label = str(form.get("label", "")).strip()[:120]
     if len(label) < 3:
         raise HTTPException(422, "Give the sheet a name, like “Full Line Catalog eff. 6/15/2026”.")
+    # which live sheet this one takes the place of ("new" = add it next to them). Asked whenever the vendor has one,
+    # so a new catalog can't end up loaded twice next to the old one by mistake.
+    rep_raw = str(form.get("replace", "")).strip()
+    if rep_raw == "new":
+        replace = None
+    elif rep_raw.isdigit():
+        replace = int(rep_raw)
+    elif not v["sheets"]:
+        replace = None
+    else:
+        raise HTTPException(422, f"{v['name']} already has a live sheet. Pick the sheet this one replaces, or “Add as a new sheet”.")
     f = form.get("file")
     if f is None or not hasattr(f, "read"):
         raise HTTPException(422, "Pick the CSV file to upload.")
@@ -1510,12 +1521,30 @@ async def admin_pricelist_upload(request: Request, admin=Depends(current_admin))
             raise HTTPException(422, str(e)) from None
     finally:
         await f.close()
-    sid = await run_in_threadpool(pricelist.load_sheet, v["code"], label, str(getattr(f, "filename", ""))[:120], rows, admin["name"])
+    old = next((s["label"] for s in v["sheets"] if s["id"] == replace), None)
+    try:
+        sid = await run_in_threadpool(pricelist.load_sheet, v["code"], label, str(getattr(f, "filename", ""))[:120], rows,
+                                      admin["name"], replace)
+    except pricelist.SheetError as e:
+        raise HTTPException(422, str(e)) from None
     audit(admin["id"], admin["name"], "price_sheet_loaded", v["name"],
           {"sheet": label, "items": len(rows), "no_price": sum(1 for r in rows if r["price"] is None),
-           "flagged": sum(1 for r in rows if r["flag"])}, client_ip(request), ua(request))
-    alerts.push("Ops app: price sheet loaded", f"{admin['name']} loaded {v['name']}: {label} ({len(rows)} items).")
+           "flagged": sum(1 for r in rows if r["flag"]), **({"replaced": old} if old else {})}, client_ip(request), ua(request))
+    alerts.push("Ops app: price sheet loaded", f"{admin['name']} loaded {v['name']}: {label} ({len(rows)} items)"
+                + (f", replacing {old}." if old else "."))
     return {"ok": True, "sheet_id": sid, "items": len(rows)}
+
+
+@app.post("/api/admin/pricelist/sheets/{sid}/remove")
+def admin_pricelist_remove(sid: int, request: Request, admin=Depends(current_admin)):
+    s = pricelist.remove_sheet(sid)
+    if not s:
+        raise HTTPException(404, "That sheet isn't live any more.")
+    v = _vendor(s["vendor"])
+    audit(admin["id"], admin["name"], "price_sheet_removed", v["name"], {"sheet": s["label"], "items": s["items"]},
+          client_ip(request), ua(request))
+    alerts.push("Ops app: price sheet removed", f"{admin['name']} took {v['name']}: {s['label']} out of the Price List.")
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- housekeeping

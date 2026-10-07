@@ -2,6 +2,10 @@
 
 - Price sheets are uploaded by an admin (Admin -> Price List) as a CSV and kept only in the database on the OptiPlex.
   Vendor prices are confidential, so none are ever stored in this repository.
+- A vendor can have several live sheets (Boise Cascade: Simpson shaker, Simpson rift white oak, Steves). An upload either
+  replaces one of them or is added next to them.
+- A sheet can carry other price levels ("compare Container", "compare Pallet", ...) shown for comparison only; a PO
+  always uses the main price.
 - Only people with the Price List switch on (Admin -> Staff) can see net costs; the owner always can.
 - A purchase order's number is the PO number already on the Service Fusion job. The app never writes to Service Fusion.
 - Sending a PO emails a PDF to the vendor's order address, with a copy to admin@simplydoors.com.
@@ -41,7 +45,7 @@ CREATE TABLE IF NOT EXISTS pl_sheets (
     items INTEGER NOT NULL,
     uploaded_at TEXT NOT NULL,
     uploaded_by TEXT NOT NULL,
-    active INTEGER NOT NULL DEFAULT 1            -- the newest upload for a vendor is the live one
+    active INTEGER NOT NULL DEFAULT 1            -- 1 = live; replaced or removed sheets are kept (0) for the record
 );
 
 CREATE TABLE IF NOT EXISTS pl_items (
@@ -63,7 +67,8 @@ CREATE TABLE IF NOT EXISTS pl_items (
     hand TEXT NOT NULL DEFAULT '',
     brand TEXT NOT NULL DEFAULT '',
     page INTEGER,
-    flag TEXT NOT NULL DEFAULT ''                -- why this line needs checking with the rep
+    flag TEXT NOT NULL DEFAULT '',               -- why this line needs checking with the rep
+    compare TEXT NOT NULL DEFAULT ''             -- JSON [[label, price], ...]: other price levels, for comparison only
 );
 CREATE INDEX IF NOT EXISTS pl_items_sheet ON pl_items(sheet_id);
 
@@ -106,6 +111,8 @@ def init(c) -> None:
     for code, name, addr, email, sort in SEED_VENDORS:
         c.execute("INSERT OR IGNORE INTO pl_vendors(code, name, address, order_email, sort) VALUES (?,?,?,?,?)",
                   (code, name, addr, email, sort))
+    if "compare" not in [r[1] for r in c.execute("PRAGMA table_info(pl_items)")]:
+        c.execute("ALTER TABLE pl_items ADD COLUMN compare TEXT NOT NULL DEFAULT ''")
 
 
 # ------------------------------------------------------------------ who can see it
@@ -115,36 +122,48 @@ def allowed(staff) -> bool:
 
 
 # ------------------------------------------------------------------ vendors + sheets
+def live_sheets(vendor: str) -> list[dict]:
+    rows = conn().execute("SELECT id, label, filename, items, uploaded_at, uploaded_by FROM pl_sheets"
+                          " WHERE vendor=? AND active=1 ORDER BY id", (vendor,))
+    return [dict(r) for r in rows]
+
+
 def vendors() -> list[dict]:
     c = conn()
     out = []
     for v in c.execute("SELECT * FROM pl_vendors ORDER BY sort, code"):
-        s = c.execute("SELECT * FROM pl_sheets WHERE vendor=? AND active=1 ORDER BY id DESC LIMIT 1", (v["code"],)).fetchone()
+        sheets = live_sheets(v["code"])
+        newest = sheets[-1] if sheets else None
         out.append({"code": v["code"], "name": v["name"], "address": v["address"].split("\n") if v["address"] else [],
-                    "order_email": v["order_email"],
-                    "sheet": {"id": s["id"], "label": s["label"], "items": s["items"], "uploaded_at": s["uploaded_at"],
-                              "uploaded_by": s["uploaded_by"]} if s else None})
+                    "order_email": v["order_email"], "sheets": sheets,
+                    # all live sheets together, for the places that show one line per vendor
+                    "sheet": {"id": newest["id"], "label": " · ".join(s["label"] for s in sheets),
+                              "items": sum(s["items"] for s in sheets), "uploaded_at": newest["uploaded_at"],
+                              "uploaded_by": newest["uploaded_by"]} if newest else None})
     return out
-
-
-def _live_sheet_id(vendor: str):
-    r = conn().execute("SELECT id FROM pl_sheets WHERE vendor=? AND active=1 ORDER BY id DESC LIMIT 1", (vendor,)).fetchone()
-    return r["id"] if r else None
 
 
 ITEM_COLS = ("id", "sku", "mfr", "name", "cat", "grp", "w", "h", "th", "core", "price", "stock", "uom", "hand",
              "brand", "page", "flag")
 
 
-def items(vendor: str) -> list[dict]:
-    sid = _live_sheet_id(vendor)
-    if not sid:
+def _compare(raw: str) -> list[dict]:
+    try:
+        return [{"label": str(lbl), "price": float(p)} for lbl, p in json.loads(raw or "[]")]
+    except (ValueError, TypeError):
         return []
-    rows = conn().execute(f"SELECT {', '.join(ITEM_COLS)} FROM pl_items WHERE sheet_id=? ORDER BY id", (sid,))
+
+
+def items(vendor: str) -> list[dict]:
+    rows = conn().execute(f"SELECT {', '.join('i.' + k for k in ITEM_COLS)}, i.compare, s.label AS sheet"
+                          " FROM pl_items i JOIN pl_sheets s ON s.id=i.sheet_id"
+                          " WHERE s.vendor=? AND s.active=1 ORDER BY s.id, i.id", (vendor,))
     out = []
     for r in rows:
         d = {k: r[k] for k in ITEM_COLS}
         d["stock"] = None if d["stock"] is None else bool(d["stock"])
+        d["sheet"] = r["sheet"]
+        d["compare"] = _compare(r["compare"])
         out.append(d)
     return out
 
@@ -153,6 +172,8 @@ def items(vendor: str) -> list[dict]:
 CSV_COLUMNS = ("sku", "name", "category", "price", "group", "mfr", "width_in", "height_in", "thickness", "core",
                "stocked", "uom", "hand", "brand", "page", "flag")
 REQUIRED = ("sku", "name", "category", "price")
+COMPARE_PREFIX = "compare "   # e.g. a column named "compare Pallet": another price level, shown for comparison only
+MAX_COMPARE = 6
 
 
 class SheetError(ValueError):
@@ -191,6 +212,10 @@ def parse_sheet(raw: bytes) -> list[dict]:
     if missing:
         raise SheetError(f"The first row must name the columns. Missing: {', '.join(missing)}.")
     get = lambda row, c: (row.get(names[c]) or "").strip() if c in names else ""  # noqa: E731
+    compare_cols = [(f.strip()[len(COMPARE_PREFIX):].strip()[:30], f) for f in reader.fieldnames
+                    if f and f.strip().lower().startswith(COMPARE_PREFIX) and f.strip()[len(COMPARE_PREFIX):].strip()]
+    if len(compare_cols) > MAX_COMPARE:
+        raise SheetError(f"At most {MAX_COMPARE} “compare …” price columns.")
     out = []
     for i, row in enumerate(reader, start=2):
         if not any((v or "").strip() for v in row.values() if isinstance(v, str)):
@@ -204,6 +229,11 @@ def parse_sheet(raw: bytes) -> list[dict]:
         price = _num(get(row, "price"), "price", i)
         stocked = get(row, "stocked").upper()
         page = _num(get(row, "page"), "page", i)
+        compare = []
+        for lbl, col in compare_cols:
+            n = _num((row.get(col) or "").strip(), f"“{lbl}” price", i)
+            if n:
+                compare.append([lbl, round(n, 2)])
         out.append({
             "sku": sku, "mfr": get(row, "mfr")[:60], "name": get(row, "name")[:160] or sku, "cat": cat,
             "grp": get(row, "group")[:120], "w": _num(get(row, "width_in"), "width_in", i) or 0,
@@ -212,6 +242,7 @@ def parse_sheet(raw: bytes) -> list[dict]:
             "stock": 1 if stocked in ("Y", "YES", "1", "TRUE") else 0 if stocked in ("N", "NO", "0", "FALSE") else None,
             "uom": get(row, "uom")[:30], "hand": get(row, "hand")[:4], "brand": get(row, "brand")[:40],
             "page": int(page) if page is not None else None, "flag": get(row, "flag")[:300],
+            "compare": json.dumps(compare) if compare else "",
         })
     if not out:
         raise SheetError("The file has no items.")
@@ -229,26 +260,56 @@ def parse_sheet(raw: bytes) -> list[dict]:
     return out
 
 
-def load_sheet(vendor: str, label: str, filename: str, rows: list[dict], who: str) -> int:
+def load_sheet(vendor: str, label: str, filename: str, rows: list[dict], who: str, replace=None) -> int:
+    """Load a sheet for a vendor. replace = id of one of the vendor's live sheets to take the place of, or None to add
+    this sheet next to the ones already live. Raises SheetError for a sheet id that isn't this vendor's live sheet."""
     c = conn()
     c.execute("BEGIN IMMEDIATE")
     try:
-        c.execute("UPDATE pl_sheets SET active=0 WHERE vendor=?", (vendor,))
+        live = {s["id"]: s for s in live_sheets(vendor)}
+        if replace is not None:
+            if replace not in live:
+                raise SheetError("The sheet to replace isn't live any more. Reload the page and pick again.")
+            c.execute("UPDATE pl_sheets SET active=0 WHERE id=?", (replace,))
+        if any(s["label"].strip().lower() == label.strip().lower() for sid_, s in live.items() if sid_ != replace):
+            raise SheetError(f"There's already a live sheet called “{label}”. Pick it under “Replaces” instead.")
         cur = c.execute("INSERT INTO pl_sheets(vendor, label, filename, items, uploaded_at, uploaded_by) VALUES (?,?,?,?,?,?)",
                         (vendor, label, filename, len(rows), now_iso(), who))
         sid = cur.lastrowid
         c.executemany(
             "INSERT INTO pl_items(sheet_id, vendor, sku, mfr, name, cat, grp, w, h, th, core, price, stock, uom, hand, brand,"
-            " page, flag) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " page, flag, compare) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [(sid, vendor, r["sku"], r["mfr"], r["name"], r["cat"], r["grp"], r["w"], r["h"], r["th"], r["core"],
-              r["price"], r["stock"], r["uom"], r["hand"], r["brand"], r["page"], r["flag"]) for r in rows])
-        # old sheets' items aren't needed any more (every sent PO keeps its own copy of its lines and prices)
-        c.execute("DELETE FROM pl_items WHERE vendor=? AND sheet_id != ?", (vendor, sid))
+              r["price"], r["stock"], r["uom"], r["hand"], r["brand"], r["page"], r["flag"], r.get("compare", ""))
+             for r in rows])
+        _drop_dead_items(c, vendor)
         c.execute("COMMIT")
     except Exception:
         c.execute("ROLLBACK")
         raise
     return sid
+
+
+def _drop_dead_items(c, vendor: str) -> None:
+    # items of replaced or removed sheets aren't needed any more (every sent PO keeps its own copy of its lines)
+    c.execute("DELETE FROM pl_items WHERE vendor=? AND sheet_id IN (SELECT id FROM pl_sheets WHERE vendor=? AND active=0)",
+              (vendor, vendor))
+
+
+def remove_sheet(sheet_id: int):
+    """Take a live sheet out of the Price List. Returns the sheet row, or None if it wasn't live."""
+    c = conn()
+    c.execute("BEGIN IMMEDIATE")
+    try:
+        s = c.execute("SELECT * FROM pl_sheets WHERE id=? AND active=1", (sheet_id,)).fetchone()
+        if s:
+            c.execute("UPDATE pl_sheets SET active=0 WHERE id=?", (sheet_id,))
+            _drop_dead_items(c, s["vendor"])
+        c.execute("COMMIT")
+    except Exception:
+        c.execute("ROLLBACK")
+        raise
+    return s
 
 
 # ------------------------------------------------------------------ purchase orders
@@ -271,16 +332,14 @@ def size_label(w: float, h: float) -> str:
 
 
 def build_lines(vendor: str, wanted: list) -> tuple[list[dict], float, str]:
-    """wanted: [{item_id, qty}] from the phone. Prices come from the live sheet only."""
-    sid = _live_sheet_id(vendor)
-    if not sid:
+    """wanted: [{item_id, qty}] from the phone. Prices come from the vendor's live sheets only."""
+    if not live_sheets(vendor):
         raise ValueError("No price sheet is loaded for this vendor.")
     if not wanted:
         raise ValueError("The buy list is empty.")
     if len(wanted) > MAX_LINES:
         raise ValueError(f"A PO can have at most {MAX_LINES} lines.")
     c = conn()
-    label = c.execute("SELECT label FROM pl_sheets WHERE id=?", (sid,)).fetchone()["label"]
     qty_by_id: dict[int, int] = {}
     for w in wanted:
         try:
@@ -290,18 +349,21 @@ def build_lines(vendor: str, wanted: list) -> tuple[list[dict], float, str]:
         if not 1 <= qty <= MAX_QTY:
             raise ValueError(f"Quantities must be 1 to {MAX_QTY}.")
         qty_by_id[iid] = qty_by_id.get(iid, 0) + qty
-    lines, total = [], 0.0
+    lines, total, labels = [], 0.0, []
     for iid, qty in qty_by_id.items():
-        r = c.execute("SELECT * FROM pl_items WHERE id=? AND sheet_id=?", (iid, sid)).fetchone()
+        r = c.execute("SELECT i.*, s.label AS sheet_label FROM pl_items i JOIN pl_sheets s ON s.id=i.sheet_id"
+                      " WHERE i.id=? AND s.vendor=? AND s.active=1", (iid, vendor)).fetchone()
         if not r:
             raise ValueError("An item on the buy list isn't on the current price sheet any more. Remove it and find it again.")
         it = dict(r)
+        if it["sheet_label"] not in labels:
+            labels.append(it["sheet_label"])
         calc = line_calc(it, min(qty, MAX_QTY))
         lines.append({"item_id": iid, "sku": it["sku"], "name": it["name"], "size": size_label(it["w"], it["h"]),
                       "qty": min(qty, MAX_QTY), "price": it["price"], "uom": it["uom"], "surcharge": calc["surcharge"],
                       "total": calc["total"] if it["price"] is not None else None, "flag": it["flag"]})
         total += calc["total"] if it["price"] is not None else 0
-    return lines, round(total, 2), label
+    return lines, round(total, 2), " · ".join(labels)
 
 
 def po_out(r, with_lines=False) -> dict:
