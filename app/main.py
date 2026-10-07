@@ -46,7 +46,13 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-31"
+APP_VERSION = "stage3-32"
+# Which GitHub commit is running: deploy/autodeploy.sh writes it here ("33f17de Merge pull request ...").
+try:
+    with open(os.path.join(os.path.dirname(__file__), "COMMIT")) as _f:
+        APP_COMMIT = _f.read().strip()[:120]
+except OSError:
+    APP_COMMIT = ""
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -173,7 +179,7 @@ def static_file(name: str):
 @app.get("/healthz", include_in_schema=False)
 def healthz():
     conn().execute("SELECT 1").fetchone()
-    return {"ok": True, "version": APP_VERSION}
+    return {"ok": True, "version": APP_VERSION, "commit": APP_COMMIT.split(" ")[0]}
 
 
 # ---------------------------------------------------------------- sign in
@@ -1163,7 +1169,7 @@ def admin_status(admin=Depends(current_admin)):
     du = shutil.disk_usage(DATA_DIR)
     photos_bytes = c.execute("SELECT COALESCE(SUM(bytes),0) FROM photos").fetchone()[0]
     return {
-        "version": APP_VERSION, "email_configured": mailer.configured(), "email_from": mailer.SMTP_USER,
+        "version": APP_VERSION, "commit": APP_COMMIT, "email_configured": mailer.configured(), "email_from": mailer.SMTP_USER,
         "alerts_configured": bool(alerts.NTFY_URL),
         "emails": {"pending": counts.get("pending", 0), "sent": counts.get("sent", 0), "failed": counts.get("failed", 0)},
         "recent_emails": [dict(r) for r in recent], "staff_without_pin": no_pin,
