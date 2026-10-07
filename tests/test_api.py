@@ -1079,6 +1079,7 @@ def fake_sf():
     yield sfjobs
     sfjobs.API, sfjobs.CLIENT_ID, sfjobs.CLIENT_SECRET = old
     srv.shutdown()
+    srv.server_close()
 
 
 def test_job_lookup_off_until_connected(client):

@@ -22,6 +22,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import warnings
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -49,7 +50,14 @@ MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
 APP_VERSION = "stage3-32"
 
-app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+@asynccontextmanager
+async def lifespan(_app):
+    startup()          # defined at the bottom: database, mail and job-lookup workers, nightly snapshot
+    yield
+
+
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
 
 # ---------------------------------------------------------------- plumbing
@@ -464,64 +472,64 @@ async def submit_report(slug: str, request: Request, staff=Depends(current_staff
     if spec.get("admin_only") and not staff["is_admin"]:
         audit(staff["id"], staff["name"], "admin_denied", f"form:{slug}", None, client_ip(request), ua(request))
         raise HTTPException(403, "Only admins can file this form.")
-    form = await request.form()
-    submission_id = str(form.get("submission_id", ""))
-    if not re.fullmatch(r"[a-zA-Z0-9-]{8,64}", submission_id):
-        raise HTTPException(400, "Missing submission id")
+    async with request.form() as form:      # closes the uploads' temp files when done
+        submission_id = str(form.get("submission_id", ""))
+        if not re.fullmatch(r"[a-zA-Z0-9-]{8,64}", submission_id):
+            raise HTTPException(400, "Missing submission id")
 
-    c = conn()
-    existing = c.execute("SELECT id, receipt, staff_id FROM reports WHERE submission_id=?", (submission_id,)).fetchone()
-    if existing:
-        if existing["staff_id"] != staff["id"]:
-            raise HTTPException(409, "Submission id already used")
-        return {"ok": True, "receipt": existing["receipt"], "duplicate": True}
+        c = conn()
+        existing = c.execute("SELECT id, receipt, staff_id FROM reports WHERE submission_id=?", (submission_id,)).fetchone()
+        if existing:
+            if existing["staff_id"] != staff["id"]:
+                raise HTTPException(409, "Submission id already used")
+            return {"ok": True, "receipt": existing["receipt"], "duplicate": True}
 
-    raw = {k: v for k, v in form.items() if isinstance(v, str)}
-    data, errors = clean(form_type, raw)
-    kept = []
-    if spec.get("kind") == "measure":
-        _measure_people(c, staff, data, str(form.get("revision_of") or "").strip(), errors)
+        raw = {k: v for k, v in form.items() if isinstance(v, str)}
+        data, errors = clean(form_type, raw)
+        kept = []
+        if spec.get("kind") == "measure":
+            _measure_people(c, staff, data, str(form.get("revision_of") or "").strip(), errors)
 
-    photo_blobs = []
-    for ps in photo_slots(form_type, data):
-        slot, _label = ps["slot"], ps["label"]
-        f = form.get(slot)
-        if f is None or isinstance(f, str):
-            continue
-        if f.size is not None and f.size > MAX_PHOTO_BYTES:
-            errors.append(f"{_label} is too large.")
-            continue
-        b = await f.read(MAX_PHOTO_BYTES + 1)
-        if not b:
-            continue
-        if len(b) > MAX_PHOTO_BYTES:
-            errors.append(f"{_label} is too large.")
-            continue
-        if not await run_in_threadpool(_check_photo, b):
-            errors.append(f"{_label} could not be read as a photo. Please take it again.")
-            continue
-        g = None if ps["signature"] else geo.parse_geo(str(form.get(f"geo_{slot}") or ""), now_iso())
-        photo_blobs.append((slot, b, g))
-    got = {s for s, _, _ in photo_blobs}
-    for g in spec.get("photos", []):
-        cond = g.get("show_if")
-        shown = not cond or str(raw.get(cond["field"]) or "") in cond["in"]
-        if g.get("signature") and g.get("required") and shown and g["signature"] not in got:
-            errors.append(f"{g['title']} is needed.")
-    if spec.get("kind") == "measure":
-        kept = _kept_photos(c, staff, form.get("keep"), {p["slot"] for p in photo_slots(form_type, data)} - got, errors)
-    for title, slots, need in photo_minimums(form_type):
-        have = len(got.intersection(slots))
-        if have < need:
-            errors.append(f"Add {need - have} more photo{'s' if need - have > 1 else ''} under “{title}”.")
-    if errors:
-        raise HTTPException(422, " ".join(errors))
+        photo_blobs = []
+        for ps in photo_slots(form_type, data):
+            slot, _label = ps["slot"], ps["label"]
+            f = form.get(slot)
+            if f is None or isinstance(f, str):
+                continue
+            if f.size is not None and f.size > MAX_PHOTO_BYTES:
+                errors.append(f"{_label} is too large.")
+                continue
+            b = await f.read(MAX_PHOTO_BYTES + 1)
+            if not b:
+                continue
+            if len(b) > MAX_PHOTO_BYTES:
+                errors.append(f"{_label} is too large.")
+                continue
+            if not await run_in_threadpool(_check_photo, b):
+                errors.append(f"{_label} could not be read as a photo. Please take it again.")
+                continue
+            g = None if ps["signature"] else geo.parse_geo(str(form.get(f"geo_{slot}") or ""), now_iso())
+            photo_blobs.append((slot, b, g))
+        got = {s for s, _, _ in photo_blobs}
+        for g in spec.get("photos", []):
+            cond = g.get("show_if")
+            shown = not cond or str(raw.get(cond["field"]) or "") in cond["in"]
+            if g.get("signature") and g.get("required") and shown and g["signature"] not in got:
+                errors.append(f"{g['title']} is needed.")
+        if spec.get("kind") == "measure":
+            kept = _kept_photos(c, staff, form.get("keep"), {p["slot"] for p in photo_slots(form_type, data)} - got, errors)
+        for title, slots, need in photo_minimums(form_type):
+            have = len(got.intersection(slots))
+            if have < need:
+                errors.append(f"Add {need - have} more photo{'s' if need - have > 1 else ''} under “{title}”.")
+        if errors:
+            raise HTTPException(422, " ".join(errors))
 
-    started_at = str(form.get("started_at", ""))[:40] or None
-    queued = 1 if str(form.get("queued", "")) == "1" else 0
-    is_test = bool(staff["is_owner"]) and str(form.get("is_test", "")) == "1"   # only the owner can file test reports
-    return await run_in_threadpool(_store_report, form_type, spec, staff, submission_id, data, photo_blobs,
-                                   started_at, queued, client_ip(request), ua(request), kept, is_test)
+        started_at = str(form.get("started_at", ""))[:40] or None
+        queued = 1 if str(form.get("queued", "")) == "1" else 0
+        is_test = bool(staff["is_owner"]) and str(form.get("is_test", "")) == "1"   # only the owner can file test reports
+        return await run_in_threadpool(_store_report, form_type, spec, staff, submission_id, data, photo_blobs,
+                                       started_at, queued, client_ip(request), ua(request), kept, is_test)
 
 
 def _next_receipt(c, pre: str) -> str:
@@ -1413,7 +1421,6 @@ def nightly():
         time.sleep(600)
 
 
-@app.on_event("startup")
 def startup():
     os.makedirs(PHOTO_DIR, exist_ok=True)
     init_db()
