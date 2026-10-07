@@ -89,10 +89,12 @@
       <h3>Vendors</h3>
       <div id="plVendors"></div>
       <h3>Load a price sheet</h3>
-      <p class="muted small">A CSV file with one item per line. Loading a sheet replaces that vendor's current items (POs already sent keep their own copy).
+      <p class="muted small">A CSV file with one item per line. A vendor can have several sheets (e.g. Boise Cascade: Simpson shaker, Steves).
+        A new upload either replaces one of them or is added next to them. POs already sent keep their own copy.
         Prices stay on this server only; they are never put on GitHub.</p>
       <form id="plUpload" class="grid">
         <label>Vendor<select name="vendor" id="plVendorSel"></select></label>
+        <label>Replaces<select name="replace" id="plReplaceSel"></select></label>
         <label>Sheet name<input name="label" placeholder="e.g. Full Line Catalog eff. 6/15/2026" required></label>
         <label>CSV file<input name="file" type="file" accept=".csv,text/csv" required></label>
         <button class="mini primary" type="submit">Load sheet</button>

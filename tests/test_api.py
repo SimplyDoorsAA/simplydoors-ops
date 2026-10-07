@@ -1309,8 +1309,9 @@ SHEET_CSV = (
 ).encode()
 
 
-def _upload(c, csv_bytes, vendor="WG", label="Test sheet eff. 1/1/2026"):
-    return c.post("/ops/api/admin/pricelist/upload", data={"vendor": vendor, "label": label},
+def _upload(c, csv_bytes, vendor="WG", label="Test sheet eff. 1/1/2026", replace=None):
+    data = {"vendor": vendor, "label": label} | ({"replace": str(replace)} if replace is not None else {})
+    return c.post("/ops/api/admin/pricelist/upload", data=data,
                   files={"file": ("sheet.csv", csv_bytes, "text/csv")}, headers=H)
 
 
@@ -1338,7 +1339,10 @@ def test_price_sheet_upload_checks_the_file(client):
     assert r.status_code == 200 and r.json()["items"] == 2                # vendor typo: both kept, both flagged
     flags = [i["flag"] for i in client.get("/ops/api/pricelist/items?vendor=WG", headers=H).json()["items"]]
     assert flags == ["Same part number is used for another item on this sheet"] * 2
+    first = r.json()["sheet_id"]
     r = _upload(client, SHEET_CSV)
+    assert r.status_code == 422 and "Pick the sheet this one replaces" in r.json()["detail"]   # never loaded twice by mistake
+    r = _upload(client, SHEET_CSV, replace=first)
     assert r.status_code == 200 and r.json()["items"] == 3
     items = client.get("/ops/api/pricelist/items?vendor=WG", headers=H).json()["items"]
     by = {i["sku"]: i for i in items}
@@ -1443,3 +1447,51 @@ def test_owner_test_mode_po_goes_only_to_the_owner(client, monkeypatch):
         assert len(client.get("/ops/api/pricelist/po-check?po=PO-778-A", headers=H).json()["sent_before"]) == 1
     finally:
         client.put("/ops/api/owner/test-mode", json={"on": False}, headers=H)
+
+
+def test_vendor_can_have_several_sheets_with_compare_prices(client, monkeypatch):
+    from app import alerts, pricelist
+    monkeypatch.setattr(alerts, "push", lambda *a, **k: None)
+    login(client, "Adem Atis", "246810")
+    shaker = ("sku,name,category,price,compare Container,compare Pallet\n"
+              "TST-SH-1,Test shaker 2868,Interior stile & rail,80.00,64.00,70.50\n"
+              "TST-SH-2,Test shaker 3068,Interior stile & rail,90.00,,\n").encode()
+    oak = b"sku,name,category,price\nTST-OAK-1,Test oak 2868,Interior stile & rail,250.00\n"
+    r = _upload(client, shaker, vendor="BC", label="Test shaker")
+    assert r.status_code == 200, r.text
+    a = r.json()["sheet_id"]
+    assert _upload(client, oak, vendor="BC", label="Test oak").status_code == 422          # must say replace or add
+    r = _upload(client, oak, vendor="BC", label="Test oak", replace="new")
+    assert r.status_code == 200
+    b = r.json()["sheet_id"]
+    r = _upload(client, oak, vendor="BC", label="test OAK", replace="new")
+    assert r.status_code == 422 and "already a live sheet" in r.json()["detail"]
+    r = _upload(client, b"sku,name,category,price,compare Pallet\nX,Y,Interior molded,1,N/A\n", vendor="BC", label="Bad", replace="new")
+    assert r.status_code == 422 and "isn't a number" in r.json()["detail"]
+    v = next(x for x in client.get("/ops/api/pricelist/vendors", headers=H).json() if x["code"] == "BC")
+    assert [s["label"] for s in v["sheets"]] == ["Test shaker", "Test oak"] and v["sheet"]["items"] == 3
+    by = {i["sku"]: i for i in client.get("/ops/api/pricelist/items?vendor=BC", headers=H).json()["items"]}
+    assert by["TST-SH-1"]["compare"] == [{"label": "Container", "price": 64.0}, {"label": "Pallet", "price": 70.5}]
+    assert by["TST-SH-2"]["compare"] == [] and by["TST-OAK-1"]["sheet"] == "Test oak"
+    lines, total, label = pricelist.build_lines("BC", [{"item_id": by["TST-SH-1"]["id"], "qty": 2},
+                                                       {"item_id": by["TST-OAK-1"]["id"], "qty": 1}])
+    assert total == 410.0 and label == "Test shaker · Test oak"                               # PO uses the main price
+    # replacing one sheet leaves the other alone
+    r = _upload(client, oak.replace(b"250.00", b"260.00"), vendor="BC", label="Test oak v2", replace=b)
+    assert r.status_code == 200
+    by2 = {i["sku"]: i for i in client.get("/ops/api/pricelist/items?vendor=BC", headers=H).json()["items"]}
+    assert set(by2) == {"TST-SH-1", "TST-SH-2", "TST-OAK-1"} and by2["TST-OAK-1"]["price"] == 260.0
+    assert by2["TST-SH-1"]["id"] == by["TST-SH-1"]["id"]                                       # buy lists stay valid
+    assert _upload(client, oak, vendor="BC", label="X", replace=b).status_code == 422          # b isn't live any more
+    with pytest.raises(ValueError):                                                            # old oak item is gone
+        pricelist.build_lines("BC", [{"item_id": by["TST-OAK-1"]["id"], "qty": 1}])
+    # removing a sheet
+    login(client, "Jaime Mendoza", "135790")
+    assert client.post(f"/ops/api/admin/pricelist/sheets/{a}/remove", headers=H).status_code == 403
+    login(client, "Adem Atis", "246810")
+    assert client.post(f"/ops/api/admin/pricelist/sheets/{a}/remove", headers=H).json()["ok"]
+    assert client.post(f"/ops/api/admin/pricelist/sheets/{a}/remove", headers=H).status_code == 404
+    left = [i["sku"] for i in client.get("/ops/api/pricelist/items?vendor=BC", headers=H).json()["items"]]
+    assert left == ["TST-OAK-1"]
+    assert conn().execute("SELECT COUNT(*) FROM pl_items WHERE sheet_id=?", (a,)).fetchone()[0] == 0
+    assert conn().execute("SELECT COUNT(*) FROM audit WHERE action='price_sheet_removed'").fetchone()[0] == 1

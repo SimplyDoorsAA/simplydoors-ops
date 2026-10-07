@@ -40,9 +40,12 @@ GitHub Pages portal + Google Apps Script, one form at a time.
 - **Who sees it:** only people with *Can open the Price List* switched on (Admin → Staff & PINs → Edit), plus the owner.
   Everyone else gets a 403 from every price endpoint.
 - **Price sheets are never in this repository** (it's public and vendor prices are confidential). An admin loads each vendor's
-  sheet as a CSV in **Admin → Price List**; it lives only in the database on the OptiPlex. Loading a sheet replaces that
-  vendor's items. Columns: `sku, name, category, price` (required) plus `group, mfr, width_in, height_in, thickness, core,
-  stocked, uom, hand, brand, page, flag`. A blank price shows as "Call for price"; a part number used twice is kept and flagged.
+  sheet as a CSV in **Admin → Price List**; it lives only in the database on the OptiPlex. A vendor can have several live
+  sheets (Boise Cascade: Simpson shaker, Simpson rift white oak, Steves); each upload says which one it replaces, or is added
+  next to them, and a sheet can be removed. Columns: `sku, name, category, price` (required) plus `group, mfr, width_in,
+  height_in, thickness, core, stocked, uom, hand, brand, page, flag`, and up to 6 `compare <name>` columns (e.g.
+  `compare Pallet`): other price levels shown on the item for comparison only; a PO always uses `price`. A blank price
+  shows as "Call for price"; a part number used twice is kept and flagged.
 - **Shop:** pick a vendor, then a category, then items (or search). Flagged lines (wrong part number, odd price on the
   vendor's sheet) show **⚠ Check** with the reason. Non-stock interior slabs add 30% under 10 of one size/style.
 - **Purchase orders:** the buy list (kept on that phone) becomes a PO for one vendor. The PO number is the **PO number already
