@@ -14,7 +14,8 @@ GitHub Pages portal + Google Apps Script, one form at a time.
   1. runs the tests again on the server;
   2. swaps in the new code and rebuilds;
   3. checks health, and if the new version isn't healthy, puts the previous version back.
-  A commit that fails is skipped until a newer one lands.
+  A commit whose tests fail is skipped until a newer one lands. If only the package download (no internet) or the
+  copy of the running code failed, nothing changes and it tries again 5 minutes later (one alert, not one per try).
 - It never touches `.env`, the data folder, docker-compose or Tailscale. A change that needs a new setting or a
   compose change still needs `deploy/install.sh` (or a setup script like `sf-setup.sh`) run on the server.
 - One-time setup, on the OptiPlex as `adem`:

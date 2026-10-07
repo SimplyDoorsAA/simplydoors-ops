@@ -4,7 +4,8 @@
 #   1. runs the tests on the server, in a throwaway container (fail = nothing changes);
 #   2. keeps a copy of the running code, swaps in the new code, rebuilds and checks health;
 #   3. if the new version isn't healthy, puts the previous code back and rebuilds that.
-# Your phone gets an ntfy alert after every update or failure. A commit that failed is skipped until a newer one lands.
+# Your phone gets an ntfy alert after every update or failure. A commit whose tests failed is skipped until a newer
+# one lands; if only the package install (pip/internet) or the copy of the running code failed, it tries again next run.
 # Never touches .env, the data folder, docker-compose files or Tailscale: changes to those still need install.sh.
 # Pause:  touch ~/ai-server/opsapp-autodeploy.pause     Resume: rm ~/ai-server/opsapp-autodeploy.pause
 # Log:    ~/opsapp-autodeploy.log                        Set up: deploy/autodeploy-setup.sh
@@ -39,19 +40,32 @@ main() {
   echo; echo "=== $(date '+%F %T') updating ${OLD:0:7} -> $SHORT: $SUBJECT"
 
   echo "Running the tests"
-  if ! docker run --rm -v "$SRC":/src:ro python:3.12-slim sh -c \
-      'cp -r /src /t && cd /t && pip install -q --root-user-action=ignore -r requirements.txt pytest aiosmtpd httpx \
-       && python -m pytest -q -p no:cacheprovider tests'; then
+  # exit 90 = the packages couldn't be installed (no internet, PyPI down): not the code's fault
+  local RC=0
+  docker run --rm -v "$SRC":/src:ro python:3.12-slim sh -c \
+      'cp -r /src /t && cd /t && pip install -q --root-user-action=ignore -r requirements.txt pytest aiosmtpd httpx || exit 90
+       python -m pytest -q -p no:cacheprovider tests' || RC=$?
+  if [ "$RC" = 90 ] || [ "$RC" -ge 125 ]; then     # 125+ = Docker itself couldn't run it
+    echo "Couldn't install the packages or start Docker (exit $RC); trying again next run"
+    once "install $NEW" && alert "Ops app update waiting" "Couldn't install the packages to test $SHORT (no internet, or PyPI/Docker trouble). The app is unchanged; it tries again every 5 minutes. Log: ~/opsapp-autodeploy.log" default
+    return 1
+  elif [ "$RC" != 0 ]; then
     echo "$NEW" > "$FAILED"
     alert "Ops app NOT updated" "Tests failed on $SHORT ($SUBJECT). The app is unchanged. Log: ~/opsapp-autodeploy.log" high
     return 1
   fi
 
   echo "Swapping in the new code (copy of the current code: $BACKUP)"
-  tar czf "$BACKUP" -C "$APPDIR" --exclude=./.env .
+  # written under a temp name, so a failed copy never replaces the last good one
+  if ! tar czf "$BACKUP.part" -C "$APPDIR" --exclude=./.env . || ! mv -f "$BACKUP.part" "$BACKUP"; then
+    rm -f "$BACKUP.part"
+    echo "Couldn't save a copy of the running code; nothing changed"
+    once "backup $NEW" && alert "Ops app NOT updated" "Couldn't save a copy of the running code before updating to $SHORT (disk full?), so nothing was changed. It tries again every 5 minutes. Log: ~/opsapp-autodeploy.log" high
+    return 1
+  fi
   replace_code "$APPDIR" "$SRC"
   if (cd "$STACK" && docker compose up -d --build opsapp) && healthy "$PORT"; then
-    echo "$NEW" > "$STATE"; rm -f "$FAILED"
+    echo "$NEW" > "$STATE"; rm -f "$FAILED" "$STACK/opsapp-autodeploy-noted"
     echo "Updated to $SHORT"
     alert "Ops app updated" "$SHORT: $SUBJECT" default
     return 0
@@ -83,6 +97,13 @@ healthy() {
     sleep 3
   done
   return 1
+}
+
+# True the first time a problem is seen for a commit, so retrying every 5 minutes doesn't alert every time.
+once() {
+  local NOTED="$HOME/ai-server/opsapp-autodeploy-noted"
+  [ "$(cat "$NOTED" 2>/dev/null)" = "$1" ] && return 1
+  echo "$1" > "$NOTED"
 }
 
 # Phone alert through the same ntfy the app uses (its .env points at it from inside Docker).
