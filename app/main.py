@@ -18,7 +18,6 @@ import sqlite3
 import threading
 import time
 import traceback
-import uuid
 from datetime import datetime, timedelta, timezone
 
 import warnings
@@ -38,7 +37,7 @@ from . import alerts, auth, geo, mailer, sfjobs
 from .db import DATA_DIR, DB_PATH, audit, conn, delete_audit_rows, get_setting, init_db, now_iso, set_setting
 from . import forms as forms_mod
 from .forms import (FORM_BY_SLUG, FORMS, EXTRA_RULES, LIST_LABELS, DEFAULT_LISTS, clean, get_list, photo_minimums,
-                    photo_slots, public_spec, recipients_for, set_list, split_recipients, subject_for, summary, visible_forms)
+                    photo_slots, public_spec, set_list, split_recipients, subject_for, visible_forms)
 from .pdf import build_pdf
 
 BASE_PATH = os.environ.get("BASE_PATH", "/ops").rstrip("/")

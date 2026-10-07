@@ -92,11 +92,10 @@ def build_pdf(report, staff_name: str, data: dict, photos: list) -> bytes:
 
     spec = FORMS.get(form_type, {})
     rows = [("Submitted by", staff_name)] + display_rows(form_type, data)
-    # Done/N/A checklists get their own compact grid; "tail" fields (customer acceptance) go with the signature
-    done_items = {t for f in spec.get("fields", []) if f["type"] == "donena" for _, t in f["items"]}
+    # "tail" fields (customer acceptance) go with the signature
     tail_labels = {f["label"] for f in spec.get("fields", []) if f.get("tail")}
     acceptance = [(a, b) for a, b in rows if a in tail_labels]
-    rows = [(a, b) for a, b in rows if a not in done_items and a not in tail_labels]
+    rows = [(a, b) for a, b in rows if a not in tail_labels]
     tbl = Table([[Paragraph(escape(a), lab), Paragraph(escape(str(b)).replace("\n", "<br/>"), cell)] for a, b in rows],
                 colWidths=[2.3 * inch, 5.0 * inch], splitInRow=1)
     tbl.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
@@ -106,17 +105,6 @@ def build_pdf(report, staff_name: str, data: dict, photos: list) -> bytes:
                             + [("BACKGROUND", (1, i), (1, i), colors.HexColor("#fdecea"))
                                for i, (a, b) in enumerate(rows) if b == "DEFECTIVE" or (a == "Defective items" and b != "None")]))
     story.append(tbl)
-    for f in spec.get("fields", []):
-        if f["type"] == "donena" and data.get(f["key"]):
-            res = data[f["key"]]
-            tick = ParagraphStyle("tick", parent=cell, fontSize=9, leading=11)
-            cells = [Paragraph(('<font color="#2f6f1f"><b>DONE</b></font>' if v == "Done" else '<font color="#8a949e"><b>N/A</b></font>')
-                               + f"&nbsp;&nbsp;{escape(k)}", tick) for k, v in res.items()]
-            grid_rows = [cells[i:i + 2] + [""] * (2 - len(cells[i:i + 2])) for i in range(0, len(cells), 2)]
-            ct = Table(grid_rows, colWidths=[3.65 * inch] * 2)
-            ct.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LINEBELOW", (0, 0), (-1, -1), 0.4, colors.HexColor("#e3e7ea")),
-                                    ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
-            story += [Spacer(1, 10), Paragraph(escape(f["label"]), h2), ct]
 
     slots = {s["slot"]: s for s in photo_slots(form_type, data)} if form_type in FORMS else {}
     labels = {k: v["label"] for k, v in slots.items()}
@@ -186,16 +174,6 @@ def _footer(form_type, report, extra=""):
         canvas.drawRightString(letter[0] - 0.6 * inch, 0.35 * inch, f"Page {d.page}")
         canvas.restoreState()
     return footer
-
-
-def _kv(rows, cell, lab, widths=(2.0, 5.3), shade=None):
-    t = Table([[Paragraph(escape(a), lab), Paragraph(escape(str(b)).replace("\n", "<br/>"), cell)] for a, b in rows],
-              colWidths=[widths[0] * inch, widths[1] * inch], splitInRow=1)
-    t.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
-                           ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#f2f9eb")),
-                           ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                           ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4)] + (shade or [])))
-    return t
 
 
 def _aspect(path) -> float:

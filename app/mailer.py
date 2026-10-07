@@ -12,7 +12,7 @@ from html import escape
 from . import alerts
 from .db import audit, conn, now_iso
 from . import measure as measure_mod
-from .forms import FORMS, display_rows, email_rows
+from .forms import FORMS, email_rows
 from .pdf import build_customer_pdf, build_pdf, local_time
 
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")

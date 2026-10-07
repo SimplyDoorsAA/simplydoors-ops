@@ -472,7 +472,6 @@
   const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
   const okdefName = (key, group, item) => `${key}:${slugify(group)}:${slugify(item)}`;
   const allSlots = () => spec.photos.flatMap(g => [...(g.slots || []).map(s => s[0]), ...(g.signature ? [g.signature] : [])]);
-  const slotLabel = (slot) => { for (const g of spec.photos) { for (const [s, l] of (g.slots || [])) if (s === slot) return l; if (g.signature === slot) return "Signature"; } return slot; };
 
   const NAME_KEYS = ["customer", "signer", "received_by", "job_customer"];   // people's names: capitalize each word
   function fieldHTML(f) {
@@ -508,15 +507,6 @@
       case "checks":
         inner = `<fieldset><legend>${ask}</legend>${help}` +
           f.items.map(([k, t]) => `<label class="check"><input type="checkbox" name="${esc(k)}"><span>${esc(t)}</span></label>`).join("") + `</fieldset>`;
-        break;
-      case "donena":
-        inner = `<div class="okdef-head"><b>${esc(f.label)}${req}</b><button type="button" class="link" data-allok="${esc(f.key)}" data-allval="Done">Mark all done</button></div>` +
-          f.items.map(([ik, text]) => {
-            const n = `${f.key}:${ik}`;
-            return `<div class="okrow" data-row="${esc(n)}"><span>${esc(text)}</span><div class="okbtns">
-              <label><input type="radio" name="${esc(n)}" value="Done"><span>Done</span></label>
-              <label class="na"><input type="radio" name="${esc(n)}" value="N/A"><span>N/A</span></label></div></div>`;
-          }).join("");
         break;
       case "joblookup":
         if (!me.job_lookup) return "";
@@ -1064,8 +1054,7 @@
   form.addEventListener("click", (e) => {
     const all = e.target.closest("[data-allok]");
     if (!all) return;
-    const val = all.dataset.allval || "OK";
-    $$(`input[type=radio][value="${val}"]`, form).forEach(r => { if (r.name.startsWith(all.dataset.allok + ":")) r.checked = true; });
+    $$('input[type=radio][value="OK"]', form).forEach(r => { if (r.name.startsWith(all.dataset.allok + ":")) r.checked = true; });
     $$(".okrow.invalid", form).forEach(r => r.classList.remove("invalid"));
     saveDraftSoon();
   });
@@ -1120,15 +1109,6 @@
       const v = vals[f.key];
       if (f.type === "checks") {
         if (f.required) f.items.forEach(([k, t]) => { if (!vals[k]) { const l = form.elements[k].closest("label"); l.classList.add("invalid"); problems.push(t.length > 40 ? t.slice(0, 38) + "…" : t); } });
-        continue;
-      }
-      if (f.type === "donena") {
-        let left = 0;
-        f.items.forEach(([ik]) => {
-          const n = `${f.key}:${ik}`;
-          if (!vals[n]) { left++; const row = $(`.okrow[data-row="${CSS.escape(n)}"]`, form); if (row) row.classList.add("invalid"); }
-        });
-        if (f.required && left) problems.push(`${left} checklist item${left > 1 ? "s" : ""} not marked`);
         continue;
       }
       if (f.type === "okdef") {

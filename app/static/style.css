@@ -24,7 +24,6 @@ h2 { font-size: 18px; margin: 28px 0 6px; }
 
 .banner { padding: 12px 16px; font-size: 15px; font-weight: 600; text-align: center; }
 .banner.wait { background: var(--amber-bg); color: var(--amber); }
-.banner.ok { background: var(--green-bg); color: var(--green-dark); }
 .banner button { margin-left: 8px; }
 
 label { display: block; font-weight: 600; margin: 18px 0 6px; }
@@ -193,13 +192,9 @@ input[readonly] { background: #eef1f0; color: var(--muted); }
 .sz .szrow { display: grid; grid-template-columns: 1fr 76px; gap: 6px; }
 .sz input, .sz select { min-height: 46px; padding: 10px 8px; font-size: 17px; }
 .mpts { display: flex; flex-direction: column; gap: 8px; }
-.mpt { display: grid; grid-template-columns: 18px 1fr 12px 1fr 30px; align-items: end; gap: 4px; }
 .mpt .szl { margin: 0 0 3px; font-size: 13px; color: var(--muted); }
 .mpt .sz .szrow { grid-template-columns: 1fr 62px; gap: 3px; }
 .mpt .sz input, .mpt .sz select { padding: 10px 4px; font-size: 16px; }
-.ptn { font-weight: 800; color: var(--muted); padding-bottom: 13px; }
-.mpt .x { padding-bottom: 13px; color: var(--muted); text-align: center; }
-.ptdel { border: 0; background: none; font-size: 22px; color: var(--muted); cursor: pointer; min-height: 46px; }
 .mlabor { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
 .mlabor label.check { margin: 4px 0; padding: 10px; font-size: 15px; }
 label.tog { display: flex; align-items: center; gap: 10px; margin-top: 38px; font-weight: 700; cursor: pointer; }
@@ -237,7 +232,6 @@ label.tog input { width: 24px; height: 24px; accent-color: var(--red); }
 .hs-wall { stroke: #1f2933; stroke-width: 7; }
 .hs-leaf { stroke: #2f6f1f; stroke-width: 4; stroke-linecap: round; }
 .hs-arc { fill: none; stroke: #76c043; stroke-width: 1.6; stroke-dasharray: 3 3; }
-.hs-arc.solid { stroke-dasharray: none; stroke-width: 2.2; }
 .hs-hinge { fill: #c62828; }
 .mwarnflag { color: var(--amber); margin-left: 6px; }
 .mwarns { list-style: none; margin: 10px 0 0; padding: 10px 12px; background: var(--amber-bg); color: var(--amber); border-radius: 10px;
@@ -297,7 +291,6 @@ label.tog input { width: 24px; height: 24px; accent-color: var(--red); }
 .tilecard .card-sub { display: none; }
 .card.tilecard { min-height: 108px; justify-content: flex-start; }
 .tilecard .card-title { font-size: 17px; }
-.okbtns .na input:checked + span { background: #5f6b76; border-color: #5f6b76; color: #fff; }
 /* owner test mode */
 .testbox { display: flex; gap: 12px; align-items: center; background: var(--card); border: 1.5px solid var(--line);
   border-radius: 12px; padding: 10px 14px; margin: 0 0 14px; cursor: pointer; }
