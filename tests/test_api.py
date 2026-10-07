@@ -855,13 +855,19 @@ def test_simply_studio_tile(client):
         assert sig == want
         claims = json.loads(b64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
         assert claims["email"] == "jaimem@simplydoors.com" and claims["role"] == "field" and claims["aud"] == "simply-studio"
+        assert claims["owner"] is False
         login(client, "Paz Galambos", "112233")
         url = client.post("/ops/api/studio-link", headers=H).json()["url"]
         body = url.split("/sso?t=")[1].split(".")[0]
-        assert json.loads(b64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))["role"] == "full"
+        claims = json.loads(b64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+        assert claims["role"] == "full" and claims["owner"] is False                  # an admin, but not the owner
         assert client.post("/ops/api/studio-link").status_code in (400, 403)          # needs the app header
-        # an admin can switch the tile off for someone
+        # only the owner's link says owner
         login(client, "Adem Atis", "246810")
+        body = client.post("/ops/api/studio-link", headers=H).json()["url"].split("/sso?t=")[1].split(".")[0]
+        claims = json.loads(b64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+        assert claims["owner"] is True and claims["role"] == "full" and claims["email"] == "adem@simplydoors.com"
+        # an admin can switch the tile off for someone
         jid = conn().execute("SELECT id FROM staff WHERE name='Jaime Mendoza'").fetchone()[0]
         assert client.patch(f"/ops/api/admin/staff/{jid}", json={"studio_link": False}, headers=H).status_code == 200
         login(client, "Jaime Mendoza", "135790")
@@ -1104,3 +1110,45 @@ def test_job_lookup_changes_flagged_internally_only(client, fake_sf, smtp):
     rows = dict(M.job_rows(dm))
     assert rows["Service Fusion job"] == "10236418931"
     assert rows["Changed from Service Fusion"] == "Customer: Angela Heimer → Angela Heimer-Ruiz"
+
+
+def test_staff_emails_unique_and_owner_guarded(client, monkeypatch):
+    # the work email signs people into Simply Studio: one per person, admins' only set by the owner, every change alerted
+    from app import alerts
+    pushed = []
+    monkeypatch.setattr(alerts, "push", lambda title, msg, priority="default": pushed.append((title, msg)))
+    ids = {r["name"]: r["id"] for r in conn().execute("SELECT id, name FROM staff")}
+    login(client, "Adem Atis", "246810")
+    r = client.post("/ops/api/admin/staff", json={"name": "Email Person", "dept": "Production", "email": "dup@simplydoors.com"}, headers=H)
+    assert r.status_code == 200, r.text
+    ep = r.json()["id"]
+    assert any("dup@simplydoors.com" in m for _, m in pushed)
+    r = client.post("/ops/api/admin/staff", json={"name": "Email Twin", "dept": "Production", "email": "DUP@SimplyDoors.com"}, headers=H)
+    assert r.status_code == 400 and "Email Person" in r.json()["detail"]
+    r = client.patch(f"/ops/api/admin/staff/{ids['Jaime Mendoza']}", json={"email": " Dup@simplydoors.com "}, headers=H)
+    assert r.status_code == 400
+    with pytest.raises(sqlite3.IntegrityError):              # the database refuses a repeat too
+        conn().execute("UPDATE staff SET email='DUP@simplydoors.com' WHERE id=?", (ids["Jaime Mendoza"],))
+    # a non-owner admin can't touch any admin's email (their own included), add admins, or promote anyone
+    login(client, "Paz Galambos", "112233")
+    paz_row = next(x for x in client.get("/ops/api/admin/staff").json() if x["name"] == "Paz Galambos")
+    assert client.patch(f"/ops/api/admin/staff/{ids['Paz Galambos']}", json={"email": "adem@simplydoors.com"}, headers=H).status_code == 403
+    assert client.patch(f"/ops/api/admin/staff/{ids['Paz Galambos']}", json={"email": "paz2@simplydoors.com"}, headers=H).status_code == 403
+    assert client.patch(f"/ops/api/admin/staff/{ids['Adem Atis']}", json={"email": "x@simplydoors.com"}, headers=H).status_code == 403
+    assert client.post("/ops/api/admin/staff", json={"name": "Sneaky Admin", "dept": "Admin", "email": "sneaky@simplydoors.com",
+                                                     "is_admin": True}, headers=H).status_code == 403
+    assert client.patch(f"/ops/api/admin/staff/{ep}", json={"is_admin": True}, headers=H).status_code == 403
+    # saving her own row with the email unchanged still works (the edit screen always sends it)
+    r = client.patch(f"/ops/api/admin/staff/{ids['Paz Galambos']}", headers=H,
+                     json={"name": "Paz Galambos", "dept": paz_row["dept"], "email": paz_row["email"], "is_admin": True, "active": True})
+    assert r.status_code == 200
+    # a crew member's email can be changed by any admin, and the owner hears about it
+    pushed.clear()
+    assert client.patch(f"/ops/api/admin/staff/{ep}", json={"email": "ep2@simplydoors.com"}, headers=H).status_code == 200
+    assert any("email" in t.lower() and "Paz Galambos" in m and "ep2@simplydoors.com" in m for t, m in pushed)
+    assert conn().execute("SELECT email FROM staff WHERE id=?", (ep,)).fetchone()[0] == "ep2@simplydoors.com"
+    # the owner can change an admin's email
+    login(client, "Adem Atis", "246810")
+    assert client.patch(f"/ops/api/admin/staff/{ids['Paz Galambos']}", json={"email": "paz2@simplydoors.com"}, headers=H).status_code == 200
+    assert client.patch(f"/ops/api/admin/staff/{ids['Paz Galambos']}", json={"email": "paz@simplydoors.com"}, headers=H).status_code == 200
+    assert client.patch(f"/ops/api/admin/staff/{ep}", json={"active": False}, headers=H).status_code == 200

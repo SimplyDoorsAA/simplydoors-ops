@@ -313,8 +313,10 @@ def studio_link(request: Request, staff=Depends(current_staff)):
         raise HTTPException(403, "Simply Studio isn't switched on for you. Ask Adem.")
     if not STUDIO_SSO_SECRET or not (staff["email"] or "").strip():
         return {"url": STUDIO_URL}          # not set up yet: Studio's own sign-in page
+    # owner: only the Field app owner may be signed into a Studio admin account (Studio checks this)
     claims = {"aud": "simply-studio", "email": staff["email"].strip().lower(), "name": staff["name"],
-              "role": studio_role(staff), "exp": int(time.time()) + 90, "n": secrets.token_urlsafe(18)}
+              "role": studio_role(staff), "owner": bool(staff["is_owner"]), "exp": int(time.time()) + 90,
+              "n": secrets.token_urlsafe(18)}
     body = _b64u(json.dumps(claims, separators=(",", ":")).encode())
     sig = _b64u(hmac.new(STUDIO_SSO_SECRET.encode(), body.encode(), hashlib.sha256).digest())
     audit(staff["id"], staff["name"], "studio_opened", None, {"as": claims["role"]}, client_ip(request), ua(request))
@@ -1004,18 +1006,39 @@ def _validate_staff(body: dict, partial: bool):
     return out
 
 
+# A work email is what signs someone into Simply Studio, so each one belongs to one person (any upper/lower case),
+# only the owner sets an admin's email, and every change reaches the owner's phone.
+def _email_check(email: str, sid=None):
+    if not email:
+        return
+    row = conn().execute("SELECT name FROM staff WHERE email != '' AND lower(email)=lower(?) AND id IS NOT ?",
+                         (email, sid)).fetchone()
+    if row:
+        raise HTTPException(400, f"{row['name']} already has that email address. Each person needs their own.")
+
+
+def _staff_conflict(e: sqlite3.IntegrityError) -> HTTPException:
+    if "email" in str(e):
+        return HTTPException(400, "Someone else already has that email address. Each person needs their own.")
+    return HTTPException(409, "Someone with that name already exists.")
+
+
 @app.post("/api/admin/staff")
 async def admin_add_staff(request: Request, admin=Depends(current_admin)):
     body = await request.json()
     v = _validate_staff(body, partial=False)
+    if v.get("is_admin") and not admin["is_owner"]:
+        raise HTTPException(403, "Only the app owner can add an admin.")
+    _email_check(v.get("email", ""))
     try:
         cur = conn().execute(
             "INSERT INTO staff(name, dept, email, is_admin, sales_notify, active, created_at) VALUES (?,?,?,?,?,1,?)",
             (v["name"], v["dept"], v.get("email", ""), v.get("is_admin", 0), v.get("sales_notify", 0), now_iso()))
-    except sqlite3.IntegrityError:
-        raise HTTPException(409, "Someone with that name already exists.")
+    except sqlite3.IntegrityError as e:
+        raise _staff_conflict(e)
     audit(admin["id"], admin["name"], "staff_added", v["name"], v, client_ip(request), ua(request))
-    alerts.push("Ops app: staff added", f"{admin['name']} added {v['name']} ({v['dept']}).")
+    alerts.push("Ops app: staff added", f"{admin['name']} added {v['name']} ({v['dept']})"
+                + (f" with the email {v['email']}." if v.get("email") else "."), "high" if v.get("email") else "default")
     return {"ok": True, "id": cur.lastrowid}
 
 
@@ -1044,17 +1067,31 @@ async def admin_edit_staff(sid: int, request: Request, admin=Depends(current_adm
     if old["is_admin"] and sid != admin["id"] and not admin["is_owner"] and ("is_admin" in v or v.get("active") == 0):
         if v.get("is_admin", 1) == 0 or v.get("active") == 0:
             raise HTTPException(422, "Another admin's access can only be removed by the app owner.")
+    if v.get("is_admin") == 1 and not old["is_admin"] and not admin["is_owner"]:
+        raise HTTPException(403, "Only the app owner can make someone an admin.")
+    if "email" in v and v["email"] != old["email"]:
+        if (old["is_admin"] or old["is_owner"]) and not admin["is_owner"]:
+            raise HTTPException(403, "An admin's email (yours too) can only be changed by the app owner.")
+        _email_check(v["email"], sid)
     changes = {k: {"from": old[k], "to": val} for k, val in v.items() if old[k] != val}
     if not changes:
         return {"ok": True}
     try:
         c.execute(f"UPDATE staff SET {', '.join(k + '=?' for k in v)} WHERE id=?", list(v.values()) + [sid])
-    except sqlite3.IntegrityError:
-        raise HTTPException(409, "Someone with that name already exists.")
+    except sqlite3.IntegrityError as e:
+        raise _staff_conflict(e)
     if "active" in changes or "is_admin" in changes:
         auth.end_all_sessions(sid)   # promoted, demoted or turned off: sign in again
     audit(admin["id"], admin["name"], "staff_changed", old["name"], changes, client_ip(request), ua(request))
-    alerts.push("Ops app: staff changed", f"{admin['name']} changed {old['name']}: {', '.join(changes)}.")
+    if "email" in changes:
+        ch = changes["email"]
+        alerts.push_throttled(f"email:{sid}:{ch['to']}", "Ops app: staff email changed",
+                              f"{admin['name']} changed the email for {old['name']}: {ch['from'] or '(none)'} → "
+                              f"{ch['to'] or '(none)'}. It's the address that signs them into Simply Studio.",
+                              "high", every_seconds=60)
+    rest = [k for k in changes if k != "email"]
+    if rest:
+        alerts.push("Ops app: staff changed", f"{admin['name']} changed {old['name']}: {', '.join(rest)}.")
     return {"ok": True}
 
 
