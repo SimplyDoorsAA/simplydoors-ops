@@ -384,11 +384,14 @@ def studio_caller(request: Request) -> str:
     if not STUDIO_SSO_SECRET:
         raise HTTPException(503, "The Service Fusion lookup isn't set up for Studio.")
     ts, who, sig = (request.headers.get(h, "") for h in ("x-studio-ts", "x-studio-who", "x-studio-sig"))
-    if not ts.isdigit() or abs(time.time() - int(ts)) > STUDIO_API_MAX_AGE or not who.strip():
+    # isascii/len first: "²".isdigit() is True and a 400-digit number overflows, both were a 500
+    if not (ts.isascii() and ts.isdigit() and len(ts) < 12) or abs(time.time() - int(ts)) > STUDIO_API_MAX_AGE \
+            or not who.strip():
         raise HTTPException(401, "Studio request expired or unsigned.")
     key = hmac.new(STUDIO_SSO_SECRET.encode(), b"studio-sf-api", hashlib.sha256).digest()
     want = _b64u(hmac.new(key, f"{ts}|{request.scope['path']}|{request.url.query}|{who}".encode(), hashlib.sha256).digest())
-    if not hmac.compare_digest(want, sig):
+    # bytes, so a signature with odd characters is a mismatch (401), not a TypeError (500); headers arrive as latin-1
+    if not hmac.compare_digest(want.encode(), sig.encode("latin-1")):
         raise HTTPException(401, "Studio request signature didn't match.")
     return who.strip()[:120]
 

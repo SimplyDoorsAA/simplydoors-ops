@@ -1276,3 +1276,23 @@ def test_photos_are_saved_outside_the_write_lock(client, monkeypatch):
     paths = [p[0] for p in conn().execute("SELECT path FROM photos WHERE report_id=?", (rid,))]
     assert len(paths) == 2 and all(os.path.isfile(p) and os.path.dirname(p) == os.path.join(m.PHOTO_DIR, str(rid)) for p in paths)
     assert not [f for f in os.listdir(m.PHOTO_DIR) if f.startswith("tmp-")]
+
+
+def test_studio_lookup_odd_headers_are_401_not_500(client):
+    from app import main as M
+    old, M.STUDIO_SSO_SECRET = M.STUDIO_SSO_SECRET, "s" * 64
+    try:
+        now = str(int(time.time())).encode()
+        for ts, sig in ((b"\xb2", b"x"), (b"9" * 400, b"x"), (now, b"\xe9\xe9\xe9"), (b"-5", b"x"), (b"", b"")):
+            r = client.get("/api/studio/jobs", headers={"X-Studio-Ts": ts, "X-Studio-Who": b"Paz", "X-Studio-Sig": sig})
+            assert r.status_code == 401, (ts, sig, r.status_code)
+        # a raw "²" byte (the test client would re-encode it): isdigit() is True but int() fails
+        from fastapi import HTTPException
+        from starlette.requests import Request
+        scope = {"type": "http", "method": "GET", "scheme": "http", "server": ("x", 80), "path": "/api/studio/jobs",
+                 "query_string": b"", "headers": [(b"x-studio-ts", b"\xb2"), (b"x-studio-who", b"Paz"), (b"x-studio-sig", b"x")]}
+        with pytest.raises(HTTPException) as e:
+            M.studio_caller(Request(scope))
+        assert e.value.status_code == 401
+    finally:
+        M.STUDIO_SSO_SECRET = old
