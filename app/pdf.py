@@ -132,8 +132,9 @@ def build_pdf(report, staff_name: str, data: dict, photos: list) -> bytes:
         blk = [Spacer(1, 14), Paragraph("Customer acceptance", h2)]
         if sig_group.get("help"):
             blk.append(Paragraph(escape(sig_group["help"]), small))
+        # splitInRow: a very long comment or reason may run onto the next page instead of failing the whole PDF
         at = Table([[Paragraph(escape(a), lab), Paragraph(escape(str(b)).replace("\n", "<br/>"), cell)] for a, b in acceptance],
-                   colWidths=[2.3 * inch, 5.0 * inch])
+                   colWidths=[2.3 * inch, 5.0 * inch], splitInRow=1)
         at.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
                                 ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#f2f9eb")), ("VALIGN", (0, 0), (-1, -1), "TOP")]))
         blk += [Spacer(1, 4), at]
@@ -208,7 +209,7 @@ def _spec_table(rows, style, W, grey):
         return None
     lw = 0.82 * inch
     vw = (W - 3 * lw) / 3
-    sp = Table(rows, colWidths=[lw, vw, lw, vw, lw, vw])
+    sp = Table(rows, colWidths=[lw, vw, lw, vw, lw, vw], splitInRow=1)      # long notes may run onto the next page
     sp.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.4, grey), ("VALIGN", (0, 0), (-1, -1), "TOP"),
                             ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2)] + style))
     return sp
@@ -437,7 +438,7 @@ def build_customer_pdf(report, data: dict, photos: list) -> bytes:
     else:
         box = [Paragraph("<b>All work is complete.</b> Your new installation is ready to enjoy.", body)]
         tint, edge = SOFT, GREEN
-    st = Table([[box]], colWidths=[W])
+    st = Table([[box]], colWidths=[W], splitInRow=1)      # a long punch list may run onto the next page
     st.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), tint), ("LINEBEFORE", (0, 0), (0, -1), 4, edge),
                             ("TOPPADDING", (0, 0), (-1, -1), 9), ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
                             ("LEFTPADDING", (0, 0), (-1, -1), 12)]))

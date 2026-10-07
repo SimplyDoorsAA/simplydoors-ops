@@ -877,6 +877,32 @@ def test_simply_studio_tile(client):
         M.STUDIO_SSO_SECRET = old
 
 
+def test_very_long_text_never_breaks_a_pdf(client):
+    # 4,000 characters of short lines is taller than a page; it must run onto the next page, not fail the PDF
+    from app.pdf import build_customer_pdf
+    lines = ("ok\n" * 2000)[:4000]
+    login(client, "Adem Atis", "246810")
+    photos = {"after1": ("a.jpg", jpeg(), "image/jpeg"), "after2": ("b.jpg", jpeg((1, 2, 3)), "image/jpeg")}
+    sig = io.BytesIO(); Image.new("RGBA", (600, 200), (0, 0, 0, 0)).save(sig, "PNG")
+    base = {"po": "5555", "customer": "Long Talker", "work": "No", "punch_items": lines, "walkthrough": "Yes", "cust_comments": lines}
+    r1 = client.post("/ops/api/reports/install", headers=H, files=photos,
+                     data={**base, "submission_id": "sub-long-ins1", "cust_present": "No", "no_sign_reason": lines})
+    r2 = client.post("/ops/api/reports/install", headers=H, files={**photos, "sig": ("s.png", sig.getvalue(), "image/png")},
+                     data={**base, "submission_id": "sub-long-ins2", "cust_present": "Yes", "signer": "Pat Lee",
+                           "cust_email": "pat@example.com"})
+    door = {**_door(), "notes": lines[:2000]}
+    r3 = _measure(client, "sub-long-msr1", [door, _window(notes=lines[:2000]), door],
+                  {"i1p1": ("a.jpg", jpeg(), "image/jpeg"), "i2p1": ("b.jpg", jpeg((0, 90, 0)), "image/jpeg")})
+    for r in (r1, r2, r3):
+        assert r.status_code == 200, r.text
+        rid = conn().execute("SELECT id FROM reports WHERE receipt=?", (r.json()["receipt"],)).fetchone()[0]
+        pdf = client.get(f"/ops/api/admin/reports/{rid}/pdf")
+        assert pdf.status_code == 200 and pdf.content[:4] == b"%PDF"
+    rid = conn().execute("SELECT id FROM reports WHERE submission_id='sub-long-ins2'").fetchone()[0]
+    rep, data, ph = mailer._report_bundle(rid)
+    assert build_customer_pdf(rep, data, ph)[:4] == b"%PDF"
+
+
 def test_reset_test_data_is_console_only_and_one_time(client, monkeypatch):
     # keep this test last: it wipes the reports
     from app import cli
