@@ -224,11 +224,8 @@ def session_staff(token: str | None):
     if _utc(s["expires_at"]) < datetime.now(timezone.utc):
         c.execute("DELETE FROM sessions WHERE token_hash=?", (s["token_hash"],))
         return None
-    row = c.execute("SELECT * FROM staff WHERE id=? AND active=1", (s["staff_id"],)).fetchone()
-    if not row:
-        return None
-    c.execute("UPDATE sessions SET last_seen=? WHERE token_hash=?", (now_iso(), s["token_hash"]))
-    return row
+    # no last_seen write here: nothing reads it, and a write on every request queued behind big report uploads
+    return c.execute("SELECT * FROM staff WHERE id=? AND active=1", (s["staff_id"],)).fetchone()
 
 
 def end_session(token: str | None) -> None:

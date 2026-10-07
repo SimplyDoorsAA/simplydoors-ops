@@ -521,80 +521,119 @@ async def submit_report(slug: str, request: Request, staff=Depends(current_staff
                                    started_at, queued, client_ip(request), ua(request), kept, is_test)
 
 
+def _next_receipt(c, pre: str) -> str:
+    # each form counts on its own (VIN-00001, VIN-00002 ...), carrying on from any earlier numbers
+    # test reports count separately (TEST-RMA-00001) so real numbers never have gaps
+    last = c.execute("SELECT MAX(CAST(substr(receipt, ?) AS INTEGER)) FROM reports WHERE receipt LIKE ?",
+                     (len(pre) + 2, pre + "-%")).fetchone()[0]
+    return f"{pre}-{(last or 0) + 1:05d}"
+
+
+def _write_photos(folder, photo_blobs, kept, receipt, who, customer_copy) -> list:
+    """Saves a report's photos into folder: [(slot, bytes, geo or None, kept photo row or None)]."""
+    os.makedirs(folder, exist_ok=True)
+    out = []
+    for slot, b, g in photo_blobs:
+        size = _save_photo(b, os.path.join(folder, f"{slot}.jpg"), g, receipt, who,
+                           clean_dest=os.path.join(folder, f"{slot}.clean.jpg") if customer_copy else None)
+        out.append((slot, size, g, None))
+    for slot, src in kept:     # revised measure: photos carried over from the earlier version, stamps unchanged
+        dest = os.path.join(folder, f"{slot}.jpg")
+        shutil.copyfile(src["path"], dest)
+        out.append((slot, os.path.getsize(dest), None, src))
+    return out
+
+
 def _store_report(form_type, spec, staff, submission_id, data, photo_blobs, started_at, queued, ip, agent, kept=(),
                   is_test=False):
+    """Photos carry the receipt number, which is only final inside the write lock. Re-saving 100 photos in there
+    held up every other report and sign-in, so they're saved first with the number this report should get, and
+    only redone if another report of the same form took that number meanwhile (the last try works as before)."""
     c = conn()
-    rid = None
-    try:
-        c.execute("BEGIN IMMEDIATE")
-        cur = c.execute(
-            "INSERT INTO reports(submission_id, form_type, staff_id, submitted_at, started_at, queued_on_phone, data, is_test)"
-            " VALUES (?,?,?,?,?,?,?,?)",
-            (submission_id, form_type, staff["id"], now_iso(), started_at, queued, json.dumps(data, ensure_ascii=False),
-             1 if is_test else 0))
-        rid = cur.lastrowid
-        # each form counts on its own (VIN-00001, VIN-00002 ...), carrying on from any earlier numbers
-        # test reports count separately (TEST-RMA-00001) so real numbers never have gaps
-        pre = ("TEST-" if is_test else "") + spec["prefix"]
-        last = c.execute("SELECT MAX(CAST(substr(receipt, ?) AS INTEGER)) FROM reports WHERE receipt LIKE ?",
-                         (len(pre) + 2, pre + "-%")).fetchone()[0]
-        receipt = f"{pre}-{(last or 0) + 1:05d}"
-        c.execute("UPDATE reports SET receipt=? WHERE id=?", (receipt, rid))
-        folder = os.path.join(PHOTO_DIR, str(rid))
-        os.makedirs(folder, exist_ok=True)
-        for slot, b, g in photo_blobs:
-            dest = os.path.join(folder, f"{slot}.jpg")
-            size = _save_photo(b, dest, g, receipt, staff["name"],
-                               clean_dest=os.path.join(folder, f"{slot}.clean.jpg") if spec.get("customer_copy") else None)
-            if g is None:      # signature: no stamp, no location
-                c.execute("INSERT INTO photos(report_id, slot, path, bytes, taken_at, geo_status) VALUES (?,?,?,?,?,?)",
-                          (rid, slot, dest, size, now_iso(), "signature"))
+    pre = ("TEST-" if is_test else "") + spec["prefix"]
+    for attempt in range(4):
+        inside = attempt == 3
+        tmp = os.path.join(PHOTO_DIR, f"tmp-{secrets.token_hex(8)}")
+        want = None if inside else _next_receipt(c, pre)
+        if not inside:
+            try:
+                saved = _write_photos(tmp, photo_blobs, kept, want, staff["name"], spec.get("customer_copy"))
+            except Exception:
+                shutil.rmtree(tmp, ignore_errors=True)
+                raise
+        rid = None
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            cur = c.execute(
+                "INSERT INTO reports(submission_id, form_type, staff_id, submitted_at, started_at, queued_on_phone, data, is_test)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (submission_id, form_type, staff["id"], now_iso(), started_at, queued, json.dumps(data, ensure_ascii=False),
+                 1 if is_test else 0))
+            rid = cur.lastrowid
+            receipt = _next_receipt(c, pre)
+            if want and receipt != want:          # someone else got that number first: stamp again
+                c.execute("ROLLBACK")
+                rid = None
+                shutil.rmtree(tmp, ignore_errors=True)
                 continue
-            c.execute("INSERT INTO photos(report_id, slot, path, bytes, taken_at, lat, lon, acc, geo_status, file_age)"
-                      " VALUES (?,?,?,?,?,?,?,?,?,?)",
-                      (rid, slot, dest, size, g["taken_at"], g["lat"], g["lon"], g["acc"], g["status"], g["file_age"]))
-        for slot, src in kept:     # revised measure: photos carried over from the earlier version, stamps unchanged
-            dest = os.path.join(folder, f"{slot}.jpg")
-            shutil.copyfile(src["path"], dest)
-            c.execute("INSERT INTO photos(report_id, slot, path, bytes, taken_at, lat, lon, acc, geo_status, file_age)"
-                      " VALUES (?,?,?,?,?,?,?,?,?,?)",
-                      (rid, slot, dest, os.path.getsize(dest), src["taken_at"], src["lat"], src["lon"], src["acc"],
-                       src["geo_status"], src["file_age"]))
-        no_loc = sum(1 for _, _, g in photo_blobs if g is not None and g["status"] != "ok")
-        details = {"form": form_type, "receipt": receipt, "photos": len(photo_blobs), "photos_without_location": no_loc,
-                   "queued_on_phone": bool(queued)}
-        if kept:
-            details["photos_carried_over"] = len(kept)
-        if data.get("revision_of"):
-            details["revision_of"] = data["revision_of"]
-        if is_test:
-            details["test"] = True
-        audit(staff["id"], staff["name"], "report_submitted", f"report:{rid}", details, ip, agent)
-        subject = subject_for(form_type, data, staff["name"], receipt)
-        if is_test:   # test reports only ever go to the owner
-            to, bcc, subject = [e for e in [staff["email"]] if e], [], ("TEST - " + subject)[:200]
-        else:
-            to, bcc = split_recipients(form_type, data)
-        mailer.queue_report_email(rid, to, subject, bcc)
-        cust = customer_copy_to(spec, data, is_test, staff)
-        if cust:
-            mailer.queue_report_email(rid, [cust], customer_subject(form_type, data, is_test), audience="customer")
-            audit(staff["id"], staff["name"], "customer_copy_queued", f"report:{rid}",
-                  {"to": cust, "test": True} if is_test else {"to": cust}, ip, agent)
-        c.execute("COMMIT")
-    except sqlite3.IntegrityError:
-        c.execute("ROLLBACK")
-        if rid:
-            shutil.rmtree(os.path.join(PHOTO_DIR, str(rid)), ignore_errors=True)
-        existing = c.execute("SELECT receipt FROM reports WHERE submission_id=?", (submission_id,)).fetchone()
-        return {"ok": True, "receipt": existing["receipt"] if existing else None, "duplicate": True}
-    except Exception:
-        c.execute("ROLLBACK")
-        if rid:
-            shutil.rmtree(os.path.join(PHOTO_DIR, str(rid)), ignore_errors=True)
-        raise
-    mailer._wake.set()
-    return {"ok": True, "receipt": receipt, "duplicate": False}
+            c.execute("UPDATE reports SET receipt=? WHERE id=?", (receipt, rid))
+            folder = os.path.join(PHOTO_DIR, str(rid))
+            shutil.rmtree(folder, ignore_errors=True)       # only ever a leftover from a report that never saved
+            if inside:
+                saved = _write_photos(folder, photo_blobs, kept, receipt, staff["name"], spec.get("customer_copy"))
+            else:
+                os.rename(tmp, folder)
+            for slot, size, g, src in saved:
+                dest = os.path.join(folder, f"{slot}.jpg")
+                if src is not None:
+                    c.execute("INSERT INTO photos(report_id, slot, path, bytes, taken_at, lat, lon, acc, geo_status, file_age)"
+                              " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                              (rid, slot, dest, size, src["taken_at"], src["lat"], src["lon"], src["acc"],
+                               src["geo_status"], src["file_age"]))
+                elif g is None:      # signature: no stamp, no location
+                    c.execute("INSERT INTO photos(report_id, slot, path, bytes, taken_at, geo_status) VALUES (?,?,?,?,?,?)",
+                              (rid, slot, dest, size, now_iso(), "signature"))
+                else:
+                    c.execute("INSERT INTO photos(report_id, slot, path, bytes, taken_at, lat, lon, acc, geo_status, file_age)"
+                              " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                              (rid, slot, dest, size, g["taken_at"], g["lat"], g["lon"], g["acc"], g["status"], g["file_age"]))
+            no_loc = sum(1 for _, _, g in photo_blobs if g is not None and g["status"] != "ok")
+            details = {"form": form_type, "receipt": receipt, "photos": len(photo_blobs), "photos_without_location": no_loc,
+                       "queued_on_phone": bool(queued)}
+            if kept:
+                details["photos_carried_over"] = len(kept)
+            if data.get("revision_of"):
+                details["revision_of"] = data["revision_of"]
+            if is_test:
+                details["test"] = True
+            audit(staff["id"], staff["name"], "report_submitted", f"report:{rid}", details, ip, agent)
+            subject = subject_for(form_type, data, staff["name"], receipt)
+            if is_test:   # test reports only ever go to the owner
+                to, bcc, subject = [e for e in [staff["email"]] if e], [], ("TEST - " + subject)[:200]
+            else:
+                to, bcc = split_recipients(form_type, data)
+            mailer.queue_report_email(rid, to, subject, bcc)
+            cust = customer_copy_to(spec, data, is_test, staff)
+            if cust:
+                mailer.queue_report_email(rid, [cust], customer_subject(form_type, data, is_test), audience="customer")
+                audit(staff["id"], staff["name"], "customer_copy_queued", f"report:{rid}",
+                      {"to": cust, "test": True} if is_test else {"to": cust}, ip, agent)
+            c.execute("COMMIT")
+        except sqlite3.IntegrityError:
+            c.execute("ROLLBACK")
+            shutil.rmtree(tmp, ignore_errors=True)
+            if rid:
+                shutil.rmtree(os.path.join(PHOTO_DIR, str(rid)), ignore_errors=True)
+            existing = c.execute("SELECT receipt FROM reports WHERE submission_id=?", (submission_id,)).fetchone()
+            return {"ok": True, "receipt": existing["receipt"] if existing else None, "duplicate": True}
+        except Exception:
+            c.execute("ROLLBACK")
+            shutil.rmtree(tmp, ignore_errors=True)
+            if rid:
+                shutil.rmtree(os.path.join(PHOTO_DIR, str(rid)), ignore_errors=True)
+            raise
+        mailer._wake.set()
+        return {"ok": True, "receipt": receipt, "duplicate": False}
 
 
 def customer_copy_to(spec, data, is_test, staff) -> str:
@@ -1347,6 +1386,10 @@ def _nightly_work():
     c = conn()
     c.execute("DELETE FROM ip_failures WHERE at < ?", (cutoff,))
     c.execute("DELETE FROM sessions WHERE expires_at < ?", (now_iso(),))
+    for f in os.listdir(PHOTO_DIR) if os.path.isdir(PHOTO_DIR) else []:   # photos of an upload cut off mid-save
+        p = os.path.join(PHOTO_DIR, f)
+        if f.startswith("tmp-") and time.time() - os.path.getmtime(p) > 86400:
+            shutil.rmtree(p, ignore_errors=True)
 
 
 def nightly_once():

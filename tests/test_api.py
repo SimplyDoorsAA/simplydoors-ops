@@ -1246,3 +1246,33 @@ def test_staff_emails_unique_and_owner_guarded(client, monkeypatch):
     assert client.patch(f"/ops/api/admin/staff/{ids['Paz Galambos']}", json={"email": "paz2@simplydoors.com"}, headers=H).status_code == 200
     assert client.patch(f"/ops/api/admin/staff/{ids['Paz Galambos']}", json={"email": "paz@simplydoors.com"}, headers=H).status_code == 200
     assert client.patch(f"/ops/api/admin/staff/{ep}", json={"active": False}, headers=H).status_code == 200
+
+
+def test_photos_are_saved_outside_the_write_lock(client, monkeypatch):
+    # big uploads must not hold the database write lock while photos are re-saved; the receipt printed on the
+    # photos still has to be the report's own number, even when another report takes the expected one meanwhile
+    from app import main as m
+    real, seen = m._write_photos, []
+
+    def spy(folder, blobs, kept, receipt, who, customer_copy):
+        other = sqlite3.connect(os.path.join(TMP, "ops.db"), timeout=5)
+        try:
+            other.execute("BEGIN IMMEDIATE")              # would wait (and fail) if the lock were held
+            other.execute("ROLLBACK")
+            seen.append(receipt)
+        finally:
+            other.close()
+        if len(seen) == 1:
+            conn().execute("INSERT INTO reports(submission_id, form_type, staff_id, submitted_at, data, receipt)"
+                           " VALUES ('sub-race-other', 'Receiving Report', 1, '2026-10-01T00:00:00Z', '{}', ?)", (receipt,))
+        return real(folder, blobs, kept, receipt, who, customer_copy)
+    monkeypatch.setattr(m, "_write_photos", spy)
+    login(client, "Jaime Mendoza", "135790")
+    r = receiving(client, "sub-race-0001")
+    assert r.status_code == 200, r.text
+    first = int(seen[0].split("-")[1])
+    assert len(seen) == 2 and r.json()["receipt"] == seen[1] == f"RCV-{first + 1:05d}"
+    rid = conn().execute("SELECT id FROM reports WHERE submission_id='sub-race-0001'").fetchone()[0]
+    paths = [p[0] for p in conn().execute("SELECT path FROM photos WHERE report_id=?", (rid,))]
+    assert len(paths) == 2 and all(os.path.isfile(p) and os.path.dirname(p) == os.path.join(m.PHOTO_DIR, str(rid)) for p in paths)
+    assert not [f for f in os.listdir(m.PHOTO_DIR) if f.startswith("tmp-")]
