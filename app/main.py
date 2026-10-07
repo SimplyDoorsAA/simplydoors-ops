@@ -371,6 +371,47 @@ async def job_details(number: str, request: Request, form: str = "install", staf
     return d
 
 
+# ---------------------------------------------------------------- job lookup for Simply Studio
+# Studio's "Find a Service Fusion customer" box asks here (server to server, on the Docker network). Each request is
+# signed with a key made from the shared Studio secret and names the Studio user, who is written to the activity log.
+STUDIO_API_MAX_AGE = 60
+
+
+def studio_caller(request: Request) -> str:
+    if not STUDIO_SSO_SECRET:
+        raise HTTPException(503, "The Service Fusion lookup isn't set up for Studio.")
+    ts, who, sig = (request.headers.get(h, "") for h in ("x-studio-ts", "x-studio-who", "x-studio-sig"))
+    if not ts.isdigit() or abs(time.time() - int(ts)) > STUDIO_API_MAX_AGE or not who.strip():
+        raise HTTPException(401, "Studio request expired or unsigned.")
+    key = hmac.new(STUDIO_SSO_SECRET.encode(), b"studio-sf-api", hashlib.sha256).digest()
+    want = _b64u(hmac.new(key, f"{ts}|{request.scope['path']}|{request.url.query}|{who}".encode(), hashlib.sha256).digest())
+    if not hmac.compare_digest(want, sig):
+        raise HTTPException(401, "Studio request signature didn't match.")
+    return who.strip()[:120]
+
+
+@app.get("/api/studio/jobs")
+def studio_job_search(request: Request, q: str = ""):
+    studio_caller(request)
+    if not sfjobs.configured():
+        return {"connected": False, "results": []}
+    return {"results": sfjobs.search("studio", q[:60]), **sfjobs.status()}
+
+
+@app.get("/api/studio/jobs/{number}")
+async def studio_job_details(number: str, request: Request):
+    who = studio_caller(request)
+    if not sfjobs.configured():
+        raise HTTPException(400, "The job lookup isn't connected to Service Fusion yet.")
+    if not re.fullmatch(r"\d{4,20}", number):
+        raise HTTPException(404, "No such job.")
+    d = await run_in_threadpool(sfjobs.details, number)
+    if not d:
+        raise HTTPException(404, "That job isn't in the open-jobs list any more. Type the details in.")
+    audit(None, f"{who} (Studio)", "job_details_opened", f"job:{number}", {"form": "studio"}, client_ip(request), ua(request))
+    return d
+
+
 # ---------------------------------------------------------------- reports
 def _save_photo(upload_bytes: bytes, dest: str, g: dict | None = None, receipt: str = "", who: str = "",
                 clean_dest: str | None = None) -> int:

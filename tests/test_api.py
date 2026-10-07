@@ -1030,6 +1030,44 @@ def test_job_lookup_refresh_search_and_pick(client, fake_sf, smtp):
     assert len(client.get("/ops/api/jobs?form=install&q=bill", headers=H).json()["results"]) == 1
 
 
+def test_job_lookup_for_studio_is_signed(client, fake_sf):
+    import base64 as b64, hashlib as hl, hmac as hm, time as tm, urllib.parse as up
+    from app import main as M
+    fake_sf.refresh("test")
+    secret = "s" * 64
+    old, M.STUDIO_SSO_SECRET = M.STUDIO_SSO_SECRET, secret
+
+    def signed(path, params=None, who="Paz Galambos", ts=None, key_secret=secret):
+        query = up.urlencode(params or {})
+        ts = str(ts or int(tm.time()))
+        key = hm.new(key_secret.encode(), b"studio-sf-api", hl.sha256).digest()
+        sig = b64.urlsafe_b64encode(hm.new(key, f"{ts}|{path}|{query}|{who}".encode(), hl.sha256).digest()).decode().rstrip("=")
+        return client.get(path + ("?" + query if query else ""),
+                          headers={"X-Studio-Ts": ts, "X-Studio-Who": who, "X-Studio-Sig": sig})
+
+    try:
+        client.cookies.clear()
+        r = signed("/api/studio/jobs", {"q": "bill t"})
+        assert r.status_code == 200 and [j["customer"] for j in r.json()["results"]] == ["Bill Tom"]
+        assert set(r.json()["results"][0]) == {"number", "last4", "customer", "status", "date", "category"}
+        assert len(signed("/api/studio/jobs").json()["results"]) == 25          # nothing typed: nearest-dated open jobs
+        d = signed("/api/studio/jobs/10236418931")
+        assert d.status_code == 200 and d.json()["email"] == "cust1@example.com"
+        a = conn().execute("SELECT actor_id, actor_name, target FROM audit WHERE action='job_details_opened' ORDER BY id DESC LIMIT 1").fetchone()
+        assert tuple(a) == (None, "Paz Galambos (Studio)", "job:10236418931")
+        assert signed("/api/studio/jobs/99999999").status_code == 404
+        # unsigned, wrong secret, stale, or tampered: refused
+        assert client.get("/api/studio/jobs?q=bill").status_code == 401
+        assert signed("/api/studio/jobs", {"q": "bill"}, key_secret="t" * 64).status_code == 401
+        assert signed("/api/studio/jobs", {"q": "bill"}, ts=int(tm.time()) - 300).status_code == 401
+        good = signed("/api/studio/jobs", {"q": "bill"}).request.headers
+        assert client.get("/api/studio/jobs?q=tom", headers=dict(good)).status_code == 401
+        M.STUDIO_SSO_SECRET = ""
+        assert signed("/api/studio/jobs").status_code == 503
+    finally:
+        M.STUDIO_SSO_SECRET = old
+
+
 def test_job_lookup_changes_flagged_internally_only(client, fake_sf, smtp):
     login(client, "Adem Atis", "246810")
     sig = io.BytesIO(); Image.new("RGBA", (600, 200), (0, 0, 0, 0)).save(sig, "PNG")
