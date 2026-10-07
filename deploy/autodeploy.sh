@@ -50,7 +50,8 @@ main() {
   echo "Swapping in the new code (copy of the current code: $BACKUP)"
   tar czf "$BACKUP" -C "$APPDIR" --exclude=./.env .
   replace_code "$APPDIR" "$SRC"
-  if (cd "$STACK" && docker compose up -d --build opsapp) && healthy "$PORT"; then
+  printf '%s %s\n' "$SHORT" "$SUBJECT" > "$APPDIR/app/COMMIT"
+  if (cd "$STACK" && docker compose up -d --build opsapp) && healthy "$PORT" "$SHORT"; then
     echo "$NEW" > "$STATE"; rm -f "$FAILED"
     echo "Updated to $SHORT"
     alert "Ops app updated" "$SHORT: $SUBJECT" default
@@ -76,10 +77,12 @@ replace_code() {
   cp -r "$2/app" "$2/Dockerfile" "$2/requirements.txt" "$2/.dockerignore" "$2/deploy" "$1/"
 }
 
+# Healthy = answers ok and, when a commit is given, is actually running that commit (not the old container).
 healthy() {
-  local i
+  local i want='"ok":true'
+  [ -n "${2:-}" ] && want="\"commit\":\"$2\""
   for i in $(seq 1 40); do
-    curl -sf --max-time 5 "http://127.0.0.1:$1/ops/healthz" | grep -q '"ok":true' && return 0
+    curl -sf --max-time 5 "http://127.0.0.1:$1/ops/healthz" | grep -q "$want" && return 0
     sleep 3
   done
   return 1

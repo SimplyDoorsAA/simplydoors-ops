@@ -335,7 +335,7 @@
           Last database snapshot: ${esc(s.last_backup || "none yet")} ·
           Last off-site copy: ${s.offsite.configured ? esc(s.offsite.last_ok ? when(s.offsite.last_ok) : "never") + (s.offsite.dest ? ` to ${esc(s.offsite.dest)}` : "") : "not set up"} ·
           Job lookup: ${!s.job_lookup || !s.job_lookup.connected ? "not connected" : s.job_lookup.last_ok ? `${s.job_lookup.jobs} open jobs, updated ${esc(when(s.job_lookup.last_ok))}` : "connected, not loaded yet"} ·
-          Version ${esc(s.version)}</p>
+          Version ${esc(s.version)}${s.commit ? ` · GitHub ${esc(s.commit)}` : ""}</p>
         <h3>Recent emails</h3>
         ${s.recent_emails.map(e => `<div class="rule">${emailBadge(e.status)} ${esc(e.subject)}<div class="det">To: ${esc(e.recipients)} · tries: ${e.attempts}
           ${e.last_error ? `<br>Error: ${esc(e.last_error)}` : ""}</div>
