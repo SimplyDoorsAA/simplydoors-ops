@@ -485,3 +485,74 @@ def build_customer_pdf(report, data: dict, photos: list) -> bytes:
         canvas.restoreState()
     doc.build(story, onFirstPage=footer, onLaterPages=footer)
     return buf.getvalue()
+
+
+def _money(v) -> str:
+    return "TBD" if v is None else f"${v:,.2f}"
+
+
+def build_po_pdf(po: dict, vendor: dict) -> bytes:
+    """A purchase order to a vendor (Price List). po: pricelist.po_out(..., with_lines=True)."""
+    from .pricelist import OUR_ADDRESS, OUR_NAME
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=0.6 * inch, rightMargin=0.6 * inch,
+                            topMargin=0.5 * inch, bottomMargin=0.6 * inch, title=f"Purchase Order {po['po_number']}")
+    ss = getSampleStyleSheet()
+    dark = colors.HexColor("#2f5d50")
+    cell = ParagraphStyle("pcell", parent=ss["Normal"], fontSize=9.5, leading=12)
+    bold = ParagraphStyle("pbold", parent=cell, fontName="Helvetica-Bold")
+    small = ParagraphStyle("psmall", parent=cell, fontSize=8.5, textColor=colors.HexColor("#555555"))
+    title = ParagraphStyle("ptitle", parent=ss["Title"], fontSize=22, leading=26, alignment=2, spaceAfter=4)
+    lbl = ParagraphStyle("plbl", parent=cell, fontName="Helvetica-Bold", textColor=colors.white, fontSize=8.5)
+    cell_r = ParagraphStyle("pcellr", parent=cell, alignment=2)
+    lbl_r = ParagraphStyle("plblr", parent=lbl, alignment=2)
+    W = letter[0] - 1.2 * inch
+
+    logo = _img(LOGO, 1.6 * inch, 0.6 * inch) if os.path.exists(LOGO) else ""
+    ours = Paragraph(f"<b>{escape(OUR_NAME)}</b><br/>" + "<br/>".join(escape(x) for x in OUR_ADDRESS), cell)
+    meta = Table([[Paragraph("PO #", bold), Paragraph(escape(po["po_number"]), cell)],
+                  [Paragraph("Date", bold), Paragraph(escape(po["order_date"]), cell)],
+                  [Paragraph("Job", bold), Paragraph(escape(f"{po['job_number']} · {po['job_customer']}".strip(" ·")), cell)]],
+                 colWidths=[0.7 * inch, 2.3 * inch])
+    meta.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#bbbbbb")),
+                              ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#f3f5f4")),
+                              ("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    head = Table([[[logo, Spacer(1, 6), ours], [Paragraph("PURCHASE ORDER", title), meta]]], colWidths=[W - 3.1 * inch, 3.1 * inch])
+    head.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                              ("RIGHTPADDING", (0, 0), (-1, -1), 0), ("ALIGN", (1, 0), (1, 0), "RIGHT")]))
+    ship = ([OUR_NAME] + OUR_ADDRESS[:2]) if po["ship_to"] == "shop" else ["Job site", po["ship_address"] or "(no address on the job)"]
+    blocks = Table([[Paragraph("VENDOR", lbl), Paragraph("SHIP TO", lbl), Paragraph("SHIPPING", lbl)],
+                    [Paragraph(f"<b>{escape(vendor['name'])}</b><br/>" + "<br/>".join(escape(x) for x in vendor.get("address") or []), cell),
+                     Paragraph(f"<b>{escape(ship[0])}</b><br/>" + "<br/>".join(escape(x) for x in ship[1:]), cell),
+                     Paragraph(f"{escape(po['ship_method'])}<br/><br/><b>Ordered by</b><br/>{escape(po.get('by') or '')}", cell)]],
+                   colWidths=[W / 3] * 3)
+    blocks.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), dark), ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                                ("LEFTPADDING", (0, 0), (-1, -1), 6)]))
+    rows = [[Paragraph(x, lbl) for x in ("QTY", "PART #", "DESCRIPTION")] + [Paragraph(x, lbl_r) for x in ("UNIT", "AMOUNT")]]
+    surcharge = 0.0
+    for ln in po["lines"]:
+        desc = escape(ln["name"]) + (f"<br/><font color='#555555'>{escape(ln['size'])}</font>" if ln.get("size") else "")
+        if ln.get("surcharge"):
+            surcharge += ln["surcharge"]
+            desc += "<br/><font color='#8a5a00'>Non-stock, under 10: +30%</font>"
+        unit = _money(ln["price"]) + (f"<br/><font color='#555555'>per {escape(ln['uom'])}</font>" if ln.get("uom") else "")
+        rows.append([Paragraph(str(ln["qty"]), cell), Paragraph(escape(ln["sku"]), cell), Paragraph(desc, cell),
+                     Paragraph(unit, cell_r), Paragraph(_money(ln["total"]), cell_r)])
+    lines = Table(rows, colWidths=[0.5 * inch, 1.5 * inch, W - 3.9 * inch, 0.95 * inch, 0.95 * inch], repeatRows=1)
+    lines.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), dark), ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                               ("LINEBELOW", (0, 1), (-1, -1), 0.4, colors.HexColor("#dddddd")),
+                               ("ALIGN", (3, 0), (-1, -1), "RIGHT")]))
+    tbd = any(ln["price"] is None for ln in po["lines"])
+    tot_rows = [["Items", _money(round(po["total"] - surcharge, 2))]]
+    if surcharge:
+        tot_rows.append(["Non-stock surcharge (30%)", _money(round(surcharge, 2))])
+    tot_rows.append(["Total" + (" (excl. TBD)" if tbd else ""), _money(po["total"])])
+    tots = Table(tot_rows, colWidths=[2.2 * inch, 1.1 * inch], hAlign="RIGHT")
+    tots.setStyle(TableStyle([("ALIGN", (1, 0), (1, -1), "RIGHT"), ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+                              ("LINEABOVE", (0, -1), (-1, -1), 1.2, colors.black)]))
+    story = [head, Spacer(1, 16), blocks, Spacer(1, 14), lines, Spacer(1, 8), tots, Spacer(1, 14),
+             Paragraph(f"<b>Notes:</b> {escape(po['notes']) or '—'}", cell), Spacer(1, 30),
+             Paragraph(f"Prices per {escape(vendor['name'])} {escape(po.get('sheet_label') or '')}. "
+                       f"Please reference PO # {escape(po['po_number'])} on all invoices and packing slips.", small)]
+    doc.build(story)
+    return buf.getvalue()

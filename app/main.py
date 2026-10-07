@@ -33,7 +33,7 @@ Image.MAX_IMAGE_PIXELS = 40_000_000           # phone photos are ~12-50 MP; refu
 warnings.simplefilter("error", Image.DecompressionBombWarning)
 PHOTO_FORMATS = ["JPEG", "PNG", "WEBP"]
 
-from . import alerts, auth, geo, mailer, sfjobs
+from . import alerts, auth, geo, mailer, pricelist, sfjobs
 from .db import DATA_DIR, DB_PATH, audit, conn, delete_audit_rows, get_setting, init_db, now_iso, set_setting
 from . import forms as forms_mod
 from .forms import (FORM_BY_SLUG, FORMS, EXTRA_RULES, LIST_LABELS, DEFAULT_LISTS, clean, get_list, photo_minimums,
@@ -47,7 +47,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-32"
+APP_VERSION = "stage3-33"
 
 
 @asynccontextmanager
@@ -139,6 +139,11 @@ def staff_page():
 @app.get("/admin", include_in_schema=False)
 def admin_page():
     return page("admin.html")
+
+
+@app.get("/pricelist", include_in_schema=False)
+def pricelist_page():
+    return page("pricelist.html")
 
 
 @app.get("/sw.js", include_in_schema=False)
@@ -340,11 +345,12 @@ def me(staff=Depends(current_staff)):
         "studio_url": STUDIO_URL if shows_studio(staff) else None,
         "forms": [public_spec(t) for t in visible_forms(staff)],
         "job_lookup": sfjobs.configured(),
+        "price_list": pricelist.allowed(staff),
     }
 
 
 # ---------------------------------------------------------------- job lookup (Service Fusion copy)
-JOB_FORMS = {"install", "measure", "delivery"}
+JOB_FORMS = {"install", "measure", "delivery", "po"}
 
 
 @app.get("/api/jobs")
@@ -1032,7 +1038,7 @@ def _staff_out(r, viewer=None):
     return {"id": r["id"], "name": r["name"], "dept": r["dept"], "email": r["email"],
             "is_admin": bool(r["is_admin"]), "is_owner": bool(r["is_owner"]),
             "sales_notify": bool(r["sales_notify"]), "active": bool(r["active"]), "has_pin": bool(r["pin_hash"]),
-            "studio": shows_studio(r),
+            "studio": shows_studio(r), "price_list": bool(r["price_list"]),
             "pin_set_at": r["pin_set_at"], "pin_source": r["pin_source"], "locked": locked, "invite": invite,
             "invite_expires": inv["expires_at"] if inv else None}
 
@@ -1067,6 +1073,8 @@ def _validate_staff(body: dict, partial: bool):
             out[k] = 1 if body[k] else 0
     if "studio_link" in body:
         out["studio_link"] = 1 if body["studio_link"] else 0
+    if "price_list" in body:
+        out["price_list"] = 1 if body["price_list"] else 0
     return out
 
 
@@ -1316,6 +1324,198 @@ def admin_status(admin=Depends(current_admin)):
         "offsite": offsite_status(),
         "job_lookup": sfjobs.status(),
     }
+
+
+# ---------------------------------------------------------------- Price List (beta)
+def current_pricelist(request: Request):
+    row = current_staff(request)
+    if not pricelist.allowed(row):
+        raise HTTPException(403, "The Price List isn't switched on for you. Ask Adem or Paz.")
+    return row
+
+
+def _vendor(code: str) -> dict:
+    v = next((x for x in pricelist.vendors() if x["code"] == code), None)
+    if not v:
+        raise HTTPException(404, "No such vendor.")
+    return v
+
+
+@app.get("/api/pricelist/vendors")
+def pl_vendors(staff=Depends(current_pricelist)):
+    return [{k: v[k] for k in ("code", "name", "address", "sheet")} | {"can_order": bool(v["order_email"])}
+            for v in pricelist.vendors()]
+
+
+@app.get("/api/pricelist/items")
+def pl_items(request: Request, vendor: str, staff=Depends(current_pricelist)):
+    v = _vendor(vendor)
+    rows = pricelist.items(v["code"])
+    audit(staff["id"], staff["name"], "price_list_viewed", v["name"], {"items": len(rows)}, client_ip(request), ua(request))
+    return {"vendor": v["code"], "sheet": v["sheet"], "items": rows}
+
+
+@app.get("/api/pricelist/po-check")
+def pl_po_check(po: str = "", staff=Depends(current_pricelist)):
+    return {"sent_before": pricelist.sent_before(po.strip()[:60])}
+
+
+@app.post("/api/pricelist/pos")
+async def pl_send_po(request: Request, staff=Depends(current_pricelist)):
+    body = await request.json()
+    v = _vendor(str(body.get("vendor", "")))
+    test = bool(staff["is_owner"]) and get_setting("owner_test_mode") == "1"
+    if not v["order_email"] and not test:
+        raise HTTPException(400, f"{v['name']} has no order email yet. An admin sets it in Admin → Price List.")
+    if not sfjobs.configured():
+        raise HTTPException(400, "The job lookup isn't connected to Service Fusion, so there's no PO number to use.")
+    job = str(body.get("job_number", "")).strip()
+    if not re.fullmatch(r"\d{4,20}", job):
+        raise HTTPException(422, "Pick the job first.")
+    d = await run_in_threadpool(sfjobs.details, job)
+    if not d:
+        raise HTTPException(404, "That job isn't in the open-jobs list any more. Tap Refresh and pick it again.")
+    po_number = (d.get("po_number") or "").strip()
+    if not po_number:
+        raise HTTPException(422, "This job has no PO number in Service Fusion. Add it there, then refresh jobs.")
+    method = str(body.get("ship_method", ""))
+    if method not in pricelist.SHIP_METHODS:
+        raise HTTPException(422, "Pick a shipping method.")
+    ship_to = "site" if body.get("ship_to") == "site" else "shop"
+    day = str(body.get("order_date", ""))
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        day = datetime.now(pricelist_tz()).strftime("%Y-%m-%d")
+    try:
+        lines, total, label = pricelist.build_lines(v["code"], body.get("lines") or [])
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+    notes = str(body.get("notes", "")).strip()[:1000]
+    if test:
+        em = (staff["email"] or "").strip()
+        if not em:
+            raise HTTPException(400, "Test mode sends the PO to you, but your account has no email.")
+        sent_to = em
+    else:
+        sent_to = v["order_email"]
+    c = conn()
+    cur = c.execute(
+        "INSERT INTO pl_pos(po_number, vendor, job_number, job_customer, order_date, ship_method, ship_to, ship_address,"
+        " notes, lines, total, sheet_label, staff_id, sent_to, is_test, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (po_number, v["code"], job, d.get("customer") or "", day, method, ship_to, d.get("address") or "", notes,
+         json.dumps(lines), total, label, staff["id"], sent_to, 1 if test else 0, now_iso()))
+    pid = cur.lastrowid
+    subject = f"{'TEST - ' if test else ''}SimplyDoors Purchase Order {po_number}"
+    if test:
+        c.execute("INSERT INTO emails(report_id, po_id, recipients, cc, subject, created_at, next_try_at, audience)"
+                  " VALUES (NULL,?,?,'',?,?,?,'vendor')", (pid, sent_to, subject, now_iso(), now_iso()))
+        mailer._wake.set()
+    else:
+        mailer.queue_po_email(pid, sent_to, subject)
+    audit(staff["id"], staff["name"], "po_sent", f"po:{pid}",
+          {"po": po_number, "vendor": v["name"], "job": job, "to": sent_to, "lines": len(lines), "total": total,
+           **({"test": True} if test else {})}, client_ip(request), ua(request))
+    return pricelist.po_out(pricelist.get_po(pid), with_lines=True)
+
+
+def pricelist_tz():
+    from zoneinfo import ZoneInfo
+    return ZoneInfo(os.environ.get("TZ_DISPLAY", "America/Chicago"))
+
+
+@app.get("/api/pricelist/pos")
+def pl_pos(staff=Depends(current_pricelist)):
+    return pricelist.recent_pos()
+
+
+def _po_or_404(pid: int):
+    r = pricelist.get_po(pid)
+    if not r:
+        raise HTTPException(404, "No such purchase order.")
+    return r
+
+
+@app.get("/api/pricelist/pos/{pid}")
+def pl_po(pid: int, staff=Depends(current_pricelist)):
+    r = _po_or_404(pid)
+    out = pricelist.po_out(r, with_lines=True)
+    e = conn().execute("SELECT status, recipients, cc, sent_at, last_error FROM emails WHERE po_id=? ORDER BY id DESC LIMIT 1",
+                       (pid,)).fetchone()
+    out["email"] = dict(e) if e else None
+    return out
+
+
+@app.get("/api/pricelist/pos/{pid}/pdf")
+def pl_po_pdf(pid: int, request: Request, staff=Depends(current_pricelist)):
+    from .pdf import build_po_pdf
+    r = _po_or_404(pid)
+    po = pricelist.po_out(r, with_lines=True)
+    audit(staff["id"], staff["name"], "po_pdf_downloaded", f"po:{pid}", {"po": po["po_number"]}, client_ip(request), ua(request))
+    pdf = build_po_pdf(po, _vendor(po["vendor"]))
+    return Response(pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'inline; filename="SimplyDoors_PO_{pricelist.safe_name(po["po_number"])}.pdf"'})
+
+
+# admin side: vendor order emails and price sheet uploads
+@app.get("/api/admin/pricelist")
+def admin_pricelist(admin=Depends(current_admin)):
+    c = conn()
+    sheets = [dict(r) for r in c.execute("SELECT id, vendor, label, filename, items, uploaded_at, uploaded_by, active"
+                                         " FROM pl_sheets ORDER BY id DESC LIMIT 30")]
+    return {"vendors": pricelist.vendors(), "sheets": sheets, "columns": list(pricelist.CSV_COLUMNS),
+            "required": list(pricelist.REQUIRED), "categories": list(pricelist.CATS),
+            "people": [r["name"] for r in c.execute("SELECT name FROM staff WHERE active=1 AND (price_list=1 OR is_owner=1) ORDER BY name")]}
+
+
+@app.put("/api/admin/pricelist/vendors/{code}")
+async def admin_pricelist_vendor(code: str, request: Request, admin=Depends(current_admin)):
+    body = await request.json()
+    v = _vendor(code)
+    email = str(body.get("order_email", v["order_email"])).strip()
+    if email and not EMAIL_RE.match(email):
+        raise HTTPException(422, "That email address doesn't look right.")
+    address = "\n".join(x.strip() for x in str(body.get("address", "\n".join(v["address"]))).splitlines() if x.strip())[:400]
+    changes = {}
+    if email != v["order_email"]:
+        changes["order_email"] = {"from": v["order_email"], "to": email}
+    if address != "\n".join(v["address"]):
+        changes["address"] = {"from": "\n".join(v["address"]), "to": address}
+    if not changes:
+        return {"ok": True}
+    conn().execute("UPDATE pl_vendors SET order_email=?, address=? WHERE code=?", (email, address, v["code"]))
+    audit(admin["id"], admin["name"], "vendor_changed", v["name"], changes, client_ip(request), ua(request))
+    if "order_email" in changes:
+        alerts.push("Ops app: vendor PO email changed",
+                    f"{admin['name']} changed where {v['name']} purchase orders go: "
+                    f"{changes['order_email']['from'] or '(none)'} → {email or '(none)'}.", "high")
+    return {"ok": True}
+
+
+@app.post("/api/admin/pricelist/upload")
+async def admin_pricelist_upload(request: Request, admin=Depends(current_admin)):
+    form = await request.form()
+    v = _vendor(str(form.get("vendor", "")))
+    label = str(form.get("label", "")).strip()[:120]
+    if len(label) < 3:
+        raise HTTPException(422, "Give the sheet a name, like “Full Line Catalog eff. 6/15/2026”.")
+    f = form.get("file")
+    if f is None or not hasattr(f, "read"):
+        raise HTTPException(422, "Pick the CSV file to upload.")
+    try:
+        raw = await f.read()
+        if len(raw) > 10 * 1024 * 1024:
+            raise HTTPException(413, "That file is too large (10 MB max).")
+        try:
+            rows = pricelist.parse_sheet(raw)
+        except pricelist.SheetError as e:
+            raise HTTPException(422, str(e)) from None
+    finally:
+        await f.close()
+    sid = await run_in_threadpool(pricelist.load_sheet, v["code"], label, str(getattr(f, "filename", ""))[:120], rows, admin["name"])
+    audit(admin["id"], admin["name"], "price_sheet_loaded", v["name"],
+          {"sheet": label, "items": len(rows), "no_price": sum(1 for r in rows if r["price"] is None),
+           "flagged": sum(1 for r in rows if r["flag"])}, client_ip(request), ua(request))
+    alerts.push("Ops app: price sheet loaded", f"{admin['name']} loaded {v['name']}: {label} ({len(rows)} items).")
+    return {"ok": True, "sheet_id": sid, "items": len(rows)}
 
 
 # ---------------------------------------------------------------- housekeeping

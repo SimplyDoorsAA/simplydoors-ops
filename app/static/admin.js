@@ -41,13 +41,16 @@
     owner_copies_set_up: "Owner's address moved to private copies", test_data_reset: "Test data cleared (server console)", list_changed: "Changed a pick list", forms_switched: "Changed which forms staff see", measure_reopened: "Reopened a measure",
     test_mode_on: "Turned test mode on", test_mode_off: "Turned test mode off",
     log_lines_deleted: "Deleted own log lines", studio_opened: "Opened Simply Studio", test_report_deleted: "Deleted a test report",
+    price_list_viewed: "Opened the Price List", po_sent: "Sent a purchase order", po_pdf_downloaded: "Opened a PO PDF",
+    vendor_changed: "Changed a vendor (Price List)", price_sheet_loaded: "Loaded a price sheet",
   };
 
   // ------------------------------------------------------------ tabs
   function tab(name) {
     $$(".tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
     $$("[data-panel]").forEach(p => p.classList.toggle("hidden", p.dataset.panel !== name));
-    ({ reports: loadReports, log: () => loadLog(true), staff: loadStaff, rules: loadRules, lists: loadLists, status: loadStatus })[name]();
+    ({ reports: loadReports, log: () => loadLog(true), staff: loadStaff, rules: loadRules, lists: loadLists, pricelist: loadPriceList,
+       status: loadStatus })[name]();
   }
   $$(".tabs button").forEach(b => b.onclick = () => tab(b.dataset.tab));
 
@@ -164,7 +167,7 @@
       $("#depts").innerHTML = [...new Set(rows.map(r => r.dept))].map(d => `<option>${esc(d)}</option>`).join("");
       $("#staffList").innerHTML = `<table class="rows"><thead><tr><th>Name</th><th class="hide-sm">Dept</th><th class="hide-sm">Email</th><th>PIN</th><th></th></tr></thead><tbody>` +
         rows.map(r => `<tr${r.active ? "" : ' style="opacity:.5"'}><td><b>${esc(r.name)}</b>
-          ${r.is_owner ? ' <span class="badge ok">owner</span>' : r.is_admin ? ' <span class="badge ok">admin</span>' : ""}${r.sales_notify ? ' <span class="badge">sales list</span>' : ""}
+          ${r.is_owner ? ' <span class="badge ok">owner</span>' : r.is_admin ? ' <span class="badge ok">admin</span>' : ""}${r.sales_notify ? ' <span class="badge">sales list</span>' : ""}${r.price_list ? ' <span class="badge">price list</span>' : ""}
           ${r.active ? "" : ' <span class="badge">turned off</span>'}${r.locked ? ' <span class="badge bad">locked</span>' : ""}</td>
           <td class="hide-sm">${esc(r.dept)}</td><td class="hide-sm">${esc(r.email)}</td>
           <td>${r.has_pin ? `<span class="badge ok">set</span><div class="det">${esc(PIN_SRC[r.pin_source] || r.pin_source || "")}</div>` : '<span class="badge bad">none</span>'}
@@ -219,6 +222,7 @@
         <label>Work email<input name="email" type="email" value="${esc(r.email)}"${(r.is_admin || r.is_owner) && !amOwner ? " readonly" : ""}></label>
         <label class="inline"><input name="sales_notify" type="checkbox" ${r.sales_notify ? "checked" : ""}> Shows in "Notify a sales rep"</label>
         <label class="inline"><input name="studio_link" type="checkbox" ${r.studio ? "checked" : ""}> Shows the Simply Studio tile</label>
+        <label class="inline"><input name="price_list" type="checkbox" ${r.price_list ? "checked" : ""}> Can open the Price List (vendor net costs, send POs)</label>
         <label class="inline"><input name="is_admin" type="checkbox" ${r.is_admin ? "checked" : ""}${!r.is_admin && !amOwner ? " disabled" : ""}> Admin (sees everything)</label>
         <label class="inline"><input name="active" type="checkbox" ${r.active ? "checked" : ""}> Can sign in</label>
         <button class="mini primary" type="submit">Save changes</button>
@@ -237,7 +241,8 @@
       const el = f.elements;
       const body = { name: el.name.value, dept: el.dept.value, ...(el.email ? { email: el.email.value } : {}),
         sales_notify: el.sales_notify.checked, is_admin: el.is_admin.checked, active: el.active.checked,
-        ...(el.studio_link.checked !== !!r.studio ? { studio_link: el.studio_link.checked } : {}) };
+        ...(el.studio_link.checked !== !!r.studio ? { studio_link: el.studio_link.checked } : {}),
+        ...(el.price_list.checked !== !!r.price_list ? { price_list: el.price_list.checked } : {}) };
       if (body.is_admin && !r.is_admin && !confirm(`Make ${r.name} an admin? Admins can see every report, including disciplinary records, and the full activity log.`)) return;
       try { await api(`api/admin/staff/${r.id}`, { method: "PATCH", json: body }); toast("Saved"); closeSheet(); loadStaff(); } catch (e) { fail(e); }
     };
@@ -313,6 +318,48 @@
     const forms = $$("#formsSwitches input:checked").map(i => i.value);
     if (!confirm(forms.length ? `Staff will see: ${forms.join(", ")}. Save?` : "Staff will see no forms at all. Save?")) return;
     try { await api("api/admin/forms-enabled", { method: "PUT", json: { forms } }); toast("Saved"); loadLists(); } catch (e) { fail(e); }
+  };
+
+  // ------------------------------------------------------------ Price List (beta)
+  async function loadPriceList() {
+    try {
+      const d = await api("api/admin/pricelist");
+      $("#plPeople").innerHTML = `Can open it now: <b>${esc(d.people.join(", ") || "nobody yet")}</b>`;
+      $("#plVendors").innerHTML = d.vendors.map(v => `<div class="rule"><h3>${esc(v.name)} ${v.sheet ? `<span class="badge ok">${v.sheet.items} items</span>` : '<span class="badge">no sheet</span>'}</h3>
+        ${v.sheet ? `<div class="det">Live sheet: ${esc(v.sheet.label)} · loaded ${esc(when(v.sheet.uploaded_at))} by ${esc(v.sheet.uploaded_by)}</div>` : ""}
+        <form class="grid" data-vendor="${esc(v.code)}">
+          <label>PO email (where purchase orders go)<input name="order_email" type="email" value="${esc(v.order_email)}" placeholder="orders@vendor.com"></label>
+          <label>Address printed on the PO<textarea name="address" rows="3">${esc(v.address.join("\n"))}</textarea></label>
+          <button class="mini primary" type="submit">Save ${esc(v.name)}</button></form></div>`).join("");
+      $$("#plVendors form").forEach(f => f.onsubmit = async (ev) => {
+        ev.preventDefault();
+        const el = f.elements;
+        try { await api(`api/admin/pricelist/vendors/${f.dataset.vendor}`, { method: "PUT", json: { order_email: el.order_email.value.trim(), address: el.address.value } });
+          toast("Saved"); loadPriceList(); } catch (e) { fail(e); }
+      });
+      $("#plVendorSel").innerHTML = d.vendors.map(v => `<option value="${esc(v.code)}">${esc(v.name)}</option>`).join("");
+      $("#plCols").innerHTML = `First row: column names (any order). Needed: <b>${esc(d.required.join(", "))}</b>. Optional: ${esc(d.columns.filter(c => !d.required.includes(c)).join(", "))}.<br>
+        category must be one of: ${esc(d.categories.join(" · "))}. price blank = call for price. stocked: Y / N / blank. width_in / height_in: door size in inches.`;
+      $("#plSheets").innerHTML = d.sheets.length ? `<table class="rows"><thead><tr><th>Vendor</th><th>Sheet</th><th>Items</th><th class="hide-sm">Loaded</th></tr></thead><tbody>` +
+        d.sheets.map(s => `<tr${s.active ? "" : ' style="opacity:.55"'}><td>${esc((d.vendors.find(v => v.code === s.vendor) || {}).name || s.vendor)}</td>
+          <td>${esc(s.label)}${s.active ? ' <span class="badge ok">live</span>' : ""}<div class="det">${esc(s.filename)}</div></td><td>${s.items}</td>
+          <td class="hide-sm">${esc(when(s.uploaded_at))}<div class="det">${esc(s.uploaded_by)}</div></td></tr>`).join("") + "</tbody></table>"
+        : '<p class="muted">No sheets loaded yet.</p>';
+    } catch (e) { fail(e); }
+  }
+  $("#plUpload").onsubmit = async (ev) => {
+    ev.preventDefault();
+    const f = ev.target, btn = f.querySelector("button");
+    const vendorName = f.elements.vendor.selectedOptions[0].textContent;
+    if (!confirm(`Load this sheet for ${vendorName}? It replaces ${vendorName}'s current items for everyone.`)) return;
+    btn.disabled = true; btn.textContent = "Loading…";
+    try {
+      const r = await fetch("api/admin/pricelist/upload", { method: "POST", credentials: "same-origin", headers: { "X-SD-App": "1" }, body: new FormData(f) });
+      const data = await r.json().catch(() => null);
+      if (!r.ok) throw new Error((data && data.detail) || `Error ${r.status}`);
+      toast(`Loaded ${data.items} items`); f.reset(); loadPriceList();
+    } catch (e) { fail(e); }
+    btn.disabled = false; btn.textContent = "Load sheet";
   };
 
   // ------------------------------------------------------------ status

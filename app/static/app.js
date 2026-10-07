@@ -360,6 +360,7 @@
     incident: ic('<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/>'),
     disciplinary: ic('<path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h7M9 17h5"/>'),
     studio: ic('<rect x="3" y="4" width="18" height="14" rx="2"/><path d="M7 15l3-4 2 3 2-2 3 3M3 21h18"/>'),
+    pricelist: ic('<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.5"/>'),
     measure: ic('<path d="M3 17L17 3l4 4L7 21z"/><path d="M7 13l2 2M10 10l2 2M13 7l2 2"/>'),
     install: ic('<path d="M6 21V3h12v18"/><path d="M3 21h18M14 12h1"/>'),
     rma: ic('<path d="M4 12a8 8 0 1 0 2.3-5.7"/><path d="M4 4v4h4"/><path d="M9 10l3-2 3 2v5H9z"/>'),
@@ -437,6 +438,11 @@
         <span class="card-title">${esc(f.type)}</span>
         <span class="card-sub">${esc(f.blurb)}</span>
         ${me.is_admin && !f.staff_can_see ? '<span class="pillnote">hidden from staff</span>' : ""}</button>`).join("") || `<p class="muted">No forms are switched on yet.</p>`;
+    if (me.price_list) cards.insertAdjacentHTML("afterbegin", `<a class="card tilecard pricelist" href="pricelist" id="priceTile" title="Vendor prices and purchase orders (beta)">
+        <span class="card-icon" aria-hidden="true">${FORM_ICONS.pricelist}</span>
+        <span class="studio-txt"><span class="card-title">Price List <span class="beta">BETA</span></span>
+        <span class="studio-tag">Vendor net costs · purchase orders</span></span>
+        <span class="studio-go" aria-hidden="true">›</span></a>`);
     if (me.studio_url) cards.insertAdjacentHTML("afterbegin", `<a class="card tilecard studio" href="${esc(me.studio_url)}" target="_blank" rel="noopener" id="studioTile" title="Open Simply Studio (you're signed in automatically)">
         <span class="card-icon" aria-hidden="true">${FORM_ICONS.studio}</span>
         <span class="studio-txt"><span class="card-title">Simply Studio</span>

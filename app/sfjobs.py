@@ -399,5 +399,5 @@ def details(number: str) -> dict | None:
                                  addr.get("state", ""), addr.get("zip", "")) if x).strip()
     return {**_brief(j), "contact": j["contact"] or ct.get("contact", ""), "email": ct.get("email", ""),
             "phone": ct.get("phone", ""), "address": ", ".join(x for x in (line1, line2) if x),
-            "description": j["description"], "note": note}
+            "description": j["description"], "note": note, "po_number": j.get("po_number", "")}
 

@@ -1297,3 +1297,149 @@ def test_studio_lookup_odd_headers_are_401_not_500(client):
         assert e.value.status_code == 401
     finally:
         M.STUDIO_SSO_SECRET = old
+
+
+# ---------------------------------------------------------------- Price List (beta)
+# Made-up items only: real vendor prices are confidential and never go in this repository.
+SHEET_CSV = (
+    "sku,name,category,price,group,width_in,height_in,thickness,core,stocked,flag,page\n"
+    "TST-HC-2868,6 Panel Test,Interior molded,49.50,Test HC table,32,80,1-3/8\",HC,N,,9\n"
+    "TST-SC-3068,2 Panel Test,Interior molded,100.00,Test SC table,36,80,1-3/8\",SC,Y,,9\n"
+    "TST-LITE-1,Test decorative lite,Exterior glass & lites,,Test lites,,,,,,Price blank on sheet,38\n"
+).encode()
+
+
+def _upload(c, csv_bytes, vendor="WG", label="Test sheet eff. 1/1/2026"):
+    return c.post("/ops/api/admin/pricelist/upload", data={"vendor": vendor, "label": label},
+                  files={"file": ("sheet.csv", csv_bytes, "text/csv")}, headers=H)
+
+
+def test_price_list_is_off_until_switched_on(client):
+    login(client, "Jaime Mendoza", "135790")
+    assert client.get("/ops/api/me", headers=H).json()["price_list"] is False
+    assert client.get("/ops/api/pricelist/vendors", headers=H).status_code == 403
+    assert client.get("/ops/api/pricelist/items?vendor=WG", headers=H).status_code == 403
+    assert client.post("/ops/api/pricelist/pos", json={}, headers=H).status_code == 403
+    assert _upload(client, SHEET_CSV).status_code == 403                  # not an admin
+    assert client.get("/ops/pricelist").status_code == 200                 # the page itself is just a shell
+    login(client, "Adem Atis", "246810")
+    assert client.get("/ops/api/me", headers=H).json()["price_list"] is True   # the owner always can
+
+
+def test_price_sheet_upload_checks_the_file(client):
+    login(client, "Adem Atis", "246810")
+    r = _upload(client, b"sku,name,price\nA,B,1\n")
+    assert r.status_code == 422 and "category" in r.json()["detail"]
+    r = _upload(client, b"sku,name,category,price\nA,B,Doors,1\n")
+    assert r.status_code == 422 and "isn't one of" in r.json()["detail"]
+    r = _upload(client, b"sku,name,category,price\nA,B,Interior molded,abc\n")
+    assert r.status_code == 422 and "isn't a number" in r.json()["detail"]
+    r = _upload(client, b"sku,name,category,price\nA,B,Interior molded,1\na,C,Interior molded,2\n")
+    assert r.status_code == 200 and r.json()["items"] == 2                # vendor typo: both kept, both flagged
+    flags = [i["flag"] for i in client.get("/ops/api/pricelist/items?vendor=WG", headers=H).json()["items"]]
+    assert flags == ["Same part number is used for another item on this sheet"] * 2
+    r = _upload(client, SHEET_CSV)
+    assert r.status_code == 200 and r.json()["items"] == 3
+    items = client.get("/ops/api/pricelist/items?vendor=WG", headers=H).json()["items"]
+    by = {i["sku"]: i for i in items}
+    assert by["TST-LITE-1"]["price"] is None and by["TST-LITE-1"]["flag"] == "Price blank on sheet"
+    assert by["TST-HC-2868"]["stock"] is False and by["TST-SC-3068"]["stock"] is True and by["TST-HC-2868"]["w"] == 32
+    v = {x["code"]: x for x in client.get("/ops/api/pricelist/vendors", headers=H).json()}
+    assert v["WG"]["sheet"]["items"] == 3 and not v["WG"]["can_order"] and v["BC"]["sheet"] is None   # no PO email yet
+    assert "order_email" not in v["WG"]                                     # staff don't need the address itself
+    acts = [r[0] for r in conn().execute("SELECT action FROM audit WHERE action IN ('price_sheet_loaded','price_list_viewed')")]
+    assert "price_sheet_loaded" in acts and "price_list_viewed" in acts
+
+
+def test_vendor_po_email_is_admin_only(client, monkeypatch):
+    from app import alerts
+    pushed = []
+    monkeypatch.setattr(alerts, "push", lambda title, msg, priority="default": pushed.append(title))
+    login(client, "Jaime Mendoza", "135790")
+    assert client.put("/ops/api/admin/pricelist/vendors/WG", json={"order_email": "x@evil.test"}, headers=H).status_code == 403
+    login(client, "Paz Galambos", "112233")
+    assert client.put("/ops/api/admin/pricelist/vendors/WG", json={"order_email": "nope"}, headers=H).status_code == 422
+    assert client.put("/ops/api/admin/pricelist/vendors/WG", json={"order_email": "orders@vendor.test"}, headers=H).json()["ok"]
+    assert pushed == ["Ops app: vendor PO email changed"]
+    d = client.get("/ops/api/admin/pricelist", headers=H).json()
+    assert next(v for v in d["vendors"] if v["code"] == "WG")["order_email"] == "orders@vendor.test"
+
+
+def _seed_job(number, po, customer="Test Customer", street="5 Test Rd"):
+    row = {"number": number, "customer_id": None, "customer_name": customer, "contact": "", "status": "4 Need to Order",
+           "sub_status": "", "start_date": "2026-10-07", "category": "", "description": "", "po_number": po,
+           "street_1": street, "street_2": "", "city": "Schertz", "state": "TX", "zip": "78154", "location_name": ""}
+    conn().execute("INSERT OR REPLACE INTO sf_jobs(number, customer_id, customer_name, status, sub_status, start_date, search,"
+                   " data, synced_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                   (number, None, customer, row["status"], "", row["start_date"], customer.lower(), json.dumps(row), "2026-10-07T12:00:00Z"))
+
+
+def test_purchase_order_uses_the_sf_po_number_and_server_prices(client, smtp, monkeypatch):
+    from app import sfjobs
+    monkeypatch.setattr(sfjobs, "CLIENT_ID", "id")
+    monkeypatch.setattr(sfjobs, "CLIENT_SECRET", "secret")
+    _seed_job("10236499001", "PO-778-A")
+    _seed_job("10236499002", "")
+    login(client, "Paz Galambos", "112233")
+    jid = conn().execute("SELECT id FROM staff WHERE name='Jaime Mendoza'").fetchone()[0]
+    assert client.patch(f"/ops/api/admin/staff/{jid}", json={"price_list": True}, headers=H).json()["ok"]
+    login(client, "Jaime Mendoza", "135790")
+    assert client.get("/ops/api/me", headers=H).json()["price_list"] is True
+    items = {i["sku"]: i for i in client.get("/ops/api/pricelist/items?vendor=WG", headers=H).json()["items"]}
+    lines = [{"item_id": items["TST-HC-2868"]["id"], "qty": 2, "price": 0.01},      # a price from the phone is ignored
+             {"item_id": items["TST-SC-3068"]["id"], "qty": 1},
+             {"item_id": items["TST-LITE-1"]["id"], "qty": 1}]
+    body = {"vendor": "WG", "job_number": "10236499002", "ship_method": "Delivery", "ship_to": "site", "lines": lines}
+    r = client.post("/ops/api/pricelist/pos", json=body, headers=H)
+    assert r.status_code == 422 and "no PO number" in r.json()["detail"]
+    r = client.post("/ops/api/pricelist/pos", json={**body, "job_number": "10236499001", "ship_method": "Boat"}, headers=H)
+    assert r.status_code == 422
+    r = client.post("/ops/api/pricelist/pos", json={**body, "job_number": "10236499001", "lines": [{"item_id": 999999, "qty": 1}]}, headers=H)
+    assert r.status_code == 422
+    r = client.post("/ops/api/pricelist/pos", json={**body, "job_number": "10236499001", "notes": "Call before delivery"}, headers=H)
+    assert r.status_code == 200, r.text
+    po = r.json()
+    assert po["po_number"] == "PO-778-A" and po["job_customer"] == "Test Customer" and "5 Test Rd" in po["ship_address"]
+    hc = next(ln for ln in po["lines"] if ln["sku"] == "TST-HC-2868")
+    assert hc["price"] == 49.5 and hc["surcharge"] == 29.7 and hc["total"] == 128.7     # non-stock under 10: +30%
+    assert next(ln for ln in po["lines"] if ln["sku"] == "TST-LITE-1")["total"] is None  # call for price
+    assert po["total"] == 228.7 and po["sent_to"] == "orders@vendor.test"
+    assert client.get("/ops/api/pricelist/po-check?po=PO-778-A", headers=H).json()["sent_before"][0]["id"] == po["id"]
+    pdf = client.get(f"/ops/api/pricelist/pos/{po['id']}/pdf", headers=H)
+    assert pdf.status_code == 200 and pdf.content[:4] == b"%PDF"
+    assert client.get("/ops/api/pricelist/pos", headers=H).json()[0]["po_number"] == "PO-778-A"
+    # the email: vendor + a visible copy to admin@, with the PO as a PDF
+    RECEIVED.clear()
+    mailer.SMTP_USER, mailer.SMTP_PASSWORD, mailer.SMTP_STARTTLS = "", "", False
+    orig = mailer.configured
+    mailer.configured = lambda: True
+    try:
+        mailer.process_queue_once()
+    finally:
+        mailer.configured = orig
+    mail = next(m for m in RECEIVED if b"PO-778-A" in m["data"])
+    assert set(mail["to"]) == {"orders@vendor.test", "admin@simplydoors.com"}
+    assert b"Cc: admin@simplydoors.com" in mail["data"] and b"application/pdf" in mail["data"]
+    e = client.get(f"/ops/api/pricelist/pos/{po['id']}", headers=H).json()["email"]
+    assert e["status"] == "sent" and e["cc"] == "admin@simplydoors.com"
+    assert conn().execute("SELECT COUNT(*) FROM audit WHERE action='po_sent'").fetchone()[0] == 1
+
+
+def test_owner_test_mode_po_goes_only_to_the_owner(client, monkeypatch):
+    from app import sfjobs
+    monkeypatch.setattr(sfjobs, "CLIENT_ID", "id")
+    monkeypatch.setattr(sfjobs, "CLIENT_SECRET", "secret")
+    login(client, "Adem Atis", "246810")
+    client.put("/ops/api/owner/test-mode", json={"on": True}, headers=H)
+    try:
+        items = client.get("/ops/api/pricelist/items?vendor=WG", headers=H).json()["items"]
+        r = client.post("/ops/api/pricelist/pos", json={"vendor": "WG", "job_number": "10236499001", "ship_method": "Delivery",
+                                                         "lines": [{"item_id": items[0]["id"], "qty": 10}]}, headers=H)
+        assert r.status_code == 200 and r.json()["is_test"] and r.json()["sent_to"] == "adem@simplydoors.com"
+        e = conn().execute("SELECT recipients, cc, subject FROM emails WHERE po_id=?", (r.json()["id"],)).fetchone()
+        assert e["recipients"] == "adem@simplydoors.com" and e["cc"] == "" and e["subject"].startswith("TEST - ")
+        assert r.json()["lines"][0]["surcharge"] == 0                     # 10 or more: no non-stock surcharge
+        # a test PO doesn't count as the PO number having been sent
+        assert len(client.get("/ops/api/pricelist/po-check?po=PO-778-A", headers=H).json()["sent_before"]) == 1
+    finally:
+        client.put("/ops/api/owner/test-mode", json={"on": False}, headers=H)
