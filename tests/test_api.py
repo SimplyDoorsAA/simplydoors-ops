@@ -353,6 +353,23 @@ def test_snapshot_and_offsite_status(client):
     assert client.get("/ops/api/admin/status").json()["offsite"]["error"] == "boom"
 
 
+def test_nightly_problems_reach_the_phone(client, monkeypatch):
+    from app import alerts, main as m
+    pushed = []
+    monkeypatch.setattr(alerts, "push", lambda title, msg, priority="default": pushed.append(title))
+    monkeypatch.setattr(alerts, "_last", {})
+    m.snapshot_db("2026-10-02")
+    old = time.time() - 40 * 3600
+    for f in os.listdir(m.BACKUP_DIR):
+        os.utime(os.path.join(m.BACKUP_DIR, f), (old, old))
+    monkeypatch.setattr(m, "offsite_status", lambda: (_ for _ in ()).throw(OSError("disk full")))
+    m.nightly_once()                               # must not raise
+    assert "Ops app: database snapshot is behind" in pushed and "Ops app: nightly snapshot/tidy-up failed" in pushed
+    pushed.clear()
+    m.nightly_once()                               # throttled: no repeat right away
+    assert pushed == []
+
+
 def test_setup_link_flow(client):
     from app import auth as a
     assert a.weak_pin("111111") and a.weak_pin("123456") and a.weak_pin("987654") and a.weak_pin("121212")

@@ -17,6 +17,7 @@ import shutil
 import sqlite3
 import threading
 import time
+import traceback
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -1312,32 +1313,57 @@ def offsite_status() -> dict:
     return st
 
 
-def nightly():
-    """Every 10 min: nightly database snapshot (picked up by the off-site copy), stale-backup alert, tidy-up."""
+def _snapshot_age_hours() -> float | None:
+    if not os.path.isdir(BACKUP_DIR):
+        return None
+    times = [os.path.getmtime(os.path.join(BACKUP_DIR, f)) for f in os.listdir(BACKUP_DIR) if f.endswith(".db")]
+    return (time.time() - max(times)) / 3600 if times else None
+
+
+def _nightly_work():
     tz = geo.TZ
+    # checked before tonight's snapshot, so a snapshot that keeps failing still gets noticed
+    age = _snapshot_age_hours()
+    if age is not None and age > 36:
+        alerts.push_throttled("snapshot-stale", "Ops app: database snapshot is behind",
+                              f"The newest nightly database snapshot is {int(age)} hours old. Check Admin > Status.",
+                              "high", every_seconds=12 * 3600)
+    local_now = datetime.now(tz)
+    day = local_now.strftime("%Y-%m-%d")
+    have_any = os.path.isdir(BACKUP_DIR) and any(f.endswith(".db") for f in os.listdir(BACKUP_DIR))
+    if (local_now.hour >= SNAPSHOT_HOUR or not have_any) and \
+            not os.path.exists(os.path.join(BACKUP_DIR, f"ops-{day}.db")):
+        snapshot_db(day)
+    st = offsite_status()
+    if st["configured"]:
+        last = st.get("last_ok")
+        age_h = (datetime.now(timezone.utc) - datetime.strptime(last, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc)).total_seconds() / 3600 if last else 999
+        if age_h > 36:
+            alerts.push_throttled("offsite-stale", "Ops app: off-site backup is behind",
+                                  "Reports haven't been copied to Google Drive for over a day. Check Admin > Status.",
+                                  "high", every_seconds=12 * 3600)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    c = conn()
+    c.execute("DELETE FROM ip_failures WHERE at < ?", (cutoff,))
+    c.execute("DELETE FROM sessions WHERE expires_at < ?", (now_iso(),))
+
+
+def nightly_once():
+    """One pass; a failure reaches the owner's phone (at most every 6 hours) instead of vanishing."""
+    try:
+        _nightly_work()
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        alerts.push_throttled("nightly-failed", "Ops app: nightly snapshot/tidy-up failed",
+                              f"{type(e).__name__}: {str(e)[:200]}. Log: docker logs opsapp", "high",
+                              every_seconds=6 * 3600)
+
+
+def nightly():
+    """Every 10 min: nightly database snapshot (picked up by the off-site copy), stale-backup alerts, tidy-up."""
     while True:
-        try:
-            local_now = datetime.now(tz)
-            day = local_now.strftime("%Y-%m-%d")
-            have_any = os.path.isdir(BACKUP_DIR) and any(f.endswith(".db") for f in os.listdir(BACKUP_DIR))
-            if (local_now.hour >= SNAPSHOT_HOUR or not have_any) and \
-                    not os.path.exists(os.path.join(BACKUP_DIR, f"ops-{day}.db")):
-                snapshot_db(day)
-            st = offsite_status()
-            if st["configured"]:
-                last = st.get("last_ok")
-                age_h = (datetime.now(timezone.utc) - datetime.strptime(last, "%Y-%m-%dT%H:%M:%SZ").replace(
-                    tzinfo=timezone.utc)).total_seconds() / 3600 if last else 999
-                if age_h > 36:
-                    alerts.push_throttled("offsite-stale", "Ops app: off-site backup is behind",
-                                          "Reports haven't been copied to Google Drive for over a day. Check Admin > Status.",
-                                          "high", every_seconds=12 * 3600)
-            cutoff = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            c = conn()
-            c.execute("DELETE FROM ip_failures WHERE at < ?", (cutoff,))
-            c.execute("DELETE FROM sessions WHERE expires_at < ?", (now_iso(),))
-        except Exception:
-            pass
+        nightly_once()
         time.sleep(600)
 
 
