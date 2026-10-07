@@ -6,6 +6,21 @@ GitHub Pages portal + Google Apps Script, one form at a time.
 - **Staff app:** https://optiplex-ai.tailf0af63.ts.net:10000/ops/
 - **Admin (Adem, Paz):** https://optiplex-ai.tailf0af63.ts.net:10000/ops/admin
 
+## Updates are hands-off
+
+- Whatever is merged into `main` goes live on the OptiPlex by itself within about 5 minutes, and your phone gets an alert each time.
+  Pull requests run the tests on GitHub first (`.github/workflows/tests.yml`).
+- Every 5 minutes, cron runs `deploy/autodeploy.sh` on the OptiPlex. When there's a new commit it:
+  1. runs the tests again on the server;
+  2. swaps in the new code and rebuilds;
+  3. checks health, and if the new version isn't healthy, puts the previous version back.
+  A commit that fails is skipped until a newer one lands.
+- It never touches `.env`, the data folder, docker-compose or Tailscale. A change that needs a new setting or a
+  compose change still needs `deploy/install.sh` (or a setup script like `sf-setup.sh`) run on the server.
+- One-time setup, on the OptiPlex as `adem`:
+  `bash <(curl -fsSL https://raw.githubusercontent.com/SimplyDoorsAA/simplydoors-ops/main/deploy/autodeploy-setup.sh)`
+- Pause: `touch ~/ai-server/opsapp-autodeploy.pause` (delete the file to resume). Log: `~/opsapp-autodeploy.log`.
+
 ## Job lookup (Service Fusion)
 
 - **Install**, **Delivery Proof** and **Measure** start with "Find the job": type the last 4 of the job # or the customer's name, tap the job,
