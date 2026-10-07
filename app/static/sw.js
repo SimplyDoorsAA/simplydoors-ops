@@ -17,11 +17,15 @@ self.addEventListener("fetch", (e) => {
   const scope = new URL(self.registration.scope).pathname;
   const rel = url.pathname.slice(scope.length);
   if (rel.startsWith("api/") || rel.startsWith("admin")) return;   // always live
+  const nav = e.request.mode === "navigate";
   e.respondWith(
     fetch(e.request).then(resp => {
-      if (resp.ok) { const copy = resp.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }
+      // pages aren't saved here: each version's page is saved when it installs, so an older version's
+      // cache never ends up holding a newer page whose scripts it doesn't have
+      if (resp.ok && !nav) { const copy = resp.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }
       return resp;
-    }).catch(() => caches.match(e.request, { ignoreSearch: e.request.mode === "navigate" })
-      .then(r => r || caches.match("./")))
+    }).catch(() => caches.match(e.request, { ignoreSearch: nav })
+      // offline: a page falls back to the saved app page; a script or picture that isn't saved just fails
+      .then(r => r || (nav ? caches.match("./") : Response.error())))
   );
 });

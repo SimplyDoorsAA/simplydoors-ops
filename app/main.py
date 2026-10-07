@@ -17,10 +17,11 @@ import shutil
 import sqlite3
 import threading
 import time
-import uuid
+import traceback
 from datetime import datetime, timedelta, timezone
 
 import warnings
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -36,7 +37,7 @@ from . import alerts, auth, geo, mailer, sfjobs
 from .db import DATA_DIR, DB_PATH, audit, conn, delete_audit_rows, get_setting, init_db, now_iso, set_setting
 from . import forms as forms_mod
 from .forms import (FORM_BY_SLUG, FORMS, EXTRA_RULES, LIST_LABELS, DEFAULT_LISTS, clean, get_list, photo_minimums,
-                    photo_slots, public_spec, recipients_for, set_list, split_recipients, subject_for, summary, visible_forms)
+                    photo_slots, public_spec, set_list, split_recipients, subject_for, visible_forms)
 from .pdf import build_pdf
 
 BASE_PATH = os.environ.get("BASE_PATH", "/ops").rstrip("/")
@@ -46,9 +47,16 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-31"
+APP_VERSION = "stage3-32"
 
-app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+@asynccontextmanager
+async def lifespan(_app):
+    startup()          # defined at the bottom: database, mail and job-lookup workers, nightly snapshot
+    yield
+
+
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
 
 # ---------------------------------------------------------------- plumbing
@@ -313,8 +321,10 @@ def studio_link(request: Request, staff=Depends(current_staff)):
         raise HTTPException(403, "Simply Studio isn't switched on for you. Ask Adem.")
     if not STUDIO_SSO_SECRET or not (staff["email"] or "").strip():
         return {"url": STUDIO_URL}          # not set up yet: Studio's own sign-in page
+    # owner: only the Field app owner may be signed into a Studio admin account (Studio checks this)
     claims = {"aud": "simply-studio", "email": staff["email"].strip().lower(), "name": staff["name"],
-              "role": studio_role(staff), "exp": int(time.time()) + 90, "n": secrets.token_urlsafe(18)}
+              "role": studio_role(staff), "owner": bool(staff["is_owner"]), "exp": int(time.time()) + 90,
+              "n": secrets.token_urlsafe(18)}
     body = _b64u(json.dumps(claims, separators=(",", ":")).encode())
     sig = _b64u(hmac.new(STUDIO_SSO_SECRET.encode(), body.encode(), hashlib.sha256).digest())
     audit(staff["id"], staff["name"], "studio_opened", None, {"as": claims["role"]}, client_ip(request), ua(request))
@@ -381,11 +391,14 @@ def studio_caller(request: Request) -> str:
     if not STUDIO_SSO_SECRET:
         raise HTTPException(503, "The Service Fusion lookup isn't set up for Studio.")
     ts, who, sig = (request.headers.get(h, "") for h in ("x-studio-ts", "x-studio-who", "x-studio-sig"))
-    if not ts.isdigit() or abs(time.time() - int(ts)) > STUDIO_API_MAX_AGE or not who.strip():
+    # isascii/len first: "²".isdigit() is True and a 400-digit number overflows, both were a 500
+    if not (ts.isascii() and ts.isdigit() and len(ts) < 12) or abs(time.time() - int(ts)) > STUDIO_API_MAX_AGE \
+            or not who.strip():
         raise HTTPException(401, "Studio request expired or unsigned.")
     key = hmac.new(STUDIO_SSO_SECRET.encode(), b"studio-sf-api", hashlib.sha256).digest()
     want = _b64u(hmac.new(key, f"{ts}|{request.scope['path']}|{request.url.query}|{who}".encode(), hashlib.sha256).digest())
-    if not hmac.compare_digest(want, sig):
+    # bytes, so a signature with odd characters is a mismatch (401), not a TypeError (500); headers arrive as latin-1
+    if not hmac.compare_digest(want.encode(), sig.encode("latin-1")):
         raise HTTPException(401, "Studio request signature didn't match.")
     return who.strip()[:120]
 
@@ -458,140 +471,179 @@ async def submit_report(slug: str, request: Request, staff=Depends(current_staff
     if spec.get("admin_only") and not staff["is_admin"]:
         audit(staff["id"], staff["name"], "admin_denied", f"form:{slug}", None, client_ip(request), ua(request))
         raise HTTPException(403, "Only admins can file this form.")
-    form = await request.form()
-    submission_id = str(form.get("submission_id", ""))
-    if not re.fullmatch(r"[a-zA-Z0-9-]{8,64}", submission_id):
-        raise HTTPException(400, "Missing submission id")
+    async with request.form() as form:      # closes the uploads' temp files when done
+        submission_id = str(form.get("submission_id", ""))
+        if not re.fullmatch(r"[a-zA-Z0-9-]{8,64}", submission_id):
+            raise HTTPException(400, "Missing submission id")
 
-    c = conn()
-    existing = c.execute("SELECT id, receipt, staff_id FROM reports WHERE submission_id=?", (submission_id,)).fetchone()
-    if existing:
-        if existing["staff_id"] != staff["id"]:
-            raise HTTPException(409, "Submission id already used")
-        return {"ok": True, "receipt": existing["receipt"], "duplicate": True}
+        c = conn()
+        existing = c.execute("SELECT id, receipt, staff_id FROM reports WHERE submission_id=?", (submission_id,)).fetchone()
+        if existing:
+            if existing["staff_id"] != staff["id"]:
+                raise HTTPException(409, "Submission id already used")
+            return {"ok": True, "receipt": existing["receipt"], "duplicate": True}
 
-    raw = {k: v for k, v in form.items() if isinstance(v, str)}
-    data, errors = clean(form_type, raw)
-    kept = []
-    if spec.get("kind") == "measure":
-        _measure_people(c, staff, data, str(form.get("revision_of") or "").strip(), errors)
+        raw = {k: v for k, v in form.items() if isinstance(v, str)}
+        data, errors = clean(form_type, raw)
+        kept = []
+        if spec.get("kind") == "measure":
+            _measure_people(c, staff, data, str(form.get("revision_of") or "").strip(), errors)
 
-    photo_blobs = []
-    for ps in photo_slots(form_type, data):
-        slot, _label = ps["slot"], ps["label"]
-        f = form.get(slot)
-        if f is None or isinstance(f, str):
-            continue
-        if f.size is not None and f.size > MAX_PHOTO_BYTES:
-            errors.append(f"{_label} is too large.")
-            continue
-        b = await f.read(MAX_PHOTO_BYTES + 1)
-        if not b:
-            continue
-        if len(b) > MAX_PHOTO_BYTES:
-            errors.append(f"{_label} is too large.")
-            continue
-        if not await run_in_threadpool(_check_photo, b):
-            errors.append(f"{_label} could not be read as a photo. Please take it again.")
-            continue
-        g = None if ps["signature"] else geo.parse_geo(str(form.get(f"geo_{slot}") or ""), now_iso())
-        photo_blobs.append((slot, b, g))
-    got = {s for s, _, _ in photo_blobs}
-    for g in spec.get("photos", []):
-        cond = g.get("show_if")
-        shown = not cond or str(raw.get(cond["field"]) or "") in cond["in"]
-        if g.get("signature") and g.get("required") and shown and g["signature"] not in got:
-            errors.append(f"{g['title']} is needed.")
-    if spec.get("kind") == "measure":
-        kept = _kept_photos(c, staff, form.get("keep"), {p["slot"] for p in photo_slots(form_type, data)} - got, errors)
-    for title, slots, need in photo_minimums(form_type):
-        have = len(got.intersection(slots))
-        if have < need:
-            errors.append(f"Add {need - have} more photo{'s' if need - have > 1 else ''} under “{title}”.")
-    if errors:
-        raise HTTPException(422, " ".join(errors))
+        photo_blobs = []
+        for ps in photo_slots(form_type, data):
+            slot, _label = ps["slot"], ps["label"]
+            f = form.get(slot)
+            if f is None or isinstance(f, str):
+                continue
+            if f.size is not None and f.size > MAX_PHOTO_BYTES:
+                errors.append(f"{_label} is too large.")
+                continue
+            b = await f.read(MAX_PHOTO_BYTES + 1)
+            if not b:
+                continue
+            if len(b) > MAX_PHOTO_BYTES:
+                errors.append(f"{_label} is too large.")
+                continue
+            if not await run_in_threadpool(_check_photo, b):
+                errors.append(f"{_label} could not be read as a photo. Please take it again.")
+                continue
+            g = None if ps["signature"] else geo.parse_geo(str(form.get(f"geo_{slot}") or ""), now_iso())
+            photo_blobs.append((slot, b, g))
+        got = {s for s, _, _ in photo_blobs}
+        for g in spec.get("photos", []):
+            cond = g.get("show_if")
+            shown = not cond or str(raw.get(cond["field"]) or "") in cond["in"]
+            if g.get("signature") and g.get("required") and shown and g["signature"] not in got:
+                errors.append(f"{g['title']} is needed.")
+        if spec.get("kind") == "measure":
+            kept = _kept_photos(c, staff, form.get("keep"), {p["slot"] for p in photo_slots(form_type, data)} - got, errors)
+        for title, slots, need in photo_minimums(form_type):
+            have = len(got.intersection(slots))
+            if have < need:
+                errors.append(f"Add {need - have} more photo{'s' if need - have > 1 else ''} under “{title}”.")
+        if errors:
+            raise HTTPException(422, " ".join(errors))
 
-    started_at = str(form.get("started_at", ""))[:40] or None
-    queued = 1 if str(form.get("queued", "")) == "1" else 0
-    is_test = bool(staff["is_owner"]) and str(form.get("is_test", "")) == "1"   # only the owner can file test reports
-    return await run_in_threadpool(_store_report, form_type, spec, staff, submission_id, data, photo_blobs,
-                                   started_at, queued, client_ip(request), ua(request), kept, is_test)
+        started_at = str(form.get("started_at", ""))[:40] or None
+        queued = 1 if str(form.get("queued", "")) == "1" else 0
+        is_test = bool(staff["is_owner"]) and str(form.get("is_test", "")) == "1"   # only the owner can file test reports
+        return await run_in_threadpool(_store_report, form_type, spec, staff, submission_id, data, photo_blobs,
+                                       started_at, queued, client_ip(request), ua(request), kept, is_test)
+
+
+def _next_receipt(c, pre: str) -> str:
+    # each form counts on its own (VIN-00001, VIN-00002 ...), carrying on from any earlier numbers
+    # test reports count separately (TEST-RMA-00001) so real numbers never have gaps
+    last = c.execute("SELECT MAX(CAST(substr(receipt, ?) AS INTEGER)) FROM reports WHERE receipt LIKE ?",
+                     (len(pre) + 2, pre + "-%")).fetchone()[0]
+    return f"{pre}-{(last or 0) + 1:05d}"
+
+
+def _write_photos(folder, photo_blobs, kept, receipt, who, customer_copy) -> list:
+    """Saves a report's photos into folder: [(slot, bytes, geo or None, kept photo row or None)]."""
+    os.makedirs(folder, exist_ok=True)
+    out = []
+    for slot, b, g in photo_blobs:
+        size = _save_photo(b, os.path.join(folder, f"{slot}.jpg"), g, receipt, who,
+                           clean_dest=os.path.join(folder, f"{slot}.clean.jpg") if customer_copy else None)
+        out.append((slot, size, g, None))
+    for slot, src in kept:     # revised measure: photos carried over from the earlier version, stamps unchanged
+        dest = os.path.join(folder, f"{slot}.jpg")
+        shutil.copyfile(src["path"], dest)
+        out.append((slot, os.path.getsize(dest), None, src))
+    return out
 
 
 def _store_report(form_type, spec, staff, submission_id, data, photo_blobs, started_at, queued, ip, agent, kept=(),
                   is_test=False):
+    """Photos carry the receipt number, which is only final inside the write lock. Re-saving 100 photos in there
+    held up every other report and sign-in, so they're saved first with the number this report should get, and
+    only redone if another report of the same form took that number meanwhile (the last try works as before)."""
     c = conn()
-    rid = None
-    try:
-        c.execute("BEGIN IMMEDIATE")
-        cur = c.execute(
-            "INSERT INTO reports(submission_id, form_type, staff_id, submitted_at, started_at, queued_on_phone, data, is_test)"
-            " VALUES (?,?,?,?,?,?,?,?)",
-            (submission_id, form_type, staff["id"], now_iso(), started_at, queued, json.dumps(data, ensure_ascii=False),
-             1 if is_test else 0))
-        rid = cur.lastrowid
-        # each form counts on its own (VIN-00001, VIN-00002 ...), carrying on from any earlier numbers
-        # test reports count separately (TEST-RMA-00001) so real numbers never have gaps
-        pre = ("TEST-" if is_test else "") + spec["prefix"]
-        last = c.execute("SELECT MAX(CAST(substr(receipt, ?) AS INTEGER)) FROM reports WHERE receipt LIKE ?",
-                         (len(pre) + 2, pre + "-%")).fetchone()[0]
-        receipt = f"{pre}-{(last or 0) + 1:05d}"
-        c.execute("UPDATE reports SET receipt=? WHERE id=?", (receipt, rid))
-        folder = os.path.join(PHOTO_DIR, str(rid))
-        os.makedirs(folder, exist_ok=True)
-        for slot, b, g in photo_blobs:
-            dest = os.path.join(folder, f"{slot}.jpg")
-            size = _save_photo(b, dest, g, receipt, staff["name"],
-                               clean_dest=os.path.join(folder, f"{slot}.clean.jpg") if spec.get("customer_copy") else None)
-            if g is None:      # signature: no stamp, no location
-                c.execute("INSERT INTO photos(report_id, slot, path, bytes, taken_at, geo_status) VALUES (?,?,?,?,?,?)",
-                          (rid, slot, dest, size, now_iso(), "signature"))
+    pre = ("TEST-" if is_test else "") + spec["prefix"]
+    for attempt in range(4):
+        inside = attempt == 3
+        tmp = os.path.join(PHOTO_DIR, f"tmp-{secrets.token_hex(8)}")
+        want = None if inside else _next_receipt(c, pre)
+        if not inside:
+            try:
+                saved = _write_photos(tmp, photo_blobs, kept, want, staff["name"], spec.get("customer_copy"))
+            except Exception:
+                shutil.rmtree(tmp, ignore_errors=True)
+                raise
+        rid = None
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            cur = c.execute(
+                "INSERT INTO reports(submission_id, form_type, staff_id, submitted_at, started_at, queued_on_phone, data, is_test)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (submission_id, form_type, staff["id"], now_iso(), started_at, queued, json.dumps(data, ensure_ascii=False),
+                 1 if is_test else 0))
+            rid = cur.lastrowid
+            receipt = _next_receipt(c, pre)
+            if want and receipt != want:          # someone else got that number first: stamp again
+                c.execute("ROLLBACK")
+                rid = None
+                shutil.rmtree(tmp, ignore_errors=True)
                 continue
-            c.execute("INSERT INTO photos(report_id, slot, path, bytes, taken_at, lat, lon, acc, geo_status, file_age)"
-                      " VALUES (?,?,?,?,?,?,?,?,?,?)",
-                      (rid, slot, dest, size, g["taken_at"], g["lat"], g["lon"], g["acc"], g["status"], g["file_age"]))
-        for slot, src in kept:     # revised measure: photos carried over from the earlier version, stamps unchanged
-            dest = os.path.join(folder, f"{slot}.jpg")
-            shutil.copyfile(src["path"], dest)
-            c.execute("INSERT INTO photos(report_id, slot, path, bytes, taken_at, lat, lon, acc, geo_status, file_age)"
-                      " VALUES (?,?,?,?,?,?,?,?,?,?)",
-                      (rid, slot, dest, os.path.getsize(dest), src["taken_at"], src["lat"], src["lon"], src["acc"],
-                       src["geo_status"], src["file_age"]))
-        no_loc = sum(1 for _, _, g in photo_blobs if g is not None and g["status"] != "ok")
-        details = {"form": form_type, "receipt": receipt, "photos": len(photo_blobs), "photos_without_location": no_loc,
-                   "queued_on_phone": bool(queued)}
-        if kept:
-            details["photos_carried_over"] = len(kept)
-        if data.get("revision_of"):
-            details["revision_of"] = data["revision_of"]
-        if is_test:
-            details["test"] = True
-        audit(staff["id"], staff["name"], "report_submitted", f"report:{rid}", details, ip, agent)
-        subject = subject_for(form_type, data, staff["name"], receipt)
-        if is_test:   # test reports only ever go to the owner
-            to, bcc, subject = [e for e in [staff["email"]] if e], [], ("TEST - " + subject)[:200]
-        else:
-            to, bcc = split_recipients(form_type, data)
-        mailer.queue_report_email(rid, to, subject, bcc)
-        cust = customer_copy_to(spec, data, is_test, staff)
-        if cust:
-            mailer.queue_report_email(rid, [cust], customer_subject(form_type, data, is_test), audience="customer")
-            audit(staff["id"], staff["name"], "customer_copy_queued", f"report:{rid}",
-                  {"to": cust, "test": True} if is_test else {"to": cust}, ip, agent)
-        c.execute("COMMIT")
-    except sqlite3.IntegrityError:
-        c.execute("ROLLBACK")
-        if rid:
-            shutil.rmtree(os.path.join(PHOTO_DIR, str(rid)), ignore_errors=True)
-        existing = c.execute("SELECT receipt FROM reports WHERE submission_id=?", (submission_id,)).fetchone()
-        return {"ok": True, "receipt": existing["receipt"] if existing else None, "duplicate": True}
-    except Exception:
-        c.execute("ROLLBACK")
-        if rid:
-            shutil.rmtree(os.path.join(PHOTO_DIR, str(rid)), ignore_errors=True)
-        raise
-    mailer._wake.set()
-    return {"ok": True, "receipt": receipt, "duplicate": False}
+            c.execute("UPDATE reports SET receipt=? WHERE id=?", (receipt, rid))
+            folder = os.path.join(PHOTO_DIR, str(rid))
+            shutil.rmtree(folder, ignore_errors=True)       # only ever a leftover from a report that never saved
+            if inside:
+                saved = _write_photos(folder, photo_blobs, kept, receipt, staff["name"], spec.get("customer_copy"))
+            else:
+                os.rename(tmp, folder)
+            for slot, size, g, src in saved:
+                dest = os.path.join(folder, f"{slot}.jpg")
+                if src is not None:
+                    c.execute("INSERT INTO photos(report_id, slot, path, bytes, taken_at, lat, lon, acc, geo_status, file_age)"
+                              " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                              (rid, slot, dest, size, src["taken_at"], src["lat"], src["lon"], src["acc"],
+                               src["geo_status"], src["file_age"]))
+                elif g is None:      # signature: no stamp, no location
+                    c.execute("INSERT INTO photos(report_id, slot, path, bytes, taken_at, geo_status) VALUES (?,?,?,?,?,?)",
+                              (rid, slot, dest, size, now_iso(), "signature"))
+                else:
+                    c.execute("INSERT INTO photos(report_id, slot, path, bytes, taken_at, lat, lon, acc, geo_status, file_age)"
+                              " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                              (rid, slot, dest, size, g["taken_at"], g["lat"], g["lon"], g["acc"], g["status"], g["file_age"]))
+            no_loc = sum(1 for _, _, g in photo_blobs if g is not None and g["status"] != "ok")
+            details = {"form": form_type, "receipt": receipt, "photos": len(photo_blobs), "photos_without_location": no_loc,
+                       "queued_on_phone": bool(queued)}
+            if kept:
+                details["photos_carried_over"] = len(kept)
+            if data.get("revision_of"):
+                details["revision_of"] = data["revision_of"]
+            if is_test:
+                details["test"] = True
+            audit(staff["id"], staff["name"], "report_submitted", f"report:{rid}", details, ip, agent)
+            subject = subject_for(form_type, data, staff["name"], receipt)
+            if is_test:   # test reports only ever go to the owner
+                to, bcc, subject = [e for e in [staff["email"]] if e], [], ("TEST - " + subject)[:200]
+            else:
+                to, bcc = split_recipients(form_type, data)
+            mailer.queue_report_email(rid, to, subject, bcc)
+            cust = customer_copy_to(spec, data, is_test, staff)
+            if cust:
+                mailer.queue_report_email(rid, [cust], customer_subject(form_type, data, is_test), audience="customer")
+                audit(staff["id"], staff["name"], "customer_copy_queued", f"report:{rid}",
+                      {"to": cust, "test": True} if is_test else {"to": cust}, ip, agent)
+            c.execute("COMMIT")
+        except sqlite3.IntegrityError:
+            c.execute("ROLLBACK")
+            shutil.rmtree(tmp, ignore_errors=True)
+            if rid:
+                shutil.rmtree(os.path.join(PHOTO_DIR, str(rid)), ignore_errors=True)
+            existing = c.execute("SELECT receipt FROM reports WHERE submission_id=?", (submission_id,)).fetchone()
+            return {"ok": True, "receipt": existing["receipt"] if existing else None, "duplicate": True}
+        except Exception:
+            c.execute("ROLLBACK")
+            shutil.rmtree(tmp, ignore_errors=True)
+            if rid:
+                shutil.rmtree(os.path.join(PHOTO_DIR, str(rid)), ignore_errors=True)
+            raise
+        mailer._wake.set()
+        return {"ok": True, "receipt": receipt, "duplicate": False}
 
 
 def customer_copy_to(spec, data, is_test, staff) -> str:
@@ -727,6 +779,17 @@ def my_reports(staff=Depends(current_staff)):
 
 
 # ---------------------------------------------------------------- admin: activity log
+def _local_day_start(day: str, after: bool = False) -> str | None:
+    """Start of a YYYY-MM-DD day (or of the day after) in local time, as the UTC time the log is stored in."""
+    try:
+        d = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=geo.TZ)
+    except ValueError:
+        return None
+    if after:
+        d += timedelta(days=1)          # wall-clock day, so it's right across a daylight-saving change
+    return d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _audit_query(params) -> tuple[str, list]:
     where, args = [], []
     if params.get("person"):
@@ -735,12 +798,15 @@ def _audit_query(params) -> tuple[str, list]:
     if params.get("action"):
         where.append("action LIKE ?")
         args.append(f"%{params['action']}%")
+    # the From/To date boxes mean whole local (Texas) days
     if params.get("from"):
+        start = _local_day_start(params["from"])
         where.append("at >= ?")
-        args.append(params["from"] + "T00:00:00Z" if len(params["from"]) == 10 else params["from"])
+        args.append(start or params["from"])
     if params.get("to"):
-        where.append("at <= ?")
-        args.append(params["to"] + "T23:59:59Z" if len(params["to"]) == 10 else params["to"])
+        end = _local_day_start(params["to"], after=True)
+        where.append("at < ?" if end else "at <= ?")
+        args.append(end or params["to"])
     return (" WHERE " + " AND ".join(where)) if where else "", args
 
 
@@ -1004,18 +1070,39 @@ def _validate_staff(body: dict, partial: bool):
     return out
 
 
+# A work email is what signs someone into Simply Studio, so each one belongs to one person (any upper/lower case),
+# only the owner sets an admin's email, and every change reaches the owner's phone.
+def _email_check(email: str, sid=None):
+    if not email:
+        return
+    row = conn().execute("SELECT name FROM staff WHERE email != '' AND lower(email)=lower(?) AND id IS NOT ?",
+                         (email, sid)).fetchone()
+    if row:
+        raise HTTPException(400, f"{row['name']} already has that email address. Each person needs their own.")
+
+
+def _staff_conflict(e: sqlite3.IntegrityError) -> HTTPException:
+    if "email" in str(e):
+        return HTTPException(400, "Someone else already has that email address. Each person needs their own.")
+    return HTTPException(409, "Someone with that name already exists.")
+
+
 @app.post("/api/admin/staff")
 async def admin_add_staff(request: Request, admin=Depends(current_admin)):
     body = await request.json()
     v = _validate_staff(body, partial=False)
+    if v.get("is_admin") and not admin["is_owner"]:
+        raise HTTPException(403, "Only the app owner can add an admin.")
+    _email_check(v.get("email", ""))
     try:
         cur = conn().execute(
             "INSERT INTO staff(name, dept, email, is_admin, sales_notify, active, created_at) VALUES (?,?,?,?,?,1,?)",
             (v["name"], v["dept"], v.get("email", ""), v.get("is_admin", 0), v.get("sales_notify", 0), now_iso()))
-    except sqlite3.IntegrityError:
-        raise HTTPException(409, "Someone with that name already exists.")
+    except sqlite3.IntegrityError as e:
+        raise _staff_conflict(e)
     audit(admin["id"], admin["name"], "staff_added", v["name"], v, client_ip(request), ua(request))
-    alerts.push("Ops app: staff added", f"{admin['name']} added {v['name']} ({v['dept']}).")
+    alerts.push("Ops app: staff added", f"{admin['name']} added {v['name']} ({v['dept']})"
+                + (f" with the email {v['email']}." if v.get("email") else "."), "high" if v.get("email") else "default")
     return {"ok": True, "id": cur.lastrowid}
 
 
@@ -1044,17 +1131,31 @@ async def admin_edit_staff(sid: int, request: Request, admin=Depends(current_adm
     if old["is_admin"] and sid != admin["id"] and not admin["is_owner"] and ("is_admin" in v or v.get("active") == 0):
         if v.get("is_admin", 1) == 0 or v.get("active") == 0:
             raise HTTPException(422, "Another admin's access can only be removed by the app owner.")
+    if v.get("is_admin") == 1 and not old["is_admin"] and not admin["is_owner"]:
+        raise HTTPException(403, "Only the app owner can make someone an admin.")
+    if "email" in v and v["email"] != old["email"]:
+        if (old["is_admin"] or old["is_owner"]) and not admin["is_owner"]:
+            raise HTTPException(403, "An admin's email (yours too) can only be changed by the app owner.")
+        _email_check(v["email"], sid)
     changes = {k: {"from": old[k], "to": val} for k, val in v.items() if old[k] != val}
     if not changes:
         return {"ok": True}
     try:
         c.execute(f"UPDATE staff SET {', '.join(k + '=?' for k in v)} WHERE id=?", list(v.values()) + [sid])
-    except sqlite3.IntegrityError:
-        raise HTTPException(409, "Someone with that name already exists.")
+    except sqlite3.IntegrityError as e:
+        raise _staff_conflict(e)
     if "active" in changes or "is_admin" in changes:
         auth.end_all_sessions(sid)   # promoted, demoted or turned off: sign in again
     audit(admin["id"], admin["name"], "staff_changed", old["name"], changes, client_ip(request), ua(request))
-    alerts.push("Ops app: staff changed", f"{admin['name']} changed {old['name']}: {', '.join(changes)}.")
+    if "email" in changes:
+        ch = changes["email"]
+        alerts.push_throttled(f"email:{sid}:{ch['to']}", "Ops app: staff email changed",
+                              f"{admin['name']} changed the email for {old['name']}: {ch['from'] or '(none)'} → "
+                              f"{ch['to'] or '(none)'}. It's the address that signs them into Simply Studio.",
+                              "high", every_seconds=60)
+    rest = [k for k in changes if k != "email"]
+    if rest:
+        alerts.push("Ops app: staff changed", f"{admin['name']} changed {old['name']}: {', '.join(rest)}.")
     return {"ok": True}
 
 
@@ -1261,37 +1362,64 @@ def offsite_status() -> dict:
     return st
 
 
+def _snapshot_age_hours() -> float | None:
+    if not os.path.isdir(BACKUP_DIR):
+        return None
+    times = [os.path.getmtime(os.path.join(BACKUP_DIR, f)) for f in os.listdir(BACKUP_DIR) if f.endswith(".db")]
+    return (time.time() - max(times)) / 3600 if times else None
+
+
+def _nightly_work():
+    tz = geo.TZ
+    # checked before tonight's snapshot, so a snapshot that keeps failing still gets noticed
+    age = _snapshot_age_hours()
+    if age is not None and age > 36:
+        alerts.push_throttled("snapshot-stale", "Ops app: database snapshot is behind",
+                              f"The newest nightly database snapshot is {int(age)} hours old. Check Admin > Status.",
+                              "high", every_seconds=12 * 3600)
+    local_now = datetime.now(tz)
+    day = local_now.strftime("%Y-%m-%d")
+    have_any = os.path.isdir(BACKUP_DIR) and any(f.endswith(".db") for f in os.listdir(BACKUP_DIR))
+    if (local_now.hour >= SNAPSHOT_HOUR or not have_any) and \
+            not os.path.exists(os.path.join(BACKUP_DIR, f"ops-{day}.db")):
+        snapshot_db(day)
+    st = offsite_status()
+    if st["configured"]:
+        last = st.get("last_ok")
+        age_h = (datetime.now(timezone.utc) - datetime.strptime(last, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc)).total_seconds() / 3600 if last else 999
+        if age_h > 36:
+            alerts.push_throttled("offsite-stale", "Ops app: off-site backup is behind",
+                                  "Reports haven't been copied to Google Drive for over a day. Check Admin > Status.",
+                                  "high", every_seconds=12 * 3600)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    c = conn()
+    c.execute("DELETE FROM ip_failures WHERE at < ?", (cutoff,))
+    c.execute("DELETE FROM sessions WHERE expires_at < ?", (now_iso(),))
+    for f in os.listdir(PHOTO_DIR) if os.path.isdir(PHOTO_DIR) else []:   # photos of an upload cut off mid-save
+        p = os.path.join(PHOTO_DIR, f)
+        if f.startswith("tmp-") and time.time() - os.path.getmtime(p) > 86400:
+            shutil.rmtree(p, ignore_errors=True)
+
+
+def nightly_once():
+    """One pass; a failure reaches the owner's phone (at most every 6 hours) instead of vanishing."""
+    try:
+        _nightly_work()
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        alerts.push_throttled("nightly-failed", "Ops app: nightly snapshot/tidy-up failed",
+                              f"{type(e).__name__}: {str(e)[:200]}. Log: docker logs opsapp", "high",
+                              every_seconds=6 * 3600)
+
+
 def nightly():
-    """Every 10 min: nightly database snapshot (picked up by the off-site copy), stale-backup alert, tidy-up."""
-    from zoneinfo import ZoneInfo
-    tz = ZoneInfo(os.environ.get("TZ_DISPLAY", "America/Chicago"))
+    """Every 10 min: nightly database snapshot (picked up by the off-site copy), stale-backup alerts, tidy-up."""
     while True:
-        try:
-            local_now = datetime.now(tz)
-            day = local_now.strftime("%Y-%m-%d")
-            have_any = os.path.isdir(BACKUP_DIR) and any(f.endswith(".db") for f in os.listdir(BACKUP_DIR))
-            if (local_now.hour >= SNAPSHOT_HOUR or not have_any) and \
-                    not os.path.exists(os.path.join(BACKUP_DIR, f"ops-{day}.db")):
-                snapshot_db(day)
-            st = offsite_status()
-            if st["configured"]:
-                last = st.get("last_ok")
-                age_h = (datetime.now(timezone.utc) - datetime.strptime(last, "%Y-%m-%dT%H:%M:%SZ").replace(
-                    tzinfo=timezone.utc)).total_seconds() / 3600 if last else 999
-                if age_h > 36:
-                    alerts.push_throttled("offsite-stale", "Ops app: off-site backup is behind",
-                                          "Reports haven't been copied to Google Drive for over a day. Check Admin > Status.",
-                                          "high", every_seconds=12 * 3600)
-            cutoff = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            c = conn()
-            c.execute("DELETE FROM ip_failures WHERE at < ?", (cutoff,))
-            c.execute("DELETE FROM sessions WHERE expires_at < ?", (now_iso(),))
-        except Exception:
-            pass
+        nightly_once()
         time.sleep(600)
 
 
-@app.on_event("startup")
 def startup():
     os.makedirs(PHOTO_DIR, exist_ok=True)
     init_db()

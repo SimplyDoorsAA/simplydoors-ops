@@ -15,6 +15,10 @@
   let pickSlot = null;
   let flushing = false;
   let lastSlug = null;      // the form most recently opened ("Start another")
+  let formGen = 0;          // goes up each time a form/measure opens, so late work for an older one is dropped
+  let sentGen = -1;         // the form being sent: no more draft saves or late photos for it
+  const busy = new Set();   // photo slots still being shrunk ("Processing…")
+  const formSent = () => sentGen === formGen;
 
   // ------------------------------------------------------------ storage (IndexedDB)
   let dbp = null;
@@ -468,7 +472,6 @@
   const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
   const okdefName = (key, group, item) => `${key}:${slugify(group)}:${slugify(item)}`;
   const allSlots = () => spec.photos.flatMap(g => [...(g.slots || []).map(s => s[0]), ...(g.signature ? [g.signature] : [])]);
-  const slotLabel = (slot) => { for (const g of spec.photos) { for (const [s, l] of (g.slots || [])) if (s === slot) return l; if (g.signature === slot) return "Signature"; } return slot; };
 
   const NAME_KEYS = ["customer", "signer", "received_by", "job_customer"];   // people's names: capitalize each word
   function fieldHTML(f) {
@@ -504,15 +507,6 @@
       case "checks":
         inner = `<fieldset><legend>${ask}</legend>${help}` +
           f.items.map(([k, t]) => `<label class="check"><input type="checkbox" name="${esc(k)}"><span>${esc(t)}</span></label>`).join("") + `</fieldset>`;
-        break;
-      case "donena":
-        inner = `<div class="okdef-head"><b>${esc(f.label)}${req}</b><button type="button" class="link" data-allok="${esc(f.key)}" data-allval="Done">Mark all done</button></div>` +
-          f.items.map(([ik, text]) => {
-            const n = `${f.key}:${ik}`;
-            return `<div class="okrow" data-row="${esc(n)}"><span>${esc(text)}</span><div class="okbtns">
-              <label><input type="radio" name="${esc(n)}" value="Done"><span>Done</span></label>
-              <label class="na"><input type="radio" name="${esc(n)}" value="N/A"><span>N/A</span></label></div></div>`;
-          }).join("");
         break;
       case "joblookup":
         if (!me.job_lookup) return "";
@@ -571,7 +565,7 @@
   function makeTile(slot, label) {
     const t = document.createElement("div");
     const v = photos[slot];
-    t.className = "tile" + (v ? " filled" : "");
+    t.className = "tile" + (v ? " filled" : "") + (busy.has(slot) ? " busy" : "");
     t.dataset.slot = slot;
     t.setAttribute("role", "button"); t.tabIndex = 0;
     t.setAttribute("aria-label", v ? `${label} added` : `Add ${label}`);
@@ -856,22 +850,27 @@
     const file = ev.target.files && ev.target.files[0];
     const slot = pickSlot;
     if (!file || !slot) return;
+    const gen = formGen;
+    busy.add(slot);
     const tile = $(`.tile[data-slot="${slot}"]`);
     if (tile) tile.classList.add("busy");
     const addedAt = new Date();
     const fileAge = file.lastModified ? Math.max(0, Math.round((addedAt.getTime() - file.lastModified) / 1000)) : null;
     const where = locationForPhoto();          // runs while the photo is being shrunk
-    try {
-      const blob = await compress(file);
-      const loc = await where;
-      if (previews[slot]) { URL.revokeObjectURL(previews[slot]); delete previews[slot]; }
-      photos[slot] = blob;
-      photoMeta[slot] = { ...loc, at: addedAt.toISOString(), fileAge };
-      renderTiles(); saveDraftSoon();
-    } catch (e) {
-      if (tile) tile.classList.remove("busy");
+    let blob = null, loc = null;
+    try { blob = await compress(file); loc = await where; } catch (e) { blob = null; }
+    if (gen !== formGen) return;               // that form was closed meanwhile: drop the photo
+    busy.delete(slot);
+    if (formSent()) return;                    // ...or it was sent: nothing may bring its draft back
+    if (!blob) {
+      const t = $(`.tile[data-slot="${slot}"]`); if (t) t.classList.remove("busy");
       alert("That photo couldn't be read. Please take it again, or pick a different photo.");
+      return;
     }
+    if (previews[slot]) { URL.revokeObjectURL(previews[slot]); delete previews[slot]; }
+    photos[slot] = blob;
+    photoMeta[slot] = { ...loc, at: addedAt.toISOString(), fileAge };
+    renderTiles(); saveDraftSoon();
   });
 
   // ------------------------------------------------------------ job lookup (copy of Service Fusion's open jobs)
@@ -1040,9 +1039,10 @@
   function saveDraftSoon() {
     if (spec && spec.kind === "measure") return mSaveDraftSoon();
     clearTimeout(draftTimer);
-    const slug = spec && spec.slug;
-    if (!slug) return;
+    const slug = spec && spec.slug, gen = formGen;
+    if (!slug || formSent()) return;        // sent: its draft was deleted and must stay deleted
     draftTimer = setTimeout(async () => {
+      if (gen !== formGen || formSent()) return;
       try {
         await draftPut(slug, { fields: readFields(), photos: { ...photos }, photoMeta: { ...photoMeta }, startedAt });
         $("#draftNote").textContent = "Saved on this phone";
@@ -1054,8 +1054,7 @@
   form.addEventListener("click", (e) => {
     const all = e.target.closest("[data-allok]");
     if (!all) return;
-    const val = all.dataset.allval || "OK";
-    $$(`input[type=radio][value="${val}"]`, form).forEach(r => { if (r.name.startsWith(all.dataset.allok + ":")) r.checked = true; });
+    $$('input[type=radio][value="OK"]', form).forEach(r => { if (r.name.startsWith(all.dataset.allok + ":")) r.checked = true; });
     $$(".okrow.invalid", form).forEach(r => r.classList.remove("invalid"));
     saveDraftSoon();
   });
@@ -1068,6 +1067,7 @@
     const s = (me.forms || []).find(f => f.slug === slug);
     if (!s) { alert("This form isn't available."); return; }
     spec = s; lastSlug = slug;
+    formGen++; busy.clear(); clearTimeout(draftTimer); form.inert = false;
     Object.values(previews).forEach(u => URL.revokeObjectURL(u));
     photos = {}; previews = {}; photoMeta = {};
     $("#formTitle").textContent = spec.type;
@@ -1111,15 +1111,6 @@
         if (f.required) f.items.forEach(([k, t]) => { if (!vals[k]) { const l = form.elements[k].closest("label"); l.classList.add("invalid"); problems.push(t.length > 40 ? t.slice(0, 38) + "…" : t); } });
         continue;
       }
-      if (f.type === "donena") {
-        let left = 0;
-        f.items.forEach(([ik]) => {
-          const n = `${f.key}:${ik}`;
-          if (!vals[n]) { left++; const row = $(`.okrow[data-row="${CSS.escape(n)}"]`, form); if (row) row.classList.add("invalid"); }
-        });
-        if (f.required && left) problems.push(`${left} checklist item${left > 1 ? "s" : ""} not marked`);
-        continue;
-      }
       if (f.type === "okdef") {
         let left = 0;
         Object.entries(f.groups).forEach(([g, items]) => items.forEach(it => {
@@ -1158,9 +1149,14 @@
     ev.preventDefault();
     const btn = $("#submitBtn");
     if (btn.disabled) return;
+    const err = $("#formError");
+    if (busy.size) {
+      err.textContent = "A photo is still being processed. Wait until it shows, then send again.";
+      err.classList.remove("hidden");
+      return;
+    }
     const f = readFields();
     const problems = validate(f);
-    const err = $("#formError");
     if (problems.length) {
       err.textContent = "Still needed: " + problems.join(", ") + ".";
       err.classList.remove("hidden");
@@ -1171,6 +1167,7 @@
     const label = btn.textContent;
     btn.disabled = true; btn.textContent = "Saving…";
     clearTimeout(draftTimer);
+    sentGen = formGen; form.inert = true;    // locked while it sends; edits now can't re-save the draft
     const keep = new Set(allSlots());
     const ph = Object.fromEntries(Object.entries(photos).filter(([s]) => keep.has(s)));
     const entry = { id: newId(), slug: spec.slug, type: spec.type, userId: me.id, user: me.name, test: !!me.test_mode, fields: f,
@@ -1180,6 +1177,7 @@
       await draftDel(spec.slug).catch(() => {});
     } catch (e) {
       btn.disabled = false; btn.textContent = label;
+      sentGen = -1; form.inert = false;
       err.textContent = "This phone couldn't save the report (storage full?). Don't close this page; free up space and try again.";
       err.classList.remove("hidden");
       return;
@@ -1502,7 +1500,10 @@
   }
   function mSaveDraftSoon(now) {
     clearTimeout(mDraftTimer);
+    if (formSent()) return Promise.resolve();     // sent: its draft was deleted and must stay deleted
+    const gen = formGen;
     const run = async () => {
+      if (gen !== formGen || formSent()) return;
       try { await draftPut("measure", mState()); $("#mDraftNote").textContent = "Saved on this phone"; } catch (e) { /* storage full */ }
     };
     if (now) return run();
@@ -1513,6 +1514,7 @@
     MS = (me.forms || []).find(f => f.slug === "measure");
     if (!MS) { alert("Measure isn't available."); return; }
     spec = null; lastSlug = "measure";
+    formGen++; busy.clear(); clearTimeout(mDraftTimer);
     show("viewMeasures");
     const draft = await draftGet("measure").catch(() => null);
     const box = $("#mDraftBox");
@@ -1582,6 +1584,7 @@
   async function openMeasureEditor(state) {
     MS = (me.forms || []).find(f => f.slug === "measure");
     spec = MS; lastSlug = "measure";
+    formGen++; busy.clear(); clearTimeout(mDraftTimer); mForm.inert = false;
     Object.values(previews).forEach(u => URL.revokeObjectURL(u));
     photos = { ...((state && state.photos) || {}) }; photoMeta = { ...((state && state.photoMeta) || {}) }; previews = {};
     startedAt = (state && state.startedAt) || new Date().toISOString();
@@ -1792,8 +1795,13 @@
     ev.preventDefault();
     const btn = $("#mSubmit");
     if (btn.disabled) return;
-    const job = readJob(), cards = readCards();
     const err = $("#mError");
+    if (busy.size) {
+      err.textContent = "A photo is still being processed. Wait until it shows, then send again.";
+      err.classList.remove("hidden");
+      return;
+    }
+    const job = readJob(), cards = readCards();
     const problems = mValidate(job, cards);
     if (problems.length) {
       err.textContent = "Still needed: " + problems.join("; ") + ".";
@@ -1823,6 +1831,7 @@
     });
     btn.disabled = true; btn.textContent = "Saving…";
     clearTimeout(mDraftTimer);
+    sentGen = formGen; mForm.inert = true;   // locked while it sends; edits now can't re-save the draft
     const entry = { id: newId(), slug: "measure", type: MS.type, userId: me.id, user: me.name, test: !!me.test_mode,
       fields: { ...job, items: JSON.stringify(items), keep: JSON.stringify(keep), revision_of: mJob.revision_of || "",
         sf_job: mJob.sf_job || "", sf_filled: mJob.sf_filled || "" },
@@ -1832,6 +1841,7 @@
       await draftDel("measure").catch(() => {});
     } catch (e) {
       btn.disabled = false; btn.textContent = "Send measure";
+      sentGen = -1; mForm.inert = false;
       err.textContent = "This phone couldn't save the measure (storage full?). Don't close this page; free up space and try again.";
       err.classList.remove("hidden");
       return;

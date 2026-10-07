@@ -416,7 +416,7 @@ def public_spec(form_type: str) -> dict:
         out = {k: v for k, v in f.items() if k not in ("options", "groups", "items")}
         if f["type"] in ("select", "choice"):
             out["options"] = options_for(f)
-        if f["type"] in ("checks", "donena"):
+        if f["type"] == "checks":
             out["items"] = f["items"]
         if f["type"] == "okdef":
             out["groups"] = f["groups"]
@@ -546,17 +546,6 @@ def clean(form_type: str, raw: dict) -> tuple[dict, list[str]]:
                 if need and not ticked:
                     errors.append(f"Check the box: {text}")
                 data[ikey] = ticked
-        elif t == "donena":
-            results, missing = {}, 0
-            for ikey, text in f["items"]:
-                v = (raw.get(f"{key}:{ikey}") or "").strip()
-                if v not in ("Done", "N/A"):
-                    missing += 1
-                else:
-                    results[text] = v
-            if need and missing:
-                errors.append(f"Mark every checklist item Done or N/A ({missing} left).")
-            data[key] = results
         elif t == "okdef":
             results = {}
             missing = 0
@@ -598,13 +587,6 @@ def display_rows(form_type: str, data: dict) -> list[tuple[str, str]]:
             for ik, text in f["items"]:
                 rows.append((text, "Yes" if data.get(ik) else "No"))
             continue
-        if t == "donena":
-            res = data.get(key) or {}
-            na = [k for k, v in res.items() if v == "N/A"]
-            rows.append((f["label"], f"{len(res) - len(na)} done" + (f", {len(na)} N/A" if na else "")))
-            for k, v in res.items():
-                rows.append((k, "Done" if v == "Done" else "N/A"))
-            continue
         if t == "joblookup":
             if data.get("sf_job"):
                 rows.append(("Service Fusion job", data["sf_job"]))
@@ -641,11 +623,6 @@ def email_rows(form_type: str, data: dict) -> list[tuple[str, str]]:
         rows.append(("Service Fusion job", data["sf_job"]))
     if data.get("sf_changes"):
         rows.append(("Changed from Service Fusion", "; ".join(data["sf_changes"])))
-    for f in FORMS[form_type]["fields"]:
-        if f["type"] == "donena" and data.get(f["key"]):
-            res = data[f["key"]]
-            na = [k for k, v in res.items() if v == "N/A"]
-            rows.append((f["label"], f"{len(res) - len(na)} of {len(res)} done" + (f" ({len(na)} N/A)" if na else "")))
     return rows
 
 
@@ -737,23 +714,6 @@ def split_recipients(form_type: str, data: dict) -> tuple[list[str], list[str]]:
         return out
     to = dedupe(to)
     return to, dedupe(bcc, skip=to)
-
-
-def recipients_for(form_type: str, data: dict) -> list[str]:
-    rcpts = _rule(form_type)
-    for f in FORMS[form_type]["fields"]:
-        if (f.get("notify") or f.get("target")) and data.get(f["key"] + "_email"):
-            rcpts.append(data[f["key"] + "_email"])
-    if form_type == "Vehicle Inspection" and data.get("defective"):
-        rcpts += _rule("Vehicle Inspection: when something is Defective")
-    if form_type == "Measure Report":
-        rcpts += [e for e in (data.get("measured_by_email"), data.get("revised_by_email")) if e]
-    seen, out = set(), []
-    for r in rcpts:
-        if r.lower() not in seen:
-            seen.add(r.lower())
-            out.append(r)
-    return out
 
 
 def photo_slots(form_type: str, data: dict | None = None) -> list[dict]:

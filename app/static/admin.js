@@ -216,18 +216,20 @@
       <form id="editForm" class="grid">
         <label>Name<input name="name" value="${esc(r.name)}" required></label>
         <label>Department<input name="dept" list="depts" value="${esc(r.dept)}" required></label>
-        <label>Work email<input name="email" type="email" value="${esc(r.email)}"></label>
+        <label>Work email<input name="email" type="email" value="${esc(r.email)}"${(r.is_admin || r.is_owner) && !amOwner ? " readonly" : ""}></label>
         <label class="inline"><input name="sales_notify" type="checkbox" ${r.sales_notify ? "checked" : ""}> Shows in "Notify a sales rep"</label>
         <label class="inline"><input name="studio_link" type="checkbox" ${r.studio ? "checked" : ""}> Shows the Simply Studio tile</label>
-        <label class="inline"><input name="is_admin" type="checkbox" ${r.is_admin ? "checked" : ""}> Admin (sees everything)</label>
+        <label class="inline"><input name="is_admin" type="checkbox" ${r.is_admin ? "checked" : ""}${!r.is_admin && !amOwner ? " disabled" : ""}> Admin (sees everything)</label>
         <label class="inline"><input name="active" type="checkbox" ${r.active ? "checked" : ""}> Can sign in</label>
         <button class="mini primary" type="submit">Save changes</button>
       </form>
       <h3>PIN</h3>
       <form id="pinForm" class="grid"><label>New PIN (6–8 digits)<input name="pin" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="off" required></label>
         <button class="mini" type="submit">Set PIN</button></form>
-      ${r.id === myId ? "" : r.is_owner && !amOwner ? '<p class="det">Only the app owner can change this account.</p>'
-        : r.is_admin && !amOwner ? '<p class="det">Another admin\'s PIN and admin access can only be changed by the app owner.</p>' : ""}
+      ${r.id === myId ? (r.is_admin && !amOwner ? '<p class="det">Only the app owner can change an admin\'s email, yours included.</p>' : "")
+        : r.is_owner && !amOwner ? '<p class="det">Only the app owner can change this account.</p>'
+        : r.is_admin && !amOwner ? '<p class="det">Another admin\'s PIN, email and admin access can only be changed by the app owner.</p>'
+        : !amOwner ? '<p class="det">Only the app owner can make someone an admin.</p>' : ""}
       ${r.locked ? `<p><button class="mini danger" id="unlock" type="button">Unlock account now</button></p>` : ""}`);
     $("#editForm").onsubmit = async (ev) => {
       ev.preventDefault();
@@ -360,6 +362,7 @@
       if (!me.is_admin) throw Object.assign(new Error("no"), { status: 403 });
       $("#who").textContent = me.name;
       myId = me.id; amOwner = !!me.is_owner;
+      $("#addStaff").elements.is_admin.closest("label").classList.toggle("hidden", !amOwner);   // only the owner adds admins
       me.forms.forEach(f => $("#repForm").insertAdjacentHTML("beforeend", `<option>${esc(f.type)}</option>`));
       $("#ui").classList.remove("hidden");
       tab("reports");

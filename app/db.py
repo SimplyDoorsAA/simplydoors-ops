@@ -221,6 +221,12 @@ def init_db() -> None:
         audit(None, "system", "staff_seeded", None, {"count": len(SEED_STAFF)})
     if not c.execute("SELECT 1 FROM staff WHERE is_owner=1").fetchone():
         c.execute("UPDATE staff SET is_owner=1, is_admin=1 WHERE name='Adem Atis'")
+    try:
+        # one work email per person, any case (it signs people into Simply Studio). If two people already share
+        # one, the index waits until that's fixed; the app refuses new repeats either way (main._email_check).
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS staff_email_unique ON staff(lower(email)) WHERE email != ''")
+    except sqlite3.IntegrityError:
+        audit(None, "system", "staff_email_index_waiting", None, {"reason": "two staff share an email"})
     for form, rcpts in SEED_RULES.items():
         c.execute("INSERT OR IGNORE INTO email_rules(form_type, recipients) VALUES (?,?)", (form, rcpts))
     ecols = {r[1] for r in c.execute("PRAGMA table_info(emails)")}

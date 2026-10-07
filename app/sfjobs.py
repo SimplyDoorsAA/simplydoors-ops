@@ -401,6 +401,3 @@ def details(number: str) -> dict | None:
             "phone": ct.get("phone", ""), "address": ", ".join(x for x in (line1, line2) if x),
             "description": j["description"], "note": note}
 
-
-def clear_contacts() -> None:
-    conn().execute("DELETE FROM sf_contacts")

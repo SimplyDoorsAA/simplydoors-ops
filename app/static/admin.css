@@ -54,7 +54,6 @@ label.inline input { width: 22px; height: 22px; accent-color: var(--green); }
 #repList, #logList, #staffList { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 html, body { overflow-x: hidden; }
 .sheet-box { max-width: min(760px, calc(100vw - 24px)); }
-@media (max-width: 700px) { .staff-dept { display: none; } }
 .switch { display: flex; align-items: center; gap: 10px; background: #fff; border: 1px solid var(--line); border-radius: 10px;
   padding: 10px 12px; margin: 0 0 8px; font-weight: 600; cursor: pointer; }
 .switch input { width: 20px; height: 20px; flex-shrink: 0; }

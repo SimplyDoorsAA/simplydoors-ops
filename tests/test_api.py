@@ -6,6 +6,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 
 import pytest
@@ -173,6 +174,24 @@ def test_admin_views_are_logged_and_pdf_builds(client):
     assert csv.status_code == 200 and "time_utc" in csv.text
 
 
+def test_activity_log_dates_are_local_days(client):
+    # July: Texas is UTC-5, so local Jul 15 runs from 05:00Z on the 15th to 05:00Z on the 16th
+    c = conn()
+    for at in ("2026-07-15T04:30:00Z", "2026-07-15T05:30:00Z", "2026-07-16T04:30:00Z", "2026-07-16T05:30:00Z"):
+        c.execute("INSERT INTO audit(at, actor_name, action, target) VALUES (?, 'system', 'tz_probe', ?)", (at, at))
+    login(client, "Adem Atis", "246810")
+    q = "action=tz_probe&from=2026-07-15&to=2026-07-15"
+    rows = client.get(f"/ops/api/admin/audit?{q}").json()["rows"]
+    assert sorted(r["target"] for r in rows) == ["2026-07-15T05:30:00Z", "2026-07-16T04:30:00Z"]
+    csv = client.get(f"/ops/api/admin/audit.csv?{q}").text
+    assert "2026-07-15T05:30:00Z" in csv and "2026-07-16T04:30:00Z" in csv
+    assert "2026-07-15T04:30:00Z" not in csv and "2026-07-16T05:30:00Z" not in csv
+    # winter: UTC-6
+    c.execute("INSERT INTO audit(at, actor_name, action, target) VALUES ('2026-01-10T05:30:00Z', 'system', 'tz_probe', 'jan')")
+    assert [r["target"] for r in client.get("/ops/api/admin/audit?action=tz_probe&from=2026-01-10&to=2026-01-10").json()["rows"]] == []
+    assert [r["target"] for r in client.get("/ops/api/admin/audit?action=tz_probe&from=2026-01-09&to=2026-01-09").json()["rows"]] == ["jan"]
+
+
 def test_admin_staff_changes(client):
     login(client, "Adem Atis", "246810")
     r = client.post("/ops/api/admin/staff", json={"name": "Test Person", "dept": "Warehouse / Driver",
@@ -226,6 +245,38 @@ def test_lockouts_escalate(client):
     conn().execute("UPDATE staff SET locked_until='9999-12-31T00:00:00Z' WHERE id=?", (sid,))
     assert "Ask Adem or Paz" in login(client, "Elijah Kimmel", "424242").json()["detail"]
     conn().execute("DELETE FROM ip_failures")
+
+
+def test_parallel_wrong_pins_all_count(client):
+    # a burst of wrong PINs at the same moment must still lock the account (and lock it once)
+    from concurrent.futures import ThreadPoolExecutor
+    sid = conn().execute("SELECT id FROM staff WHERE name='Ramiro Zuniga'").fetchone()[0]
+    auth.set_pin(sid, "864213", "admin")
+    conn().execute("DELETE FROM ip_failures")
+    gate = threading.Barrier(12)
+
+    def guess(i):
+        gate.wait()
+        return auth.attempt_login("Ramiro Zuniga", f"00000{i % 10}", f"10.0.0.{i}", "test")
+    with ThreadPoolExecutor(12) as ex:
+        results = list(ex.map(guess, range(12)))
+    st = conn().execute("SELECT locked_until, lock_level FROM staff WHERE id=?", (sid,)).fetchone()
+    assert st["locked_until"] and st["lock_level"] == 1, results
+    assert sum(1 for _, _, newly in results if newly) == 1
+    assert "locked" in login(client, "Ramiro Zuniga", "864213").json()["detail"]     # right PIN refused while locked
+    # one connection firing 30 guesses at once gets at most the usual 20 checks
+    conn().execute("DELETE FROM ip_failures")
+    gate = threading.Barrier(30)
+
+    def from_one_ip(i):
+        gate.wait()
+        return auth.attempt_login("Nobody At All", "000000", "10.9.9.9", "test")
+    with ThreadPoolExecutor(30) as ex:
+        msgs = [m for _, m, _ in ex.map(from_one_ip, range(30))]
+    assert sum(1 for m in msgs if "this connection" not in m) <= auth.IP_MAX_FAILS
+    assert conn().execute("SELECT COUNT(*) FROM ip_failures WHERE ip='10.9.9.9'").fetchone()[0] <= auth.IP_MAX_FAILS
+    conn().execute("DELETE FROM ip_failures")
+    auth.set_pin(sid, "864213", "admin")
 
 
 def test_damaged_photo_refused_cleanly(client):
@@ -300,6 +351,23 @@ def test_snapshot_and_offsite_status(client):
     assert st["configured"] and st["ok"] is False and st["last_ok"] == "2026-09-30T07:30:00Z"
     login(client, "Adem Atis", "246810")
     assert client.get("/ops/api/admin/status").json()["offsite"]["error"] == "boom"
+
+
+def test_nightly_problems_reach_the_phone(client, monkeypatch):
+    from app import alerts, main as m
+    pushed = []
+    monkeypatch.setattr(alerts, "push", lambda title, msg, priority="default": pushed.append(title))
+    monkeypatch.setattr(alerts, "_last", {})
+    m.snapshot_db("2026-10-02")
+    old = time.time() - 40 * 3600
+    for f in os.listdir(m.BACKUP_DIR):
+        os.utime(os.path.join(m.BACKUP_DIR, f), (old, old))
+    monkeypatch.setattr(m, "offsite_status", lambda: (_ for _ in ()).throw(OSError("disk full")))
+    m.nightly_once()                               # must not raise
+    assert "Ops app: database snapshot is behind" in pushed and "Ops app: nightly snapshot/tidy-up failed" in pushed
+    pushed.clear()
+    m.nightly_once()                               # throttled: no repeat right away
+    assert pushed == []
 
 
 def test_setup_link_flow(client):
@@ -855,13 +923,19 @@ def test_simply_studio_tile(client):
         assert sig == want
         claims = json.loads(b64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
         assert claims["email"] == "jaimem@simplydoors.com" and claims["role"] == "field" and claims["aud"] == "simply-studio"
+        assert claims["owner"] is False
         login(client, "Paz Galambos", "112233")
         url = client.post("/ops/api/studio-link", headers=H).json()["url"]
         body = url.split("/sso?t=")[1].split(".")[0]
-        assert json.loads(b64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))["role"] == "full"
+        claims = json.loads(b64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+        assert claims["role"] == "full" and claims["owner"] is False                  # an admin, but not the owner
         assert client.post("/ops/api/studio-link").status_code in (400, 403)          # needs the app header
-        # an admin can switch the tile off for someone
+        # only the owner's link says owner
         login(client, "Adem Atis", "246810")
+        body = client.post("/ops/api/studio-link", headers=H).json()["url"].split("/sso?t=")[1].split(".")[0]
+        claims = json.loads(b64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+        assert claims["owner"] is True and claims["role"] == "full" and claims["email"] == "adem@simplydoors.com"
+        # an admin can switch the tile off for someone
         jid = conn().execute("SELECT id FROM staff WHERE name='Jaime Mendoza'").fetchone()[0]
         assert client.patch(f"/ops/api/admin/staff/{jid}", json={"studio_link": False}, headers=H).status_code == 200
         login(client, "Jaime Mendoza", "135790")
@@ -869,6 +943,32 @@ def test_simply_studio_tile(client):
         assert client.post("/ops/api/studio-link", headers=H).status_code == 403
     finally:
         M.STUDIO_SSO_SECRET = old
+
+
+def test_very_long_text_never_breaks_a_pdf(client):
+    # 4,000 characters of short lines is taller than a page; it must run onto the next page, not fail the PDF
+    from app.pdf import build_customer_pdf
+    lines = ("ok\n" * 2000)[:4000]
+    login(client, "Adem Atis", "246810")
+    photos = {"after1": ("a.jpg", jpeg(), "image/jpeg"), "after2": ("b.jpg", jpeg((1, 2, 3)), "image/jpeg")}
+    sig = io.BytesIO(); Image.new("RGBA", (600, 200), (0, 0, 0, 0)).save(sig, "PNG")
+    base = {"po": "5555", "customer": "Long Talker", "work": "No", "punch_items": lines, "walkthrough": "Yes", "cust_comments": lines}
+    r1 = client.post("/ops/api/reports/install", headers=H, files=photos,
+                     data={**base, "submission_id": "sub-long-ins1", "cust_present": "No", "no_sign_reason": lines})
+    r2 = client.post("/ops/api/reports/install", headers=H, files={**photos, "sig": ("s.png", sig.getvalue(), "image/png")},
+                     data={**base, "submission_id": "sub-long-ins2", "cust_present": "Yes", "signer": "Pat Lee",
+                           "cust_email": "pat@example.com"})
+    door = {**_door(), "notes": lines[:2000]}
+    r3 = _measure(client, "sub-long-msr1", [door, _window(notes=lines[:2000]), door],
+                  {"i1p1": ("a.jpg", jpeg(), "image/jpeg"), "i2p1": ("b.jpg", jpeg((0, 90, 0)), "image/jpeg")})
+    for r in (r1, r2, r3):
+        assert r.status_code == 200, r.text
+        rid = conn().execute("SELECT id FROM reports WHERE receipt=?", (r.json()["receipt"],)).fetchone()[0]
+        pdf = client.get(f"/ops/api/admin/reports/{rid}/pdf")
+        assert pdf.status_code == 200 and pdf.content[:4] == b"%PDF"
+    rid = conn().execute("SELECT id FROM reports WHERE submission_id='sub-long-ins2'").fetchone()[0]
+    rep, data, ph = mailer._report_bundle(rid)
+    assert build_customer_pdf(rep, data, ph)[:4] == b"%PDF"
 
 
 def test_reset_test_data_is_console_only_and_one_time(client, monkeypatch):
@@ -979,6 +1079,7 @@ def fake_sf():
     yield sfjobs
     sfjobs.API, sfjobs.CLIENT_ID, sfjobs.CLIENT_SECRET = old
     srv.shutdown()
+    srv.server_close()
 
 
 def test_job_lookup_off_until_connected(client):
@@ -1104,3 +1205,95 @@ def test_job_lookup_changes_flagged_internally_only(client, fake_sf, smtp):
     rows = dict(M.job_rows(dm))
     assert rows["Service Fusion job"] == "10236418931"
     assert rows["Changed from Service Fusion"] == "Customer: Angela Heimer → Angela Heimer-Ruiz"
+
+
+def test_staff_emails_unique_and_owner_guarded(client, monkeypatch):
+    # the work email signs people into Simply Studio: one per person, admins' only set by the owner, every change alerted
+    from app import alerts
+    pushed = []
+    monkeypatch.setattr(alerts, "push", lambda title, msg, priority="default": pushed.append((title, msg)))
+    ids = {r["name"]: r["id"] for r in conn().execute("SELECT id, name FROM staff")}
+    login(client, "Adem Atis", "246810")
+    r = client.post("/ops/api/admin/staff", json={"name": "Email Person", "dept": "Production", "email": "dup@simplydoors.com"}, headers=H)
+    assert r.status_code == 200, r.text
+    ep = r.json()["id"]
+    assert any("dup@simplydoors.com" in m for _, m in pushed)
+    r = client.post("/ops/api/admin/staff", json={"name": "Email Twin", "dept": "Production", "email": "DUP@SimplyDoors.com"}, headers=H)
+    assert r.status_code == 400 and "Email Person" in r.json()["detail"]
+    r = client.patch(f"/ops/api/admin/staff/{ids['Jaime Mendoza']}", json={"email": " Dup@simplydoors.com "}, headers=H)
+    assert r.status_code == 400
+    with pytest.raises(sqlite3.IntegrityError):              # the database refuses a repeat too
+        conn().execute("UPDATE staff SET email='DUP@simplydoors.com' WHERE id=?", (ids["Jaime Mendoza"],))
+    # a non-owner admin can't touch any admin's email (their own included), add admins, or promote anyone
+    login(client, "Paz Galambos", "112233")
+    paz_row = next(x for x in client.get("/ops/api/admin/staff").json() if x["name"] == "Paz Galambos")
+    assert client.patch(f"/ops/api/admin/staff/{ids['Paz Galambos']}", json={"email": "adem@simplydoors.com"}, headers=H).status_code == 403
+    assert client.patch(f"/ops/api/admin/staff/{ids['Paz Galambos']}", json={"email": "paz2@simplydoors.com"}, headers=H).status_code == 403
+    assert client.patch(f"/ops/api/admin/staff/{ids['Adem Atis']}", json={"email": "x@simplydoors.com"}, headers=H).status_code == 403
+    assert client.post("/ops/api/admin/staff", json={"name": "Sneaky Admin", "dept": "Admin", "email": "sneaky@simplydoors.com",
+                                                     "is_admin": True}, headers=H).status_code == 403
+    assert client.patch(f"/ops/api/admin/staff/{ep}", json={"is_admin": True}, headers=H).status_code == 403
+    # saving her own row with the email unchanged still works (the edit screen always sends it)
+    r = client.patch(f"/ops/api/admin/staff/{ids['Paz Galambos']}", headers=H,
+                     json={"name": "Paz Galambos", "dept": paz_row["dept"], "email": paz_row["email"], "is_admin": True, "active": True})
+    assert r.status_code == 200
+    # a crew member's email can be changed by any admin, and the owner hears about it
+    pushed.clear()
+    assert client.patch(f"/ops/api/admin/staff/{ep}", json={"email": "ep2@simplydoors.com"}, headers=H).status_code == 200
+    assert any("email" in t.lower() and "Paz Galambos" in m and "ep2@simplydoors.com" in m for t, m in pushed)
+    assert conn().execute("SELECT email FROM staff WHERE id=?", (ep,)).fetchone()[0] == "ep2@simplydoors.com"
+    # the owner can change an admin's email
+    login(client, "Adem Atis", "246810")
+    assert client.patch(f"/ops/api/admin/staff/{ids['Paz Galambos']}", json={"email": "paz2@simplydoors.com"}, headers=H).status_code == 200
+    assert client.patch(f"/ops/api/admin/staff/{ids['Paz Galambos']}", json={"email": "paz@simplydoors.com"}, headers=H).status_code == 200
+    assert client.patch(f"/ops/api/admin/staff/{ep}", json={"active": False}, headers=H).status_code == 200
+
+
+def test_photos_are_saved_outside_the_write_lock(client, monkeypatch):
+    # big uploads must not hold the database write lock while photos are re-saved; the receipt printed on the
+    # photos still has to be the report's own number, even when another report takes the expected one meanwhile
+    from app import main as m
+    real, seen = m._write_photos, []
+
+    def spy(folder, blobs, kept, receipt, who, customer_copy):
+        other = sqlite3.connect(os.path.join(TMP, "ops.db"), timeout=5)
+        try:
+            other.execute("BEGIN IMMEDIATE")              # would wait (and fail) if the lock were held
+            other.execute("ROLLBACK")
+            seen.append(receipt)
+        finally:
+            other.close()
+        if len(seen) == 1:
+            conn().execute("INSERT INTO reports(submission_id, form_type, staff_id, submitted_at, data, receipt)"
+                           " VALUES ('sub-race-other', 'Receiving Report', 1, '2026-10-01T00:00:00Z', '{}', ?)", (receipt,))
+        return real(folder, blobs, kept, receipt, who, customer_copy)
+    monkeypatch.setattr(m, "_write_photos", spy)
+    login(client, "Jaime Mendoza", "135790")
+    r = receiving(client, "sub-race-0001")
+    assert r.status_code == 200, r.text
+    first = int(seen[0].split("-")[1])
+    assert len(seen) == 2 and r.json()["receipt"] == seen[1] == f"RCV-{first + 1:05d}"
+    rid = conn().execute("SELECT id FROM reports WHERE submission_id='sub-race-0001'").fetchone()[0]
+    paths = [p[0] for p in conn().execute("SELECT path FROM photos WHERE report_id=?", (rid,))]
+    assert len(paths) == 2 and all(os.path.isfile(p) and os.path.dirname(p) == os.path.join(m.PHOTO_DIR, str(rid)) for p in paths)
+    assert not [f for f in os.listdir(m.PHOTO_DIR) if f.startswith("tmp-")]
+
+
+def test_studio_lookup_odd_headers_are_401_not_500(client):
+    from app import main as M
+    old, M.STUDIO_SSO_SECRET = M.STUDIO_SSO_SECRET, "s" * 64
+    try:
+        now = str(int(time.time())).encode()
+        for ts, sig in ((b"\xb2", b"x"), (b"9" * 400, b"x"), (now, b"\xe9\xe9\xe9"), (b"-5", b"x"), (b"", b"")):
+            r = client.get("/api/studio/jobs", headers={"X-Studio-Ts": ts, "X-Studio-Who": b"Paz", "X-Studio-Sig": sig})
+            assert r.status_code == 401, (ts, sig, r.status_code)
+        # a raw "²" byte (the test client would re-encode it): isdigit() is True but int() fails
+        from fastapi import HTTPException
+        from starlette.requests import Request
+        scope = {"type": "http", "method": "GET", "scheme": "http", "server": ("x", 80), "path": "/api/studio/jobs",
+                 "query_string": b"", "headers": [(b"x-studio-ts", b"\xb2"), (b"x-studio-who", b"Paz"), (b"x-studio-sig", b"x")]}
+        with pytest.raises(HTTPException) as e:
+            M.studio_caller(Request(scope))
+        assert e.value.status_code == 401
+    finally:
+        M.STUDIO_SSO_SECRET = old

@@ -102,44 +102,81 @@ def set_pin(staff_id: int, pin: str, source: str) -> None:
     )
 
 
-def ip_blocked(ip: str) -> bool:
+def _ip_fails(ip: str) -> int:
     since = _iso(datetime.now(timezone.utc) - timedelta(minutes=IP_WINDOW_MINUTES))
-    n = conn().execute("SELECT COUNT(*) FROM ip_failures WHERE ip=? AND at>=?", (ip, since)).fetchone()[0]
-    return n >= IP_MAX_FAILS
+    return conn().execute("SELECT COUNT(*) FROM ip_failures WHERE ip=? AND at>=?", (ip, since)).fetchone()[0]
+
+
+def ip_blocked(ip: str) -> bool:
+    return _ip_fails(ip) >= IP_MAX_FAILS
+
+
+def _ip_try(ip: str):
+    """Counts a sign-in try against this connection BEFORE the slow PIN check, so a burst of parallel guesses
+    all count. Returns the row to take back if it turns out not to be a wrong PIN, or None if blocked."""
+    c = conn()
+    rid = c.execute("INSERT INTO ip_failures(ip, at) VALUES (?,?)", (ip, now_iso())).lastrowid
+    if _ip_fails(ip) > IP_MAX_FAILS:           # this try included, so the limit is the same as before
+        c.execute("DELETE FROM ip_failures WHERE rowid=?", (rid,))
+        return None
+    return rid
+
+
+def _locked_msg(locked_until, now) -> str | None:
+    if not locked_until or _utc(locked_until) <= now:
+        return None
+    if locked_until == ADMIN_ONLY_UNTIL:
+        return "This account is locked. Ask Adem or Paz to unlock it."
+    mins = max(1, int((_utc(locked_until) - now).total_seconds() // 60) + 1)
+    return f"This account is locked for {mins} more minute(s), or ask Adem or Paz to unlock it."
 
 
 def attempt_login(staff_name: str, pin: str, ip: str, ua: str):
     """Returns (staff_row | None, message, newly_locked: bool)."""
     c = conn()
-    if ip_blocked(ip):
+    ip_try = _ip_try(ip)
+    if ip_try is None:
         audit(None, staff_name, "login_blocked_ip", staff_name, None, ip, ua)
         return None, "Too many wrong PINs from this connection. Try again in 15 minutes.", False
 
     row = c.execute("SELECT * FROM staff WHERE name=? AND active=1", (staff_name,)).fetchone()
     now = datetime.now(timezone.utc)
-    if row and row["locked_until"] and _utc(row["locked_until"]) > now:
+    if row and _locked_msg(row["locked_until"], now):
+        c.execute("DELETE FROM ip_failures WHERE rowid=?", (ip_try,))     # a locked account isn't a wrong PIN
         audit(row["id"], row["name"], "login_while_locked", row["name"], None, ip, ua)
-        if row["locked_until"] == ADMIN_ONLY_UNTIL:
-            return None, "This account is locked. Ask Adem or Paz to unlock it.", False
-        mins = max(1, int((_utc(row["locked_until"]) - now).total_seconds() // 60) + 1)
-        return None, f"This account is locked for {mins} more minute(s), or ask Adem or Paz to unlock it.", False
+        return None, _locked_msg(row["locked_until"], now), False
 
-    if row and check_pin(pin, row["pin_hash"]):
-        c.execute("UPDATE staff SET failed_count=0, locked_until=NULL, lock_level=0 WHERE id=?", (row["id"],))
-        audit(row["id"], row["name"], "login_ok", row["name"], None, ip, ua)
-        return row, "ok", False
-
+    ok = check_pin(pin, row["pin_hash"] if row else None)    # slow on purpose; same time for unknown names
     if not row:
-        check_pin(pin, None)
-    c.execute("INSERT INTO ip_failures(ip, at) VALUES (?,?)", (ip, now_iso()))
-    if row and not row["pin_hash"]:
-        audit(row["id"], row["name"], "login_fail_no_pin", row["name"], None, ip, ua)
-        return None, "Wrong PIN. If you've never been given a PIN, ask Adem or Paz.", False
-    if row:
-        fails = row["failed_count"] + 1
+        audit(None, staff_name, "login_fail_unknown_name", staff_name, None, ip, ua)
+        return None, "Wrong PIN.", False
+    # From here one sign-in at a time per database, so parallel wrong PINs each count and lock exactly once,
+    # and a right PIN that lands after a parallel guess locked the account is still refused.
+    c.execute("BEGIN IMMEDIATE")
+    try:
+        cur = c.execute("SELECT failed_count, lock_level, last_lock_at, locked_until FROM staff WHERE id=?",
+                        (row["id"],)).fetchone()
+        msg = _locked_msg(cur["locked_until"], now)
+        if msg:
+            c.execute("DELETE FROM ip_failures WHERE rowid=?", (ip_try,))
+            audit(row["id"], row["name"], "login_while_locked", row["name"], None, ip, ua)
+            c.execute("COMMIT")
+            return None, msg, False
+        if ok:
+            c.execute("UPDATE staff SET failed_count=0, locked_until=NULL, lock_level=0 WHERE id=?", (row["id"],))
+            c.execute("DELETE FROM ip_failures WHERE rowid=?", (ip_try,))
+            audit(row["id"], row["name"], "login_ok", row["name"], None, ip, ua)
+            c.execute("COMMIT")
+            return row, "ok", False
+        if not row["pin_hash"]:
+            audit(row["id"], row["name"], "login_fail_no_pin", row["name"], None, ip, ua)
+            c.execute("COMMIT")
+            return None, "Wrong PIN. If you've never been given a PIN, ask Adem or Paz.", False
+        fails = c.execute("UPDATE staff SET failed_count=failed_count+1 WHERE id=? RETURNING failed_count",
+                          (row["id"],)).fetchone()[0]
         if fails >= MAX_FAILS:
-            level = row["lock_level"]
-            if row["last_lock_at"] and _utc(row["last_lock_at"]) < now - timedelta(days=1):
+            level = cur["lock_level"]
+            if cur["last_lock_at"] and _utc(cur["last_lock_at"]) < now - timedelta(days=1):
                 level = 0                       # a day without trouble starts over
             level += 1
             if level > len(LOCK_STEPS):
@@ -151,13 +188,15 @@ def attempt_login(staff_name: str, pin: str, ip: str, ua: str):
                       (until, level, _iso(now), row["id"]))
             audit(row["id"], row["name"], "account_locked", row["name"],
                   {"lock": level, "until": "admin unlock" if until == ADMIN_ONLY_UNTIL else until}, ip, ua)
+            c.execute("COMMIT")
             return None, msg, True
-        c.execute("UPDATE staff SET failed_count=? WHERE id=?", (fails, row["id"]))
         audit(row["id"], row["name"], "login_fail", row["name"], {"attempt": fails}, ip, ua)
-        left = MAX_FAILS - fails
-        return None, f"Wrong PIN. {left} more tr{'y' if left == 1 else 'ies'} before the account locks.", False
-    audit(None, staff_name, "login_fail_unknown_name", staff_name, None, ip, ua)
-    return None, "Wrong PIN.", False
+        c.execute("COMMIT")
+    except Exception:
+        c.execute("ROLLBACK")
+        raise
+    left = MAX_FAILS - fails
+    return None, f"Wrong PIN. {left} more tr{'y' if left == 1 else 'ies'} before the account locks.", False
 
 
 def _token_hash(token: str) -> str:
@@ -185,11 +224,8 @@ def session_staff(token: str | None):
     if _utc(s["expires_at"]) < datetime.now(timezone.utc):
         c.execute("DELETE FROM sessions WHERE token_hash=?", (s["token_hash"],))
         return None
-    row = c.execute("SELECT * FROM staff WHERE id=? AND active=1", (s["staff_id"],)).fetchone()
-    if not row:
-        return None
-    c.execute("UPDATE sessions SET last_seen=? WHERE token_hash=?", (now_iso(), s["token_hash"]))
-    return row
+    # no last_seen write here: nothing reads it, and a write on every request queued behind big report uploads
+    return c.execute("SELECT * FROM staff WHERE id=? AND active=1", (s["staff_id"],)).fetchone()
 
 
 def end_session(token: str | None) -> None:
