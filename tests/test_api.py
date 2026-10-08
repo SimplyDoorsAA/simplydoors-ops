@@ -1717,3 +1717,61 @@ def test_hand_written_po_download_then_send(client, smtp, monkeypatch):
     assert acts.count("po_downloaded") == 2 and acts.count("po_sent") == 2
     # the one-off vendor never shows in the vendor list
     assert all(v["code"] != "XX" for v in client.get("/ops/api/pricelist/vendors", headers=H).json())
+
+
+def test_price_list_review_fixes(client, smtp, monkeypatch):
+    from app import alerts, pricelist, sfjobs
+    monkeypatch.setattr(sfjobs, "CLIENT_ID", "id")
+    monkeypatch.setattr(sfjobs, "CLIENT_SECRET", "secret")
+    sent_alerts = []
+    monkeypatch.setattr(alerts, "push", lambda *a, **k: sent_alerts.append(a))
+    _seed_job("10236499004", "PO-REVIEW-1")
+    login(client, "Adem Atis", "246810")
+    # a price that isn't a real number is refused, not stored as NaN
+    for bad in (b"nan", b"inf", b"1e400"):
+        r = _upload(client, b"sku,name,category,price\nTST-NAN,Bad price,Parts & hardware," + bad + b"\n", vendor="NV", label="Bad", replace="new")
+        assert r.status_code == 422, bad
+    # a cell that looks like a spreadsheet formula is made safe in the download and comes back unchanged
+    r = _upload(client, b"sku,name,category,price,flag\nTST-EQ-1,=HYPERLINK(1),Parts & hardware,5,-check this\n",
+                vendor="NV", label="Formula test", replace="new")
+    assert r.status_code == 200, r.text
+    it = next(i for i in client.get("/ops/api/pricelist/items?vendor=NV", headers=H).json()["items"] if i["sku"] == "TST-EQ-1")
+    assert it["name"] == "=HYPERLINK(1)"
+    csv_text = client.get(f"/ops/api/pricelist/sheets/{it['sheet_id']}/csv", headers=H).content
+    assert b"'=HYPERLINK(1)" in csv_text and b"'-check this" in csv_text
+    back = {x["sku"]: x for x in pricelist.parse_sheet(csv_text)}["TST-EQ-1"]
+    assert back["name"] == "=HYPERLINK(1)" and back["flag"] == "-check this"
+    # the same item on several lines can't add up past the quantity cap
+    many = [{"item_id": it["id"], "qty": 600}, {"item_id": it["id"], "qty": 600}]
+    body = {"vendor": "NV", "job_number": "10236499004", "ship_method": "Delivery", "lines": many, "order_date": "not a date"}
+    r = client.post("/ops/api/pricelist/pos", json={**body, "action": "download"}, headers=H)
+    assert r.status_code == 422 and "per item" in r.json()["detail"]
+    # a JSON body that isn't an object is a 4xx, never a 500
+    for path in ("/ops/api/pricelist/pos", "/ops/api/pricelist/pos/manual"):
+        assert client.post(path, json=[1, 2], headers=H).status_code < 500
+    # a vendor with no order email: the buy-list PO can be saved & downloaded (not sent), with sheet prices
+    assert not next(v for v in client.get("/ops/api/pricelist/vendors", headers=H).json() if v["code"] == "NV")["can_order"]
+    r = client.post("/ops/api/pricelist/pos", json={**body, "lines": [{"item_id": it["id"], "qty": 3}]}, headers=H)
+    assert r.status_code == 400 and "Download" in r.json()["detail"]
+    r = client.post("/ops/api/pricelist/pos", json={**body, "action": "download", "lines": [{"item_id": it["id"], "qty": 3, "price": 0.01}]}, headers=H)
+    assert r.status_code == 200, r.text
+    po = r.json()
+    assert po["status"] == "downloaded" and po["sent_to"] == "" and po["total"] == 15.0 and not po["manual"]
+    assert po["po_number"] == "PO-REVIEW-1" and len(po["order_date"]) == 10            # a bad date falls back to today
+    assert conn().execute("SELECT COUNT(*) FROM emails WHERE po_id=?", (po["id"],)).fetchone()[0] == 0
+    assert conn().execute("SELECT action FROM audit WHERE target=?", (f"po:{po['id']}",)).fetchone()[0] == "po_downloaded"
+    # sending a saved PO in test mode goes to the owner and leaves the PO unsent, so it can still go to the vendor
+    client.put("/ops/api/owner/test-mode", json={"on": True}, headers=H)
+    try:
+        r = client.post(f"/ops/api/pricelist/pos/{po['id']}/send", headers=H)
+        assert r.status_code == 200 and r.json()["is_test"]
+        assert conn().execute("SELECT status FROM pl_pos WHERE id=?", (po["id"],)).fetchone()[0] == "downloaded"
+    finally:
+        client.put("/ops/api/owner/test-mode", json={"on": False}, headers=H)
+    # a hand-written PO emailed to a typed-in vendor raises an alert
+    lines = [{"qty": 1, "sku": "X-1", "name": "Thing", "price": "10"}]
+    r = client.post("/ops/api/pricelist/pos/manual", json={"action": "send", "po_number": "SHOP-REV-1", "ship_method": "Delivery",
+                                                           "other_vendor": {"name": "Typed Vendor", "email": "typed@vendor.test"},
+                                                           "lines": lines}, headers=H)
+    assert r.status_code == 200, r.text
+    assert any("typed-in vendor" in a[0] for a in sent_alerts)

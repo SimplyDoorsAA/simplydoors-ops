@@ -18,7 +18,7 @@ import sqlite3
 import threading
 import time
 import traceback
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import warnings
 from contextlib import asynccontextmanager
@@ -47,7 +47,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-39"
+APP_VERSION = "stage3-40"
 
 
 @asynccontextmanager
@@ -1411,7 +1411,7 @@ async def pl_add_item(request: Request, staff=Depends(current_pricelist_editor))
     body = body if isinstance(body, dict) else {}
     sheet_id = body.get("sheet_id")
     try:
-        iid = pricelist.add_item(int(sheet_id) if str(sheet_id).isdigit() else 0, body, staff["name"])
+        iid = pricelist.add_item(int(sheet_id) if re.fullmatch(r"[0-9]{1,9}", str(sheet_id)) else 0, body, staff["name"])
     except LookupError as e:
         raise HTTPException(404, str(e)) from None
     except pricelist.SheetError as e:
@@ -1474,10 +1474,13 @@ def pl_po_check(po: str = "", staff=Depends(current_pricelist)):
 @app.post("/api/pricelist/pos")
 async def pl_send_po(request: Request, staff=Depends(current_pricelist)):
     body = await request.json()
+    body = body if isinstance(body, dict) else {}
     v = _vendor(str(body.get("vendor", "")))
-    test = bool(staff["is_owner"]) and get_setting("owner_test_mode") == "1"
-    if not v["order_email"] and not test:
-        raise HTTPException(400, f"{v['name']} has no order email yet. An admin sets it in Admin → Price List.")
+    # "download": save it and hand back the PDF without emailing anyone (a vendor with no order email yet, say)
+    download = body.get("action") == "download"
+    test = not download and bool(staff["is_owner"]) and get_setting("owner_test_mode") == "1"
+    if not download and not v["order_email"] and not test:
+        raise HTTPException(400, f"{v['name']} has no order email yet. Download the PO instead, or an admin sets it in Admin → Price List.")
     if not sfjobs.configured():
         raise HTTPException(400, "The job lookup isn't connected to Service Fusion, so there's no PO number to use.")
     job = str(body.get("job_number", "")).strip()
@@ -1493,15 +1496,15 @@ async def pl_send_po(request: Request, staff=Depends(current_pricelist)):
     if method not in pricelist.SHIP_METHODS:
         raise HTTPException(422, "Pick a shipping method.")
     ship_to = "site" if body.get("ship_to") == "site" else "shop"
-    day = str(body.get("order_date", ""))
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
-        day = datetime.now(pricelist_tz()).strftime("%Y-%m-%d")
+    day = _po_day(body.get("order_date"))
     try:
         lines, total, label = pricelist.build_lines(v["code"], body.get("lines") or [])
     except ValueError as e:
         raise HTTPException(422, str(e)) from None
     notes = str(body.get("notes", "")).strip()[:1000]
-    if test:
+    if download:
+        sent_to = ""
+    elif test:
         em = (staff["email"] or "").strip()
         if not em:
             raise HTTPException(400, "Test mode sends the PO to you, but your account has no email.")
@@ -1511,21 +1514,25 @@ async def pl_send_po(request: Request, staff=Depends(current_pricelist)):
     c = conn()
     cur = c.execute(
         "INSERT INTO pl_pos(po_number, vendor, job_number, job_customer, order_date, ship_method, ship_to, ship_address,"
-        " notes, lines, total, sheet_label, staff_id, sent_to, is_test, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " notes, lines, total, sheet_label, staff_id, sent_to, is_test, created_at, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (po_number, v["code"], job, d.get("customer") or "", day, method, ship_to, d.get("address") or "", notes,
-         json.dumps(lines), total, label, staff["id"], sent_to, 1 if test else 0, now_iso()))
+         json.dumps(lines), total, label, staff["id"], sent_to, 1 if test else 0, now_iso(),
+         "downloaded" if download else "sent"))
     pid = cur.lastrowid
-    subject = f"{'TEST - ' if test else ''}SimplyDoors Purchase Order {po_number}"
-    if test:
-        c.execute("INSERT INTO emails(report_id, po_id, recipients, cc, subject, created_at, next_try_at, audience)"
-                  " VALUES (NULL,?,?,'',?,?,?,'vendor')", (pid, sent_to, subject, now_iso(), now_iso()))
-        mailer._wake.set()
-    else:
-        mailer.queue_po_email(pid, sent_to, subject)
-    audit(staff["id"], staff["name"], "po_sent", f"po:{pid}",
+    if not download:
+        _queue_po(pid, sent_to, test, po_number)
+    audit(staff["id"], staff["name"], "po_downloaded" if download else "po_sent", f"po:{pid}",
           {"po": po_number, "vendor": v["name"], "job": job, "to": sent_to, "lines": len(lines), "total": total,
            **({"test": True} if test else {})}, client_ip(request), ua(request))
     return pricelist.po_out(pricelist.get_po(pid), with_lines=True)
+
+
+def _po_day(v) -> str:
+    """The PO's order date: a real YYYY-MM-DD date, otherwise today."""
+    try:
+        return date.fromisoformat(str(v or "")).isoformat()
+    except (ValueError, TypeError):
+        return datetime.now(pricelist_tz()).strftime("%Y-%m-%d")
 
 
 PO_NUMBER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._/#-]{0,39}$")
@@ -1542,6 +1549,12 @@ def _po_email_to(staff, v_email: str, v_name: str):
     if not v_email:
         raise HTTPException(400, f"{v_name} has no order email yet. Download the PO instead, or an admin sets the email in Admin → Price List.")
     return v_email, False
+
+
+def _typed_vendor_alert(staff, po_number: str, vendor: str, to: str):
+    # a PO (with net prices) emailed to an address someone typed in, not a vendor an admin set up
+    alerts.push("Ops app: PO sent to a typed-in vendor",
+                f"{staff['name']} emailed PO {po_number} to {vendor} at {to} (a one-off vendor, not in the vendor list).", "high")
 
 
 def _queue_po(pid: int, sent_to: str, test: bool, po_number: str):
@@ -1597,9 +1610,7 @@ async def pl_manual_po(request: Request, staff=Depends(current_pricelist)):
     if method not in pricelist.SHIP_METHODS:
         raise HTTPException(422, "Pick a shipping method.")
     ship_to = "site" if body.get("ship_to") == "site" else "shop"
-    day = str(body.get("order_date", ""))
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
-        day = datetime.now(pricelist_tz()).strftime("%Y-%m-%d")
+    day = _po_day(body.get("order_date"))
     try:
         lines, total = pricelist.clean_manual_lines(body.get("lines"))
     except ValueError as e:
@@ -1617,6 +1628,8 @@ async def pl_manual_po(request: Request, staff=Depends(current_pricelist)):
     pid = cur.lastrowid
     if action == "send":
         _queue_po(pid, sent_to, test, po_number)
+        if other and not test:
+            _typed_vendor_alert(staff, po_number, v_name, sent_to)
     audit(staff["id"], staff["name"], "po_sent" if action == "send" else "po_downloaded", f"po:{pid}",
           {"po": po_number, "vendor": v_name or _vendor(code)["name"], "job": job, "to": sent_to, "lines": len(lines),
            "total": total, "by_hand": True, **({"test": True} if test else {})}, client_ip(request), ua(request))
@@ -1636,11 +1649,19 @@ def pl_send_saved_po(pid: int, request: Request, staff=Depends(current_pricelist
         v = _vendor(po["vendor"])
         email, name = v["order_email"], v["name"]
     sent_to, test = _po_email_to(staff, email, name)
-    conn().execute("UPDATE pl_pos SET status='sent', sent_to=?, is_test=? WHERE id=?", (sent_to, 1 if test else 0, pid))
+    if not test:   # a test send goes only to the owner and leaves the PO ready to send for real
+        cur = conn().execute("UPDATE pl_pos SET status='sent', sent_to=? WHERE id=? AND status='downloaded'", (sent_to, pid))
+        if cur.rowcount == 0:      # someone else sent it a moment ago
+            raise HTTPException(409, "This PO was already sent.")
     _queue_po(pid, sent_to, test, po["po_number"])
+    if po["vendor_name"] and not test:
+        _typed_vendor_alert(staff, po["po_number"], name, sent_to)
     audit(staff["id"], staff["name"], "po_sent", f"po:{pid}", {"po": po["po_number"], "vendor": name, "to": sent_to,
           "after_download": True, **({"test": True} if test else {})}, client_ip(request), ua(request))
-    return pricelist.po_out(pricelist.get_po(pid), with_lines=True)
+    out = pricelist.po_out(pricelist.get_po(pid), with_lines=True)
+    if test:      # the saved PO itself stays a real, unsent PO; this reply says the email was a test
+        out["is_test"] = True
+    return out
 
 
 def pricelist_tz():
@@ -1698,7 +1719,7 @@ def admin_pricelist(admin=Depends(current_admin)):
 async def admin_pricelist_add_vendor(request: Request, admin=Depends(current_admin)):
     body = await request.json()
     try:
-        code = pricelist.add_vendor(str((body or {}).get("name", "")))
+        code = pricelist.add_vendor(str((body if isinstance(body, dict) else {}).get("name", "")))
     except pricelist.SheetError as e:
         raise HTTPException(422, str(e)) from None
     v = _vendor(code)
@@ -1710,6 +1731,7 @@ async def admin_pricelist_add_vendor(request: Request, admin=Depends(current_adm
 @app.put("/api/admin/pricelist/vendors/{code}")
 async def admin_pricelist_vendor(code: str, request: Request, admin=Depends(current_admin)):
     body = await request.json()
+    body = body if isinstance(body, dict) else {}
     v = _vendor(code)
     email = str(body.get("order_email", v["order_email"])).strip()
     if email and not EMAIL_RE.match(email):
@@ -1753,7 +1775,7 @@ async def admin_pricelist_upload(request: Request, admin=Depends(current_sheet_m
     rep_raw = str(form.get("replace", "")).strip()
     if rep_raw == "new":
         replace = None
-    elif rep_raw.isdigit():
+    elif re.fullmatch(r"[0-9]{1,9}", rep_raw):
         replace = int(rep_raw)
     elif not v["sheets"]:
         replace = None

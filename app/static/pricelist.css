@@ -7,11 +7,6 @@
 .betanote { background: #fff4e6; color: #8a3b00; font-size: 14px; font-weight: 600; padding: 8px 16px; text-align: center; }
 .lock { background: var(--green-bg); color: var(--green-dark); border-radius: 999px; padding: 4px 10px; font-size: 12px; font-weight: 700; white-space: nowrap; }
 
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px; }
-
-.lock { background: var(--green-bg); color: var(--green-dark); border-radius: 999px; padding: 4px 10px; font-size: 12px; font-weight: 700; white-space: nowrap; }
-
-
 .search { position: relative; }
 .search input { width: 100%; font: inherit; font-size: 18px; padding: 14px 44px 14px 14px; min-height: 54px;
   border: 1.5px solid var(--line); border-radius: 12px; background: #fff; color: var(--ink); }
@@ -166,7 +161,14 @@
 .po-sign { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-top: 40px; }
 .po-sign div { border-top: 1px solid #111; padding-top: 4px; font-size: 12px; }
 .po-foot { margin-top: 24px; font-size: 11px; color: #666; text-align: center; }
-@media (max-width: 600px) { .paper { padding: 20px 14px; } .po-blocks { grid-template-columns: 1fr; } .po-head { flex-direction: column; } .grid2 { grid-template-columns: 1fr; } }
+@media (max-width: 600px) {
+  .paper { padding: 20px 12px; font-size: 12px; overflow-x: auto; }
+  .po-blocks { grid-template-columns: 1fr; } .po-head { flex-direction: column; } .grid2 { grid-template-columns: 1fr; }
+  .paper h2 { text-align: left; font-size: 22px; } .po-meta { margin-left: 0; }
+  .po-lines th, .po-lines td { padding: 6px 4px; } .po-lines .mono { font-size: 11px; word-break: break-all; }
+  .po-tot { min-width: 0; width: 100%; }
+}
+@media (max-width: 600px) { #cmpForm .grid2 { grid-template-columns: 1fr 1fr; } }   /* keep the Compare picks short so results show */
 @media print {
   #podoc { position: static; background: #fff; padding: 0; overflow: visible; }
   .po-actions, .po-warn { display: none !important; }

@@ -31,7 +31,7 @@
   let me = null, VENDORS = [];
   const ITEMS = {};           // vendor code -> items from the live sheet
   const BYID = new Map();     // item id -> item (with .v = vendor)
-  const S = { q: "", vendor: null, cat: "All", grp: "", stocked: false, flagged: false, core: "", height: 0, width: 0,
+  const S = { q: "", vendor: null, cat: "All", gp: [], stocked: false, flagged: false, core: "", height: 0, width: 0,
     sort: "rel", shown: 40, list: {}, po: null };
 
   // ------------------------------------------------------------ per-person storage on this device
@@ -61,17 +61,20 @@
   function prep(d, v) {
     d.v = v;
     const extra = [sizeCode(d.w, d.h), d.w ? ftin(d.w) : "", d.w ? `${d.w}x${d.h}` : "",
-      d.h === 80 ? "6/8 68" : d.h === 96 ? "8/0 80" : "", d.brand || "", d.uom || ""];
+      d.h === 80 ? "6/8 68" : d.h === 96 ? "8/0 80" : "", d.brand || "", d.uom || "", vname(v)];
     d._hay = norm([d.name, d.sku, d.mfr, d.grp, d.cat, d.core, d.th, ...extra].join(" "));
     d._words = new Set(d._hay.split(/[^a-z0-9/]+/));
     BYID.set(d.id, d);
   }
+  // a group name like "Exterior Fiberglass · Smooth White · Shaker" is a path: pick one level at a time
+  const segs = (g) => String(g || "").split(" · ");
+  const inPath = (g, path) => { const sg = segs(g); return path.every((x, i) => sg[i] === x); };
   const tokOk = (d, t) => /^[a-z]{1,3}$/.test(t) ? d._words.has(t) : d._hay.includes(t);
   const toks = () => norm(S.q).split(/\s+/).filter(Boolean);
   const pool = () => S.vendor ? (ITEMS[S.vendor] || []) : Object.values(ITEMS).flat();
   function matches(d, ts) {
     if (S.cat !== "All" && d.cat !== S.cat) return false;
-    if (S.grp && d.grp !== S.grp) return false;
+    if (S.gp.length && !inPath(d.grp, S.gp)) return false;
     if (S.stocked && d.stock !== true) return false;
     if (S.flagged && !d.flag) return false;
     if (S.core && !(d.core || "").toUpperCase().startsWith(S.core)) return false;
@@ -85,8 +88,10 @@
     if (S.sort === "price") res.sort((a, b) => (a.price ?? 1e9) - (b.price ?? 1e9));
     else if (S.sort === "size") res.sort((a, b) => (a.h - b.h) || (a.w - b.w) || ((a.price ?? 0) - (b.price ?? 0)));
     else if (ts.length) {
+      // exact part # first, then items whose size is the typed size code (2868 = a 2/8 x 6/8 door, not a part # containing 2868)
       const q = norm(S.q).replace(/\s+/g, "");
-      res.sort((a, b) => (b.sku.toLowerCase() === q) - (a.sku.toLowerCase() === q) || (b.stock === true) - (a.stock === true));
+      const sized = (d) => ts.includes(sizeCode(d.w, d.h));
+      res.sort((a, b) => (b.sku.toLowerCase() === q) - (a.sku.toLowerCase() === q) || sized(b) - sized(a) || (b.stock === true) - (a.stock === true));
     }
     return res;
   }
@@ -106,14 +111,19 @@
   const coreKey = (c) => { c = String(c || "").toUpperCase(); return /20/.test(c) ? "FIRE" : c.startsWith("HC") ? "HC" : c.startsWith("SC") ? "SC" : ""; };
   const CORE_LABEL = { HC: "Hollow core", SC: "Solid core", FIRE: "20-min fire", "": "Not stated" };
   const thKey = (t) => String(t || "").replace(/[^0-9/]/g, "");
-  const thLabel = (k) => k ? `${k[0]}-${k.slice(1)}"` : "Not stated";
+  const thLabel = (k) => k && k !== "-" ? `${k[0]}-${k.slice(1)}"` : "Not stated";
   const styleKey = (s) => String(s || "").trim().toLowerCase();
   const STYLE_HINTS = ["1-panel shaker", "2-panel shaker", "3-panel shaker", "5-panel shaker", "1+2-panel craftsman",
     "2-panel square top", "2-panel arch top", "4-panel", "6-panel", "flush", "1-lite", "louver"];
-  // same door: same size, thickness and core, and the same match style when both groups have one (else the same category)
+  // the panel count a door's name states ("6 Panel Textured", "2 Pnl Rd Top"), or "" when it doesn't say
+  const panelsIn = (t) => { const m = String(t || "").toLowerCase().match(/\b(\d)[\s-]*(?:panel|pnl|pn)\b/); return m ? m[1] : ""; };
+  const panels = (d) => panelsIn(d.name);
+  // same door: same size, thickness and core, and the same match style when both groups have one (else the same category,
+  // and not two names that state different panel counts)
   function sameDoor(a, b) {
     if (!a.w || !a.h || a.w !== b.w || a.h !== b.h || thKey(a.th) !== thKey(b.th) || coreKey(a.core) !== coreKey(b.core)) return false;
-    return a.style && b.style ? styleKey(a.style) === styleKey(b.style) : a.cat === b.cat;
+    if (a.style && b.style) return styleKey(a.style) === styleKey(b.style);
+    return a.cat === b.cat && !(panels(a) && panels(b) && panels(a) !== panels(b));
   }
   const cheapest = (list) => list.slice().sort((a, b) => (a.price ?? 1e9) - (b.price ?? 1e9));
   function refreshStyleList() {
@@ -133,11 +143,11 @@
     if (packSizes(d).length) t.push(`<span class="tag v">pack of ${esc(packText(d))}</span>`);
     return t.join("");
   }
-  function card(d) {
+  function card(d, note) {
     const sub = [sizeLabel(d), d.core, d.th, d.hand].filter(Boolean).join(" · ");
     return `<button type="button" class="item" data-id="${d.id}">
       <div class="main"><div class="t">${esc(d.name)}</div><div class="s">${esc(sub || d.grp)}</div>
-        <div class="s mono">${esc(d.sku)}${d.mfr ? " · " + esc(d.mfr) : ""}</div><div class="meta">${tags(d)}</div></div>
+        <div class="s mono">${esc(d.sku)}${d.mfr ? " · " + esc(d.mfr) : ""}</div><div class="meta">${tags(d)}${note ? `<span class="tag flag">${esc(note)}</span>` : ""}</div></div>
       <div class="price"><div class="p">${d.price == null ? "—" : money(d.price)}</div>
         <div class="pl">${d.w && d.h ? "slab net" : d.uom ? "net / " + esc(d.uom) : "net"}</div></div></button>`;
   }
@@ -155,12 +165,13 @@
   }
   function renderBrowse() {
     if (!S.vendor) {
-      $("#browse").innerHTML = "<h1>Pick a vendor</h1><div class=\"tiles\">" + VENDORS.map(v => {
-        const live = !!v.sheet;
-        return `<button type="button" class="tile2 ${live ? "live" : "off"}" ${live ? `data-vendor="${esc(v.code)}"` : "disabled"}>
-          <div class="tt">${esc(v.name)} ${live ? '<span class="tag stock">Live</span>' : '<span class="tag ns">No sheet yet</span>'}</div>
-          <div class="ts">${live ? `${v.sheet.items.toLocaleString()} items · ${esc(v.sheet.label)}` : "Waiting for a price sheet"}</div></button>`;
-      }).join("") + "</div>";
+      // vendors without a sheet aren't tiles: there's nothing to open (Simpson, for one, is bought through Boise Cascade)
+      const off = VENDORS.filter(v => !v.sheet);
+      $("#browse").innerHTML = "<h1>Pick a vendor</h1><div class=\"tiles\">" + VENDORS.filter(v => v.sheet).map(v =>
+        `<button type="button" class="tile2 live" data-vendor="${esc(v.code)}">
+          <div class="tt">${esc(v.name)} <span class="tag stock">Live</span></div>
+          <div class="ts">${v.sheet.items.toLocaleString()} items · ${esc(v.sheet.label)}</div></button>`).join("") + "</div>" +
+        (off.length ? `<p class="small muted" style="margin-top:12px">No price sheet yet: ${off.map(v => esc(v.name)).join(", ")}.</p>` : "");
       return;
     }
     const items = ITEMS[S.vendor] || [];
@@ -178,9 +189,19 @@
     const ts = toks();
     if (S.cat !== "All") {
       const inCat = pool().filter(d => d.cat === S.cat && ts.every(t => tokOk(d, t)));
-      const grps = [...new Set(inCat.map(d => d.grp))];
-      $("#grps").innerHTML = grps.length > 1 ? `<button type="button" class="chip ${!S.grp ? "on" : ""}" data-grp="">All types<span class="n">${inCat.length}</span></button>` +
-        grps.map(g => `<button type="button" class="chip ${S.grp === g ? "on" : ""}" data-grp="${esc(g)}">${esc(g)}<span class="n">${inCat.filter(d => d.grp === g).length}</span></button>`).join("") : "";
+      if (new Set(inCat.map(d => d.grp)).size < 2) { $("#grps").innerHTML = ""; }
+      else {
+        // chosen levels show as green chips (tap one to step back to it); the next level's choices follow
+        const here = inCat.filter(d => inPath(d.grp, S.gp)), lvl = S.gp.length;
+        const next = [...new Set(here.map(d => segs(d.grp)[lvl]).filter(Boolean))];
+        const chip = (on, act, label, n) => `<button type="button" class="chip ${on ? "on" : ""}" data-gl="${act}">${esc(label)}${n != null ? `<span class="n">${n}</span>` : ""}</button>`;
+        $("#grps").innerHTML = chip(!lvl, "0", "All types", inCat.length) +
+          S.gp.map((x, i) => chip(true, String(i), (i ? "› " : "") + x + " ✕", null)).join("") +
+          (next.length > 1 || (next.length === 1 && here.some(d => !segs(d.grp)[lvl]))
+            ? next.map(x => `<button type="button" class="chip" data-gl="+" data-gv="${esc(x)}">${esc(x)}<span class="n">${here.filter(d => segs(d.grp)[lvl] === x).length}</span></button>`).join("") : "");
+        const k = S.cat + "|" + S.gp.join("|");
+        if (renderChips.k !== k) { renderChips.k = k; $("#grps").scrollLeft = 0; }   // a new level: start the row at "All types"
+      }
     } else $("#grps").innerHTML = "";
     const f = [["stocked", "✓ Stocked only", S.stocked], ["flagged", "⚠ Flagged only", S.flagged, "warn"],
       ["core:HC", "Hollow core", S.core === "HC"], ["core:SC", "Solid core", S.core === "SC"],
@@ -192,7 +213,7 @@
   function renderResults() {
     const res = search();
     $("#count").textContent = res.length.toLocaleString() + (res.length === 1 ? " item" : " items");
-    if (!res.length && S.q && (S.cat !== "All" || S.grp)) {
+    if (!res.length && S.q && (S.cat !== "All" || S.gp.length)) {
       const ts = toks(), n = pool().filter(d => ts.every(t => tokOk(d, t))).length;
       if (n) { $("#results").innerHTML = `<div class="empty">Nothing in ${esc(S.cat)}.<button type="button" class="more" id="widen">Show ${n} match${n > 1 ? "es" : ""} in all categories</button></div>`; return; }
     }
@@ -200,7 +221,7 @@
       $("#results").innerHTML = `<div class="empty">Nothing matches. Try fewer words, or a size like 2868.${filtersOn() ? '<button type="button" class="more" id="clearf">Clear filters</button>' : ""}</div>`;
       return;
     }
-    $("#results").innerHTML = res.slice(0, S.shown).map(card).join("") +
+    $("#results").innerHTML = res.slice(0, S.shown).map(d => card(d)).join("") +
       (res.length > S.shown ? `<button type="button" class="more" id="more">Show more (${(res.length - S.shown).toLocaleString()} left)</button>` : "");
   }
   function render() {
@@ -219,7 +240,7 @@
     const d = BYID.get(id); if (!d) return;
     const sib = (ITEMS[d.v] || []).filter(x => x.grp === d.grp && x.name === d.name && x.w).sort((a, b) => (a.h - b.h) || (a.w - b.w));
     const inList = (S.list[d.v] || {})[d.id] || 0;
-    const others = VENDORS.filter(v => v.code !== d.v);
+    const others = VENDORS.filter(v => v.code !== d.v && v.sheet);
     $("#sheet").innerHTML = `<div class="grab"></div><button type="button" class="close" id="close" aria-label="Close">×</button>
       <div class="muted small">${esc(d.cat)} · ${esc(d.grp)}</div>
       <h1 style="margin-top:4px">${esc(d.name)}</h1>
@@ -229,7 +250,6 @@
         <div class="vrow"><div><div class="vn">${esc(vname(d.v))}</div><div class="small muted">${esc(d.sheet || "")}</div></div>
           <div class="vp">${d.price == null ? '<span class="small muted">call</span>' : money(d.price)}</div></div>
         ${others.map(v => {
-          if (!v.sheet) return `<div class="vrow"><div><div class="vn">${esc(v.name)}</div><div class="small muted">No price sheet yet</div></div><div class="vp"><span class="small muted">—</span></div></div>`;
           if (!d.w || !d.h) return `<div class="vrow"><div><div class="vn">${esc(v.name)}</div><div class="small muted">Only doors are matched across vendors</div></div><div class="vp"><span class="small muted">—</span></div></div>`;
           const all = (ITEMS[v.code] || []).filter(x => sameDoor(d, x));
           const tagged = all.filter(x => d.style && x.style);       // same style: prefer those over category-only matches
@@ -331,12 +351,16 @@
       const sheetId = btn.dataset.new;
       const d = sheetId ? await api("api/pricelist/items", { method: "POST", json: { ...body, sheet_id: +sheetId } })
         : await api(`api/pricelist/items/${$("#sheet").dataset.id}`, { method: "PATCH", json: body });
+      // the item is saved: from here a retry must edit it, not add it a second time
+      putItem(d); btn.dataset.new = ""; $("#sheet").dataset.id = d.id;
       const st = $("#ed-style");
-      let newStyle = null;
-      if (st && st.value.trim() !== st.dataset.orig) newStyle = (await saveStyle(d.vendor, d.grp, st.value.trim())).style;
-      putItem(d);
-      if (newStyle !== null) d.style = newStyle;
-      render(); openItem(d.id); toast(sheetId ? "Item added" : "Saved");
+      let styleErr = "";
+      if (st && st.value.trim() !== st.dataset.orig) {
+        try { d.style = (await saveStyle(d.vendor, d.grp, st.value.trim())).style; }
+        catch (e) { styleErr = e.message; }
+      }
+      render(); openItem(d.id);
+      toast(styleErr ? `Item saved, but the match style wasn't: ${styleErr}` : sheetId ? "Item added" : "Saved");
     } catch (e) { toast(e.message); btn.disabled = false; }
   }
   async function saveStyle(vendor, grp, style) {
@@ -378,16 +402,18 @@
 
   // ------------------------------------------------------------ buy list + PO
   function lineCalc(d, qty) {
-    const base = (d.price || 0) * qty;
-    const sur = d.stock === false && NONSTOCK_CATS.includes(d.cat) && qty < 10 && d.price ? base * 0.3 : 0;
-    return { base, sur, total: base + sur };
+    // rounded to cents the same way the server works out the PO
+    const cents = (n) => Math.round(n * 100) / 100;
+    const base = cents((d.price || 0) * qty);
+    const sur = d.stock === false && NONSTOCK_CATS.includes(d.cat) && qty < 10 && d.price ? cents(base * 0.3) : 0;
+    return { base, sur, total: cents(base + sur) };
   }
   function setQty(v, id, q) {
     q = Math.max(0, Math.min(999, parseInt(q, 10) || 0));
     S.list[v] = S.list[v] || {};
     if (q) S.list[v][id] = q; else delete S.list[v][id];
     if (!Object.keys(S.list[v]).length) delete S.list[v];
-    saveList(); renderList();
+    saveList(); renderList(true);
   }
   function listLines(v) {
     return Object.entries(S.list[v] || {}).map(([id, q]) => {
@@ -400,13 +426,13 @@
   function saveDraft(v, f) { store.set("draft_" + v, f); }
   function localDay() { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); }
 
-  function renderList() {
+  function renderList(keepForm) {
     const vs = Object.keys(S.list).filter(v => listLines(v).length);
     const n = vs.reduce((a, v) => a + listLines(v).reduce((x, l) => x + l.qty, 0), 0);
     $("#listcount").textContent = n; $("#listcount").classList.toggle("hidden", !n);
     if (!vs.length) {
       $("#listbody").innerHTML = '<div class="empty">Your buy list is empty.<br>Go to Shop, pick an item and tap “Add to buy list”.</div>';
-      $("#poform").innerHTML = ""; return;
+      $("#poform").innerHTML = ""; S.formVendor = null; return;
     }
     if (!S.poVendor || !vs.includes(S.poVendor)) S.poVendor = vs[0];
     $("#listbody").innerHTML = vs.map(v => {
@@ -423,9 +449,9 @@
         <div class="total"><span>Subtotal</span><span>${money(sub)}</span></div>
         ${tbd ? `<div class="small" style="color:var(--blue);margin-top:6px">${tbd} line${tbd > 1 ? "s need" : " needs"} a price from the vendor (shows as TBD on the PO).</div>` : ""}
         ${vs.length > 1 ? `<button type="button" class="btn ${S.poVendor === v ? "" : "secondary"}" data-povendor="${esc(v)}">${S.poVendor === v ? "Making this PO ↓" : "Make the PO for " + esc(vname(v))}</button>` : ""}
-        <button type="button" class="link small" data-manfrom="${esc(v)}">✍️ Edit as a hand-written PO (change lines or prices, no job, download)</button></div>`;
+        <button type="button" class="link small" data-manfrom="${esc(v)}">✍️ Write this PO by hand (change lines or prices, type the PO #, download)</button></div>`;
     }).join("");
-    renderPoForm(S.poVendor);
+    if (!(keepForm && S.formVendor === S.poVendor && $("#poform").innerHTML)) renderPoForm(S.poVendor);
   }
   function renderPoForm(v) {
     const f = draft(v), vend = VENDORS.find(x => x.code === v) || {};
@@ -440,10 +466,11 @@
           : '<div class="warnbox">This job has no PO number in Service Fusion. Add it there, then tap Refresh and pick the job again.</div>'}</div>`;
     } else {
       jobHtml = `<div class="field"><label for="jobq">Find the job <span class="muted small">(the PO number comes from the job in Service Fusion)</span></label>
-        <div class="jl-row" style="display:flex;gap:8px"><input id="jobq" type="search" placeholder="Last 4 of job # or customer name" autocomplete="off"><button type="button" class="mini" id="jobRefresh">Refresh</button></div>
+        <div class="jl-row" style="display:flex;gap:8px"><input id="jobq" type="search" placeholder="Job # or customer" autocomplete="off"><button type="button" class="mini" id="jobRefresh">Refresh</button></div>
         <div class="small muted" id="jobStatus" style="margin-top:6px"></div><div id="jobRes"></div></div>`;
     }
     const ok = job && job.po_number;
+    S.formVendor = v;
     $("#poform").innerHTML = `<div class="box"><b style="font-size:18px">Purchase order to ${esc(vname(v))}</b>
       ${jobHtml}
       <div class="field"><label for="po-date">Order date</label><input id="po-date" type="date" data-d="date" value="${esc(f.date)}"></div>
@@ -455,13 +482,14 @@
           <option value="site" ${f.shipto === "site" ? "selected" : ""}>Job site (address from Service Fusion)</option></select></div>
       </div>
       <div class="field"><label for="po-notes">Notes for the vendor</label><textarea id="po-notes" data-d="notes" rows="2" maxlength="1000" placeholder="Delivery instructions, call before delivery…">${esc(f.notes)}</textarea></div>
-      <div class="small muted" style="margin-top:8px">Sending emails the PO as a PDF to <b>${esc(vend.can_order ? "the " + vname(v) + " order email set in Admin" : "(no order email set yet: ask an admin)")}</b> and a copy to <b>${ADMIN_COPY}</b>.</div>
+      <div class="small muted" style="margin-top:8px">${vend.can_order || me.test_mode ? `Sending emails the PO as a PDF to <b>the ${esc(vname(v))} order email set in Admin</b> and a copy to <b>${ADMIN_COPY}</b>.`
+        : `${esc(vname(v))} has no order email yet: you can save &amp; download the PO and send the PDF yourself.`}</div>
       <button type="button" class="btn" id="po-preview" ${ok ? "" : "disabled"}>${!job ? "Pick the job first" : !job.po_number ? "Job needs a PO # in Service Fusion" : "Preview purchase order"}</button>
       <button type="button" class="btn secondary" id="clearlist">Clear this buy list</button></div>`;
     if (!job) runJobSearch();
     else if (job.po_number) api(`api/pricelist/po-check?po=${encodeURIComponent(job.po_number)}`).then(r => {
       const el = $("#dupWarn");
-      if (el && r.sent_before.length) el.innerHTML = `<div class="warnbox">PO # ${esc(job.po_number)} was already sent ${r.sent_before.length > 1 ? r.sent_before.length + " times" : "on " + esc(r.sent_before[0].order_date)}. Sending again uses the same PO number. If this is a separate order, add a new PO number to the job in Service Fusion first, then refresh.</div>`;
+      if (el && r.sent_before.length) el.innerHTML = `<div class="warnbox">PO # ${esc(job.po_number)} is already on ${r.sent_before.length > 1 ? r.sent_before.length + " saved POs" : "a PO from " + esc(r.sent_before[0].order_date)}. Sending again uses the same PO number. If this is a separate order, add a new PO number to the job in Service Fusion first, then refresh.</div>`;
     }).catch(() => {});
   }
   let jobSeq = 0, jobTimer;
@@ -517,29 +545,36 @@
     const p = { po_number: f.job.po_number, order_date: f.date, job_number: f.job.number, job_customer: f.job.customer, ship_method: f.method,
       ship_to: f.shipto, ship_address: f.job.address, notes: f.notes, lines, total: lines.reduce((a, l) => a + (l.total || 0), 0),
       sheet_label: (vend.sheet || {}).label, by: me.name };
-    const paper = poPaper(p, vend);
+    const paper = poPaper(p, vend), canSend = me.test_mode || vend.can_order;
     $("#podoc").innerHTML = `<div class="po-actions"><button type="button" class="btn secondary" id="po-back">← Back to edit</button>
-        <button type="button" class="btn" id="po-send">Send to ${esc(vend.name.split(" ")[0])}</button></div>
-      <div class="po-actions po-warn"><div class="box small" style="flex:1;margin:0">${me.test_mode ? "<b>Test mode is on:</b> this PO is emailed only to you, not to the vendor." :
-        `Sending emails this PO as a PDF to the ${esc(vend.name)} order email, with a copy to <b>${ADMIN_COPY}</b>. Prices are checked again against the loaded sheet when it's sent.`}</div></div>
+        ${canSend ? `<button type="button" class="btn" id="po-send">Send to ${esc(vend.name.split(" ")[0])}</button>` : ""}
+        <button type="button" class="btn ${canSend ? "secondary" : ""}" id="po-dl">⬇︎ Save &amp; download PDF</button></div>
+      <div class="po-actions po-warn"><div class="box small" style="flex:1;margin:0">${me.test_mode ? "<b>Test mode is on:</b> Send emails this PO only to you, not to the vendor." :
+        canSend ? `Send emails this PO as a PDF to the ${esc(vend.name)} order email, with a copy to <b>${ADMIN_COPY}</b>. Prices are checked again against the loaded sheet when it's sent.`
+        : `${esc(vend.name)} has no order email set yet, so this PO can't be emailed from here. Save &amp; download it and send the PDF yourself; it's kept in Purchase orders, and once an admin adds the email you can send it from there.`}
+        Download saves it as “Downloaded, not sent”.</div></div>
       ${badPacks.length ? `<div class="po-actions po-warn"><div class="warnbox" style="flex:1;margin:0">⚠ ${badPacks.map(l => `${esc(l.sku)}: ${l.qty} isn't whole packs of ${esc(l.pack)}`).join("; ")}. The vendor may round up or refuse the line. Go back and fix the quantity, or send it anyway.</div></div>` : ""}
       ${paper.flagged.length || paper.tbd.length ? `<div class="po-actions po-warn"><div class="warnbox" style="flex:1;margin:0">
         ${paper.flagged.length ? `⚠ ${paper.flagged.length} line${paper.flagged.length > 1 ? "s are" : " is"} flagged on the vendor's sheet (${paper.flagged.map(l => esc(l.sku)).join(", ")}). Confirm the part number with the vendor before sending.` : ""}
         ${paper.tbd.length ? `<div>${paper.tbd.length} line${paper.tbd.length > 1 ? "s have" : " has"} no price on the sheet. They show as TBD.</div>` : ""}</div></div>` : ""}
       ${paper.html}`;
+    $("#toast").classList.add("hidden");
     $("#podoc").classList.remove("hidden"); $("#podoc").scrollTop = 0;
   }
-  async function sendPo(btn) {
-    const v = S.poVendor, f = draft(v);
-    btn.disabled = true; btn.textContent = "Sending…";
+  async function sendPo(btn, action) {
+    const v = S.poVendor, f = draft(v), label = btn.textContent;
+    $$("#po-send, #po-dl").forEach(b => { b.disabled = true; });
+    btn.textContent = action === "download" ? "Saving…" : "Sending…";
     try {
-      const po = await api("api/pricelist/pos", { method: "POST", json: { vendor: v, job_number: f.job.number, order_date: f.date,
+      const po = await api("api/pricelist/pos", { method: "POST", json: { action, vendor: v, job_number: f.job.number, order_date: f.date,
         ship_method: f.method, ship_to: f.shipto, notes: f.notes, lines: listLines(v).map(l => ({ item_id: l.id, qty: l.qty })) } });
       delete S.list[v]; saveList(); store.del("draft_" + v);
       $("#podoc").classList.add("hidden"); renderList(); loadPos();
-      toast(po.is_test ? `Test PO ${po.po_number} emailed to you` : `PO ${po.po_number} sent to ${vname(v)} · copy to ${ADMIN_COPY}`);
-      openPo(po.id);
-    } catch (e) { alert(e.message); btn.disabled = false; btn.textContent = "Send"; }
+      if (action === "download") window.location.href = `api/pricelist/pos/${po.id}/pdf?download=1`;
+      toast(action === "download" ? `PO ${po.po_number} saved. Downloading the PDF…` : po.is_test ? `Test PO ${po.po_number} emailed to you`
+        : `PO ${po.po_number} sent to ${vname(v)} · copy to ${ADMIN_COPY}`);
+      setTimeout(() => openPo(po.id), action === "download" ? 600 : 0);
+    } catch (e) { alert(e.message); $$("#po-send, #po-dl").forEach(b => { b.disabled = false; }); btn.textContent = label; }
   }
   async function loadPos() {
     try {
@@ -583,16 +618,22 @@
   // ------------------------------------------------------------ hand-written PO (fill it in yourself, download and/or send)
   const SHIP = ["Delivery", "Will Call – Dallas"];
   const blankLine = () => ({ qty: "1", sku: "", name: "", price: "", uom: "" });
-  function manDraft() {
-    return Object.assign({ vendor: (VENDORS[0] || {}).code || "__other", other: { name: "", address: "", email: "" }, noJob: false, job: null,
-      po_number: "", ship_address: "", date: localDay(), method: SHIP[0], shipto: "shop", notes: "", lines: [blankLine()] }, store.get("manual", {}));
+  const blankManual = () => ({ vendor: (VENDORS[0] || {}).code || "__other", other: { name: "", address: "", email: "" }, noJob: false, job: null,
+    po_number: "", ship_address: "", date: localDay(), method: SHIP[0], shipto: "shop", notes: "", lines: [blankLine()], fromList: null });
+  const manDraft = () => Object.assign(blankManual(), store.get("manual", {}));
+  // a saved hand-written draft with something typed in it
+  function manDraftInUse() {
+    const m = store.get("manual", null); if (!m) return false;
+    return (m.lines || []).some(l => l.name || l.sku || String(l.price || "").trim()) || !!(m.po_number || m.notes || m.job);
   }
   const manSave = () => store.set("manual", S.man);
   function manTotal() { return S.man.lines.reduce((a, l) => a + ((parseFloat(String(l.price).replace(/[$,]/g, "")) || 0) * (parseInt(l.qty, 10) || 0)), 0); }
   function openManual(prefill) {
-    S.man = prefill ? Object.assign(manDraft(), prefill) : manDraft();
+    if (prefill && manDraftInUse() && !confirm("You have a hand-written PO started. Replace it with this one?")) return;
+    S.man = prefill ? Object.assign(blankManual(), prefill) : manDraft();
     if (!S.man.lines.length) S.man.lines.push(blankLine());
     manSave(); renderManual();
+    $("#toast").classList.add("hidden");
     $("#podoc").classList.remove("hidden"); $("#podoc").scrollTop = 0;
   }
   function renderManual() {
@@ -610,7 +651,7 @@
         ${m.job.po_number ? `<div class="small"><b>PO # ${esc(m.job.po_number)}</b> <span class="muted">(from Service Fusion)</span></div><div id="manDup"></div>`
           : '<div class="warnbox">This job has no PO number in Service Fusion. Add it there and pick the job again, or use “No job”.</div>'}`;
     } else {
-      jobHtml = `<div class="jl-row" style="display:flex;gap:8px"><input id="manJobq" type="search" placeholder="Last 4 of job # or customer name" autocomplete="off"><button type="button" class="mini" id="jobRefresh">Refresh</button></div>
+      jobHtml = `<div class="jl-row" style="display:flex;gap:8px"><input id="manJobq" type="search" placeholder="Job # or customer" autocomplete="off"><button type="button" class="mini" id="jobRefresh">Refresh</button></div>
         <div id="manJobRes"></div><button type="button" class="link small" id="man-nojob">No job (shop or stock order): type the PO # instead</button>`;
     }
     const vend = VENDORS.find(v => v.code === m.vendor);
@@ -644,6 +685,13 @@
     manLineTotals();
     if (!m.noJob && !m.job && $("#manJobq")) manJobSearch();
     manDupCheck();
+  }
+  function manSendState() {
+    const b = $("#man-send"); if (!b || !S.man) return;
+    const other = S.man.vendor === "__other", vend = VENDORS.find(v => v.code === S.man.vendor);
+    const canSend = me.test_mode || (other ? !!S.man.other.email.trim() : !!(vend && vend.can_order));
+    b.disabled = !canSend;
+    b.textContent = me.test_mode ? "Send (test mode: to you)" : canSend ? "Send to vendor" : "Send to vendor (no email set: download instead)";
   }
   function manLineTotals() {
     S.man.lines.forEach((l, i) => { const el = $("#mlt-" + i); if (!el) return; const p = parseFloat(String(l.price).replace(/[$,]/g, "")), q = parseInt(l.qty, 10);
@@ -691,6 +739,7 @@
   function manBody(action) {
     const m = S.man;
     const lines = m.lines.filter(l => l.name.trim() || l.sku.trim() || String(l.price).trim());
+    if (lines.length && lines.length !== m.lines.length) { m.lines = lines.slice(); manSave(); renderManual(); }
     const b = { action, order_date: m.date, ship_method: m.method, ship_to: m.shipto, notes: m.notes, lines };
     if (m.vendor === "__other") b.other_vendor = m.other; else b.vendor = m.vendor;
     if (m.noJob) { b.po_number = m.po_number; b.ship_address = m.ship_address; }
@@ -701,14 +750,16 @@
   async function manSubmit(action, btn) {
     let body; try { body = manBody(action); } catch (e) { toast(e.message); return; }
     if (action === "send" && !confirm(`Email this PO${me.test_mode ? " to you (test mode)" : " to the vendor now"}?`)) return;
+    const fromList = S.man.fromList, id = btn.id;
     btn.disabled = true;
     try {
       const po = await api("api/pricelist/pos/manual", { method: "POST", json: body });
       store.del("manual"); S.man = null;
+      if (fromList && S.list[fromList]) { delete S.list[fromList]; saveList(); store.del("draft_" + fromList); renderList(); }
       if (action === "download") window.location.href = `api/pricelist/pos/${po.id}/pdf?download=1`;
       toast(action === "download" ? `PO ${po.po_number} saved. Downloading the PDF…` : po.is_test ? `Test PO ${po.po_number} emailed to you` : `PO ${po.po_number} sent · copy to ${ADMIN_COPY}`);
       loadPos(); setTimeout(() => openPo(po.id), action === "download" ? 600 : 0);
-    } catch (e) { alert(e.message); btn.disabled = false; }
+    } catch (e) { alert(e.message); const b = $("#" + id); if (b) b.disabled = false; }
   }
   async function sendSaved(id, btn) {
     if (!confirm(me.test_mode ? "Email this PO to you (test mode)?" : "Email this PO to the vendor now?")) return;
@@ -720,7 +771,9 @@
   function manFromList(v) {
     const lines = listLines(v).map(l => ({ qty: String(l.qty), sku: l.d.sku, name: l.d.name + (sizeLabel(l.d) ? ` (${sizeLabel(l.d)})` : ""),
       price: l.d.price == null ? "" : ((l.total) / l.qty).toFixed(2), uom: l.d.uom || "" }));
-    openManual({ vendor: v, lines: lines.length ? lines : [blankLine()] });
+    const f = draft(v);
+    openManual({ vendor: v, lines: lines.length ? lines : [blankLine()], job: f.job, date: f.date, method: f.method, shipto: f.shipto,
+      notes: f.notes, fromList: v });
   }
   function manFromPo(p) {
     openManual({ vendor: p.vendor_name ? "__other" : p.vendor, other: { name: p.vendor_name || "", address: (p.vendor_address || []).join("\n"), email: "" },
@@ -735,8 +788,13 @@
     const uniq = (arr) => [...new Set(arr)];
     const pool0 = doors.filter(d => (!c.cat || d.cat === c.cat));
     const ws = uniq(pool0.map(d => d.w)).sort((a, b) => a - b), hs = uniq(pool0.map(d => d.h)).sort((a, b) => a - b);
-    const ths = uniq(pool0.map(d => thKey(d.th))).sort(), styles = uniq(doors.map(d => d.style).filter(Boolean)).sort();
+    const ths = uniq(pool0.map(d => thKey(d.th) || "-")).sort(), styles = uniq(doors.map(d => d.style).filter(Boolean)).sort();
     const cats = CATS.filter(x => doors.some(d => d.cat === x));
+    // a choice that's no longer on the list (another category picked) goes back to "Pick…" / "Any"
+    if (c.w && !ws.includes(+c.w)) c.w = 0;
+    if (c.h && !hs.includes(+c.h)) c.h = 0;
+    if (c.th && !ths.includes(c.th)) c.th = "";
+    if (c.style && !styles.includes(c.style)) c.style = "";
     const opt = (v, label, cur) => `<option value="${esc(v)}" ${String(v) === String(cur) ? "selected" : ""}>${esc(label)}</option>`;
     $("#cmpForm").innerHTML = `<div class="grid2">
         <div class="field"><label for="cf-w">Width</label><select id="cf-w" data-cf="w">${opt(0, "Pick…", c.w)}${ws.map(w => opt(w, `${ftin(w)} (${w}")`, c.w)).join("")}</select></div>
@@ -748,19 +806,25 @@
         <div class="field"><label for="cf-style">Match style</label><select id="cf-style" data-cf="style">${opt("", "Any style", c.style)}${styles.map(s => opt(s, s, c.style)).join("")}</select></div>
         <div class="field"><label for="cf-cat">Category</label><select id="cf-cat" data-cf="cat">${opt("", "Any door", c.cat)}${cats.map(x => opt(x, x, c.cat)).join("")}</select></div></div>`;
     if (!c.w || !c.h) { $("#cmpResults").innerHTML = '<p class="muted">Pick a width and height to compare.</p>'; return; }
-    const hits = doors.filter(d => d.w === +c.w && d.h === +c.h && (!c.th || thKey(d.th) === c.th) && (c.core === "any" || coreKey(d.core) === c.core)
-      && (!c.style || styleKey(d.style) === styleKey(c.style)) && (!c.cat || d.cat === c.cat));
+    // with a style picked: doors tagged with it, plus untagged doors in the same categories (marked, since their look isn't known)
+    const styleCats = new Set(doors.filter(d => c.style && styleKey(d.style) === styleKey(c.style)).map(d => d.cat));
+    const stylePanels = panelsIn(c.style);
+    const styleOk = (d) => !c.style || styleKey(d.style) === styleKey(c.style)
+      || (!d.style && styleCats.has(d.cat) && !(stylePanels && panels(d) && panels(d) !== stylePanels));
+    const hits = doors.filter(d => d.w === +c.w && d.h === +c.h && (!c.th || (thKey(d.th) || "-") === c.th) && (c.core === "any" || coreKey(d.core) === c.core)
+      && styleOk(d) && (!c.cat || d.cat === c.cat));
+    const untagged = (d) => c.style && !d.style;
     if (!hits.length) { $("#cmpResults").innerHTML = '<p class="muted">No vendor has a door like that. Try “Any” on thickness, core or style.</p>'; return; }
     const byV = VENDORS.map(v => ({ v, list: cheapest(hits.filter(d => d.v === v.code)) })).filter(x => x.list.length)
       .sort((a, b) => (a.list[0].price ?? 1e9) - (b.list[0].price ?? 1e9));
     S.cmpOpen = S.cmpOpen || {};
-    $("#cmpResults").innerHTML = `<div class="muted small" style="margin:8px 0">${hits.length} matching door${hits.length > 1 ? "s" : ""} from ${byV.length} vendor${byV.length > 1 ? "s" : ""}, cheapest vendor first${c.style ? "" : ". No style picked, so these may not look alike"}.</div>` +
+    $("#cmpResults").innerHTML = `<div class="muted small" style="margin:8px 0">${hits.length} matching door${hits.length > 1 ? "s" : ""} from ${byV.length} vendor${byV.length > 1 ? "s" : ""}, cheapest vendor first${!c.style ? ". No style picked, so these may not look alike" : hits.some(untagged) ? ". Doors marked “Style not tagged” are the right size and category but nobody has tagged their style yet" : ""}.</div>` +
       byV.map(({ v, list }, i) => `<div class="box"><div class="vendorhead"><b>${i === 0 ? "🏆 " : ""}${esc(v.name)}</b><span class="small muted">${list.length} door${list.length > 1 ? "s" : ""} · from ${list[0].price == null ? "call" : money(list[0].price)}</span></div>
-        ${(S.cmpOpen[v.code] ? list : list.slice(0, 3)).map(card).join("")}
+        ${(S.cmpOpen[v.code] ? list : list.slice(0, 3)).map(d => card(d, untagged(d) ? "Style not tagged: check the look" : "")).join("")}
         ${list.length > 3 && !S.cmpOpen[v.code] ? `<button type="button" class="link small" data-cmpmore="${esc(v.code)}">Show all ${list.length}</button>` : ""}</div>`).join("");
   }
   function compareFrom(d) {
-    S.cmp = { w: d.w, h: d.h, th: thKey(d.th), core: coreKey(d.core), style: d.style || "", cat: d.style ? "" : d.cat };
+    S.cmp = { w: d.w, h: d.h, th: thKey(d.th) || "-", core: coreKey(d.core), style: d.style || "", cat: d.style ? "" : d.cat };
     S.cmpOpen = {};
     closeSheet(); tab("compare");
   }
@@ -797,10 +861,20 @@
   async function reloadVendor(code) {
     // after a sheet is loaded or removed: fetch that vendor's items again
     VENDORS = await api("api/pricelist/vendors");
+    const was = S.list[code] || {}, skuQty = new Map();
+    Object.entries(was).forEach(([id, q]) => { const d = BYID.get(+id); if (d) skuQty.set(d.sku, q); });
     (ITEMS[code] || []).forEach(d => BYID.delete(d.id));
     const v = VENDORS.find(x => x.code === code);
     ITEMS[code] = [];
     if (v && v.sheet) { const r = await api(`api/pricelist/items?vendor=${encodeURIComponent(code)}`); ITEMS[code] = r.items; r.items.forEach(d => prep(d, code)); }
+    // the new sheet has new item ids: keep buy-list lines whose part # is still on it
+    if (Object.keys(was).length) {
+      const now = {};
+      (ITEMS[code] || []).forEach(d => { if (skuQty.has(d.sku) && !now[d.id]) { now[d.id] = skuQty.get(d.sku); skuQty.delete(d.sku); } });
+      if (Object.keys(now).length) S.list[code] = now; else delete S.list[code];
+      saveList(); renderList();
+      if (skuQty.size) setTimeout(() => toast(`${skuQty.size} buy-list item${skuQty.size > 1 ? "s aren't" : " isn't"} on the new sheet and ${skuQty.size > 1 ? "were" : "was"} removed.`), 2600);
+    }
     refreshStyleList(); renderSheets(); render();
   }
   async function uploadSheet(f) {
@@ -843,13 +917,16 @@
   document.addEventListener("click", (ev) => {
     const t = ev.target;
     const ex = t.closest("[data-ex]"); if (ex) { $("#q").value = ex.dataset.ex; S.q = ex.dataset.ex; S.shown = 40; render(); return; }
-    const vn = t.closest("[data-vendor]"); if (vn) { S.vendor = vn.dataset.vendor; S.cat = "All"; S.grp = ""; render(); window.scrollTo(0, 0); return; }
-    if (t.id === "widen") { S.cat = "All"; S.grp = ""; resetFilters(); render(); return; }
+    const vn = t.closest("[data-vendor]"); if (vn) { S.vendor = vn.dataset.vendor; S.cat = "All"; S.gp = []; render(); window.scrollTo(0, 0); return; }
+    if (t.id === "widen") { S.cat = "All"; S.gp = []; resetFilters(); render(); return; }
     if (t.id === "clearf") { resetFilters(); render(); return; }
-    const cat = t.closest("[data-cat]"); if (cat) { S.cat = cat.dataset.cat; S.grp = ""; resetFilters(); S.shown = 40; render(); window.scrollTo(0, 0); return; }
-    const gp = t.closest("[data-grp]"); if (gp) { S.grp = gp.dataset.grp; S.shown = 40; render(); return; }
+    const cat = t.closest("[data-cat]"); if (cat) { S.cat = cat.dataset.cat; S.gp = []; resetFilters(); S.shown = 40; render(); window.scrollTo(0, 0); return; }
+    const gp = t.closest("[data-gl]"); if (gp) {
+      S.gp = gp.dataset.gl === "+" ? S.gp.concat(gp.dataset.gv) : S.gp.slice(0, +gp.dataset.gl);
+      S.shown = 40; render(); return;
+    }
     const cr = t.closest("[data-crumb]"); if (cr) {
-      S.q = ""; $("#q").value = ""; S.grp = "";
+      S.q = ""; $("#q").value = ""; S.gp = [];
       if (cr.dataset.crumb === "home") { S.vendor = null; S.cat = "All"; } else if (cr.dataset.crumb === "vendor") S.cat = "All";
       S.shown = 40; render(); window.scrollTo(0, 0); return;
     }
@@ -865,7 +942,8 @@
     const it = t.closest(".item, .psz"); if (it) { openItem(+it.dataset.id); return; }
     if (t.id === "close" || t.id === "sheetbg") { closeSheet(); return; }
     const st = t.closest("[data-step]"); if (st) { const i = $("#qty"); i.value = Math.max(1, (parseInt(i.value, 10) || 1) + +st.dataset.step); return; }
-    if (t.id === "add") { const d = BYID.get(+$("#sheet").dataset.id); setQty(d.v, d.id, $("#qty").value); closeSheet(); toast("Added to buy list"); return; }
+    if (t.id === "add") { const d = BYID.get(+$("#sheet").dataset.id), had = (S.list[d.v] || {})[d.id]; setQty(d.v, d.id, $("#qty").value); closeSheet();
+      toast(!(S.list[d.v] || {})[d.id] ? "Removed from buy list" : had ? "Buy list updated" : "Added to buy list"); return; }
     const op = t.closest("[data-open]"); if (op) { openItem(+op.dataset.open); return; }
     if (t.id === "cmpThis") { compareFrom(BYID.get(+$("#sheet").dataset.id)); return; }
     const cm = t.closest("[data-cmpmore]"); if (cm) { S.cmpOpen[cm.dataset.cmpmore] = true; renderCompare(); return; }
@@ -877,7 +955,9 @@
     if (t.id === "edCancel") { const id = +$("#sheet").dataset.id; if (id && BYID.has(id)) openItem(id); else closeSheet(); return; }
     const ad = t.closest("[data-additem]"); if (ad) { openEditor(null, +ad.dataset.additem); return; }
     const rs = t.closest("[data-rmsheet]"); if (rs) { removeSheet(+rs.dataset.rmsheet); return; }
-    if (t.id === "copy") { const d = BYID.get(+$("#sheet").dataset.id); if (navigator.clipboard) navigator.clipboard.writeText(d.sku).catch(() => {}); toast("Copied " + d.sku); return; }
+    if (t.id === "copy") { const d = BYID.get(+$("#sheet").dataset.id);
+      if (navigator.clipboard) navigator.clipboard.writeText(d.sku).then(() => toast("Copied " + d.sku), () => toast("Couldn't copy. Part # " + d.sku));
+      else toast("Part # " + d.sku); return; }
     if (t.id === "manNew") { openManual(); return; }
     if (t.id === "man-close") { $("#podoc").classList.add("hidden"); return; }
     if (t.id === "man-addline") { S.man.lines.push(blankLine()); manSave(); renderManual(); return; }
@@ -902,14 +982,16 @@
     const jb = t.closest("[data-job]"); if (jb) { pickJob(jb.dataset.job); return; }
     if (t.id === "jobChange") { const f2 = draft(S.poVendor); f2.job = null; saveDraft(S.poVendor, f2); renderPoForm(S.poVendor); return; }
     if (t.id === "jobRefresh") {
+      const inMan = !!t.closest("#podoc");
       t.disabled = true; t.textContent = "Refreshing…";
-      api("api/jobs/refresh", { method: "POST" }).catch(e => toast(e.message)).finally(() => { t.disabled = false; t.textContent = "Refresh"; if ($("#manJobq")) manJobSearch(); else runJobSearch(); });
+      api("api/jobs/refresh", { method: "POST" }).catch(e => toast(e.message)).finally(() => { t.disabled = false; t.textContent = "Refresh"; if (inMan) manJobSearch(); else runJobSearch(); });
       return;
     }
     if (t.id === "clearlist") { if (!confirm(`Clear the ${vname(S.poVendor)} buy list?`)) return; delete S.list[S.poVendor]; saveList(); store.del("draft_" + S.poVendor); renderList(); return; }
     if (t.id === "po-preview") { previewPo(); return; }
     if (t.id === "po-back" || t.id === "po-close") { $("#podoc").classList.add("hidden"); return; }
-    if (t.id === "po-send") { sendPo(t); return; }
+    if (t.id === "po-send") { sendPo(t, "send"); return; }
+    if (t.id === "po-dl") { sendPo(t, "download"); return; }
     if (t.id === "po-reorder") { reorder(); return; }
     const po = t.closest(".po-row[data-po]"); if (po) { openPo(+po.dataset.po); return; }
     const nb = t.closest("#nav button"); if (nb) { tab(nb.dataset.tab); return; }
@@ -919,7 +1001,7 @@
     if (e.target.id === "manJobq") { clearTimeout(jobTimer); jobTimer = setTimeout(manJobSearch, 250); return; }
     if (e.target.id === "manFind") { manFind(e.target.value); return; }
     if (S.man && e.target.dataset.ml) { const [i, k] = e.target.dataset.ml.split(":"); S.man.lines[+i][k] = e.target.value; manSave(); manLineTotals(); return; }
-    if (S.man && e.target.dataset.mo) { S.man.other[e.target.dataset.mo] = e.target.value; manSave(); return; }
+    if (S.man && e.target.dataset.mo) { S.man.other[e.target.dataset.mo] = e.target.value; manSave(); if (e.target.dataset.mo === "email") manSendState(); return; }
     if (S.man && e.target.dataset.m && e.target.tagName !== "SELECT") { S.man[e.target.dataset.m] = e.target.value; manSave(); if (e.target.dataset.m === "po_number") manDupCheck(); return; }
     if (e.target.dataset.d && e.target.tagName === "TEXTAREA") { const f = draft(S.poVendor); f[e.target.dataset.d] = e.target.value; saveDraft(S.poVendor, f); }
   });
@@ -936,7 +1018,6 @@
     }
     if (e.target.dataset.lid) { setQty(e.target.dataset.lv, +e.target.dataset.lid, e.target.value); return; }
     if (S.man && e.target.dataset.m && e.target.tagName === "SELECT") { S.man[e.target.dataset.m] = e.target.value; manSave(); if (e.target.dataset.m === "vendor" || e.target.id === "man-ship") renderManual(); return; }
-    if (S.man && e.target.dataset.mo === "email") { renderManual(); return; }
     if (e.target.dataset.d) { const f = draft(S.poVendor); f[e.target.dataset.d] = e.target.value; saveDraft(S.poVendor, f); }
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeSheet(); $("#podoc").classList.add("hidden"); } });
