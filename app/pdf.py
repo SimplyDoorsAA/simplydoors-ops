@@ -551,7 +551,7 @@ def build_po_pdf(po: dict, vendor: dict) -> bytes:
     tots.setStyle(TableStyle([("ALIGN", (1, 0), (1, -1), "RIGHT"), ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
                               ("LINEABOVE", (0, -1), (-1, -1), 1.2, colors.black)]))
     story = [head, Spacer(1, 16), blocks, Spacer(1, 14), lines, Spacer(1, 8), tots, Spacer(1, 14),
-             Paragraph(f"<b>Notes:</b> {escape(po['notes']) or '—'}", cell), Spacer(1, 30),
+             Paragraph(f"<b>Notes:</b> {escape(po['notes']).replace(chr(10), '<br/>') or '—'}", cell), Spacer(1, 30),
              Paragraph(("" if po.get("manual") else f"Prices per {escape(vendor['name'])} {escape(po.get('sheet_label') or '')}. ")
                        + f"Please reference PO # {escape(po['po_number'])} on all invoices and packing slips.", small)]
     doc.build(story)
