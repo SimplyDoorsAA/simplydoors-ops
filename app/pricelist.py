@@ -16,6 +16,7 @@
 import csv
 import io
 import json
+import math
 import re
 
 from .db import conn, now_iso
@@ -305,8 +306,8 @@ def _num(v, field, line, allow_blank=True):
         n = float(v)
     except ValueError:
         raise SheetError(f"{at}{field} “{v[:20]}” isn't a number.") from None
-    if n < 0 or n > 1_000_000:
-        raise SheetError(f"{at}{field} {n} is out of range.")
+    if not math.isfinite(n) or n < 0 or n > 1_000_000:
+        raise SheetError(f"{at}{field} “{v[:20]}” is out of range.")
     return n
 
 
@@ -326,7 +327,9 @@ def parse_sheet(raw: bytes) -> list[dict]:
     missing = [c for c in REQUIRED if c not in names]
     if missing:
         raise SheetError(f"The first row must name the columns. Missing: {', '.join(missing)}.")
-    get = lambda row, c: (row.get(names[c]) or "").strip() if c in names else ""  # noqa: E731
+    def get(row, c):
+        v = (row.get(names[c]) or "").strip() if c in names else ""
+        return v[1:] if v[:1] == "'" and v[1:2] in ("=", "+", "-", "@") else v
     compare_cols = [(f.strip()[len(COMPARE_PREFIX):].strip()[:30], f) for f in reader.fieldnames
                     if f and f.strip().lower().startswith(COMPARE_PREFIX) and f.strip()[len(COMPARE_PREFIX):].strip()]
     if len(compare_cols) > MAX_COMPARE:
@@ -460,7 +463,7 @@ def clean_fields(body: dict, partial: bool) -> dict:
             out[col] = clean_pack(v)
         elif kind == "compare":
             rows = []
-            for c in (v or [])[:MAX_COMPARE]:
+            for c in (v if isinstance(v, list) else [])[:MAX_COMPARE]:
                 lbl = str((c or {}).get("label", "")).strip()[:30]
                 n = _num(str((c or {}).get("price", "") or ""), f"“{lbl or 'compare'}” price", 0)
                 if lbl and n:
@@ -525,6 +528,12 @@ def delete_item(item_id: int):
     return r
 
 
+def _cell(v) -> str:
+    """Text for a CSV cell that Excel won't run as a formula (a leading ' is dropped again when the file is loaded)."""
+    v = "" if v is None else str(v)
+    return "'" + v if v[:1] in ("=", "+", "-", "@", "\t", "\r") else v
+
+
 def sheet_csv(sheet_id: int):
     """A live sheet, with any edits, in the upload format (so it can be changed in Excel and loaded back).
     Returns (sheet row, CSV text) or (None, "")."""
@@ -540,13 +549,14 @@ def sheet_csv(sheet_id: int):
                 labels.append(lbl)
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(list(CSV_COLUMNS) + [COMPARE_PREFIX + lbl for lbl in labels[:MAX_COMPARE]])
+    w.writerow(list(CSV_COLUMNS) + [_cell(COMPARE_PREFIX + lbl) for lbl in labels[:MAX_COMPARE]])
     num = lambda v: ("%g" % v) if v else ""  # noqa: E731
     for r in rows:
         cmp = dict((lbl, p) for lbl, p in json.loads(r["compare"] or "[]"))
-        w.writerow([r["sku"], r["name"], r["cat"], "" if r["price"] is None else f"{r['price']:.2f}", r["grp"], r["mfr"],
-                    num(r["w"]), num(r["h"]), r["th"], r["core"], {1: "Y", 0: "N"}.get(r["stock"], ""), r["uom"],
-                    r["hand"], r["brand"], "" if r["page"] is None else r["page"], r["flag"], r["pack"]]
+        w.writerow([_cell(r["sku"]), _cell(r["name"]), r["cat"], "" if r["price"] is None else f"{r['price']:.2f}",
+                    _cell(r["grp"]), _cell(r["mfr"]), num(r["w"]), num(r["h"]), _cell(r["th"]), _cell(r["core"]),
+                    {1: "Y", 0: "N"}.get(r["stock"], ""), _cell(r["uom"]), _cell(r["hand"]), _cell(r["brand"]),
+                    "" if r["page"] is None else r["page"], _cell(r["flag"]), r["pack"]]
                    + [f"{cmp[lbl]:.2f}" if lbl in cmp else "" for lbl in labels[:MAX_COMPARE]])
     return s, buf.getvalue()
 
@@ -574,7 +584,7 @@ def build_lines(vendor: str, wanted: list) -> tuple[list[dict], float, str]:
     """wanted: [{item_id, qty}] from the phone. Prices come from the vendor's live sheets only."""
     if not live_sheets(vendor):
         raise ValueError("No price sheet is loaded for this vendor.")
-    if not wanted:
+    if not isinstance(wanted, list) or not wanted:
         raise ValueError("The buy list is empty.")
     if len(wanted) > MAX_LINES:
         raise ValueError(f"A PO can have at most {MAX_LINES} lines.")
@@ -583,11 +593,13 @@ def build_lines(vendor: str, wanted: list) -> tuple[list[dict], float, str]:
     for w in wanted:
         try:
             iid, qty = int(w.get("item_id")), int(w.get("qty"))
-        except (TypeError, ValueError, AttributeError):
+        except (TypeError, ValueError, AttributeError, OverflowError):
             raise ValueError("A line on the buy list isn't readable. Remove it and add it again.") from None
         if not 1 <= qty <= MAX_QTY:
             raise ValueError(f"Quantities must be 1 to {MAX_QTY}.")
         qty_by_id[iid] = qty_by_id.get(iid, 0) + qty
+        if qty_by_id[iid] > MAX_QTY:
+            raise ValueError(f"Quantities must be 1 to {MAX_QTY} per item.")
     lines, total, labels = [], 0.0, []
     for iid, qty in qty_by_id.items():
         r = c.execute("SELECT i.*, s.label AS sheet_label FROM pl_items i JOIN pl_sheets s ON s.id=i.sheet_id"
@@ -639,7 +651,7 @@ def clean_manual_lines(raw) -> tuple[list[dict], float]:
         ln = ln if isinstance(ln, dict) else {}
         try:
             qty = int(str(ln.get("qty", "")).strip() or 0)
-        except ValueError:
+        except (ValueError, OverflowError):
             raise ValueError(f"Line {i}: the quantity isn't a whole number.") from None
         if not 1 <= qty <= MAX_QTY:
             raise ValueError(f"Line {i}: quantities must be 1 to {MAX_QTY}.")
@@ -651,7 +663,7 @@ def clean_manual_lines(raw) -> tuple[list[dict], float]:
             price = None if p == "" else round(float(p), 2)
         except ValueError:
             raise ValueError(f"Line {i}: the price isn't a number.") from None
-        if price is not None and not 0 <= price <= 1_000_000:
+        if price is not None and (not math.isfinite(price) or not 0 <= price <= 1_000_000):
             raise ValueError(f"Line {i}: the price is out of range.")
         t = round(price * qty, 2) if price is not None else None
         lines.append({"sku": " ".join(str(ln.get("sku", "")).split())[:60], "name": name, "size": "", "qty": qty,
