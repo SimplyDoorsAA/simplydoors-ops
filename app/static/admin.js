@@ -45,6 +45,12 @@
     vendor_changed: "Changed a vendor (Price List)", price_sheet_loaded: "Loaded a price sheet", price_sheet_removed: "Removed a price sheet",
     price_item_changed: "Changed a Price List item", price_item_added: "Added a Price List item", price_item_deleted: "Deleted a Price List item",
     price_sheet_downloaded: "Downloaded a price sheet", vendor_added: "Added a vendor (Price List)",
+    lead_received: "New lead from the customer form", lead_details_added: "Customer answered “Tell us more”",
+    leads_list_viewed: "Opened the Leads list", lead_viewed: "Opened a lead", lead_file_viewed: "Opened a lead's photo or file",
+    lead_claimed: "Claimed a lead", lead_reassigned: "Gave a lead to someone", lead_status_changed: "Changed a lead's status",
+    lead_note_added: "Added a note to a lead", lead_moved_to_leads: "Moved a lead out of Suspected spam",
+    lead_test_link_made: "Made a test link for the customer form", test_lead_deleted: "Deleted a test lead",
+    leads_denied: "Blocked from Leads", customer_copy_queued: "Customer's copy queued",
   };
 
   // ------------------------------------------------------------ tabs
@@ -169,7 +175,7 @@
       $("#depts").innerHTML = [...new Set(rows.map(r => r.dept))].map(d => `<option>${esc(d)}</option>`).join("");
       $("#staffList").innerHTML = `<table class="rows"><thead><tr><th>Name</th><th class="hide-sm">Dept</th><th class="hide-sm">Email</th><th>PIN</th><th></th></tr></thead><tbody>` +
         rows.map(r => `<tr${r.active ? "" : ' style="opacity:.5"'}><td><b>${esc(r.name)}</b>
-          ${r.is_owner ? ' <span class="badge ok">owner</span>' : r.is_admin ? ' <span class="badge ok">admin</span>' : ""}${r.sales_notify ? ' <span class="badge">sales list</span>' : ""}${r.price_list ? ` <span class="badge">price list${r.price_edit ? " · edits" : ""}</span>` : ""}
+          ${r.is_owner ? ' <span class="badge ok">owner</span>' : r.is_admin ? ' <span class="badge ok">admin</span>' : ""}${r.sales_notify ? ' <span class="badge">sales list</span>' : ""}${r.price_list ? ` <span class="badge">price list${r.price_edit ? " · edits" : ""}</span>` : ""}${r.leads && !r.is_admin ? ' <span class="badge">leads</span>' : ""}
           ${r.active ? "" : ' <span class="badge">turned off</span>'}${r.locked ? ' <span class="badge bad">locked</span>' : ""}</td>
           <td class="hide-sm">${esc(r.dept)}</td><td class="hide-sm">${esc(r.email)}</td>
           <td>${r.has_pin ? `<span class="badge ok">set</span><div class="det">${esc(PIN_SRC[r.pin_source] || r.pin_source || "")}</div>` : '<span class="badge bad">none</span>'}
@@ -226,6 +232,7 @@
         <label class="inline"><input name="studio_link" type="checkbox" ${r.studio ? "checked" : ""}> Shows the Simply Studio tile</label>
         <label class="inline"><input name="price_list" type="checkbox" ${r.price_list ? "checked" : ""}> Can open the Price List (vendor net costs, send POs)</label>
         <label class="inline"><input name="price_edit" type="checkbox" ${r.price_edit ? "checked" : ""}> Can edit Price List items: names, prices, notes; add and delete (e.g. the purchaser)</label>
+        <label class="inline"><input name="leads" type="checkbox" ${r.leads || r.is_admin ? "checked" : ""}${r.is_admin ? " disabled" : ""}> Can see Leads (customers who sent the project form: names, phones, addresses)${r.is_admin ? " · admins always can" : ""}</label>
         <label class="inline"><input name="is_admin" type="checkbox" ${r.is_admin ? "checked" : ""}${!r.is_admin && !amOwner ? " disabled" : ""}> Admin (sees everything)</label>
         <label class="inline"><input name="active" type="checkbox" ${r.active ? "checked" : ""}> Can sign in</label>
         <button class="mini primary" type="submit">Save changes</button>
@@ -246,7 +253,8 @@
         sales_notify: el.sales_notify.checked, is_admin: el.is_admin.checked, active: el.active.checked,
         ...(el.studio_link.checked !== !!r.studio ? { studio_link: el.studio_link.checked } : {}),
         ...(el.price_list.checked !== !!r.price_list ? { price_list: el.price_list.checked } : {}),
-        ...(el.price_edit.checked !== !!r.price_edit ? { price_edit: el.price_edit.checked } : {}) };
+        ...(el.price_edit.checked !== !!r.price_edit ? { price_edit: el.price_edit.checked } : {}),
+        ...(!r.is_admin && el.leads.checked !== !!r.leads ? { leads: el.leads.checked } : {}) };
       if (body.is_admin && !r.is_admin && !confirm(`Make ${r.name} an admin? Admins can see every report, including disciplinary records, and the full activity log.`)) return;
       try { await api(`api/admin/staff/${r.id}`, { method: "PATCH", json: body }); toast("Saved"); closeSheet(); loadStaff(); } catch (e) { fail(e); }
     };

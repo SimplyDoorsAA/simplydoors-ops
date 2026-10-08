@@ -19,15 +19,17 @@ def push_throttled(key: str, title: str, message: str, priority: str = "default"
     push(title, message, priority)
 
 
-def push(title: str, message: str, priority: str = "default") -> None:
+def push(title: str, message: str, priority: str = "default", click: str = "") -> None:
+    """click: a link the phone opens when the alert is tapped (e.g. the new lead)."""
     if not NTFY_URL:
         return
+    headers = {"Title": title.encode("ascii", "ignore").decode(), "Priority": priority, "Tags": "door"}
+    if click:
+        headers["Click"] = click.encode("ascii", "ignore").decode()
 
     def _send():
         try:
-            req = urllib.request.Request(NTFY_URL, data=message.encode("utf-8"), method="POST",
-                                         headers={"Title": title.encode("ascii", "ignore").decode(),
-                                                  "Priority": priority, "Tags": "door"})
+            req = urllib.request.Request(NTFY_URL, data=message.encode("utf-8"), method="POST", headers=headers)
             urllib.request.urlopen(req, timeout=10).read()
         except Exception:
             pass  # an alert failing must never break the app

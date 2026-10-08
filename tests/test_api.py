@@ -1717,3 +1717,349 @@ def test_hand_written_po_download_then_send(client, smtp, monkeypatch):
     assert acts.count("po_downloaded") == 2 and acts.count("po_sent") == 2
     # the one-off vendor never shows in the vendor list
     assert all(v["code"] != "XX" for v in client.get("/ops/api/pricelist/vendors", headers=H).json())
+
+
+# ---------------------------------------------------------------- customer intake (/start) + Leads
+def _intake(c, sid, ip="198.51.100.10", files=None, age=30, **over):
+    """The public form, as a phone sends it. age = seconds since the page was opened."""
+    from app import leads
+    data = {"submission_id": sid, "token": leads.form_token(time.time() - age), "name": "Maria Lopez",
+            "phone": "(210) 555-0142", "email": "maria@example.com", "address": "12 Oak St, Schertz",
+            "types": ["Exterior door", "Windows"], "description": "New front door with sidelites.", "heard": "Google",
+            "website": ""}
+    data.update(over)
+    data = {k: v for k, v in data.items() if v is not None}
+    return c.post("/start/api/submit", data=data, files=files or [], headers={**H, "X-Forwarded-For": ip})
+
+
+def _lead(sid):
+    return conn().execute("SELECT * FROM leads WHERE submission_id=?", (sid,)).fetchone()
+
+
+def _lead_emails(lid):
+    return conn().execute("SELECT * FROM emails WHERE lead_id=? ORDER BY id", (lid,)).fetchall()
+
+
+def test_intake_page_is_public_and_only_shows_its_own_files(client):
+    client.cookies.clear()                                      # no sign-in
+    r = client.get("/start")
+    assert r.status_code == 200 and '<base href="start/">' in r.text
+    assert 'property="og:title" content="Start your project with SimplyDoors"' in r.text
+    assert 'og:image" content="https://optiplex-ai.tailf0af63.ts.net/start/static/og-intake.png"' in r.text
+    assert "We&#x27;ll call you within 1 business day" in r.text or "We'll call you within 1 business day" in r.text
+    assert "(210) 903-8450" in r.text and "17750 Lookout Rd" in r.text and 'data-token="' in r.text
+    # reached through the staff address too, with or without the slash: the page finds its own folder either way
+    assert '<base href="./">' in client.get("/ops/start/").text
+    for f in ("intake.js", "intake.css", "logo.png", "og-intake.png"):
+        assert client.get(f"/start/static/{f}").status_code == 200
+    for bad in ("app.js", "admin.js", "leads.js", "index.html", "intake.html", "../main.py", "..%2fmain.py"):
+        assert client.get(f"/start/static/{bad}").status_code == 404, bad
+    # nothing else of the app is reachable under /start
+    for p in ("/start/api/leads", "/start/api/me", "/start/admin", "/start/%2e%2e/api/admin/staff", "/start/api/leads/1"):
+        assert client.get(p).status_code in (404, 405), p
+    assert client.post("/start/api/submit", data={"submission_id": "x"}).status_code == 403      # app header needed
+    # the staff side's Leads screen is just a shell; its data needs a sign-in
+    assert client.get("/ops/leads").status_code == 200
+    assert client.get("/ops/api/leads", headers=H).status_code == 401
+
+
+def test_intake_lead_saved_with_and_without_email(client, monkeypatch):
+    from app import alerts, mailer
+    pushed = []
+    monkeypatch.setattr(alerts, "push", lambda *a, **k: pushed.append((a, k)))
+    img = io.BytesIO()
+    exif = Image.Exif(); exif[0x010F] = "SecretCam"
+    Image.new("RGB", (3000, 2000), (10, 80, 160)).save(img, "JPEG", exif=exif)
+    pdf = b"%PDF-1.4\n1 0 obj << >> endobj\ntrailer << >>\n%%EOF\n"
+    r = _intake(client, "lead-mail-0001", files=[("files", ("IMG_1.jpg", img.getvalue(), "image/jpeg")),
+                                                 ("files", ("plans.pdf", pdf, "application/pdf"))])
+    assert r.status_code == 200, r.text
+    assert set(r.json()) == {"ok", "receipt"} and r.json()["receipt"].startswith("INT-")
+    lead = _lead("lead-mail-0001")
+    assert lead["name"] == "Maria Lopez" and lead["spam"] == "" and lead["status"] == "new" and not lead["is_test"]
+    files = conn().execute("SELECT * FROM lead_files WHERE lead_id=? ORDER BY id", (lead["id"],)).fetchall()
+    assert [f["kind"] for f in files] == ["photo", "pdf"] and f"lead-{lead['id']}" in files[0]["path"]
+    with Image.open(files[0]["path"]) as im:                     # saved smaller, with no hidden camera data and no stamp
+        assert max(im.size) <= 2000 and not dict(im.getexif())
+    with open(files[1]["path"], "rb") as f:
+        assert f.read() == pdf
+    em = _lead_emails(lead["id"])
+    assert [(e["audience"], e["status"]) for e in em] == [("staff", "pending"), ("customer", "pending")]
+    assert em[0]["recipients"] == "admin@simplydoors.com" and em[0]["bcc"] == "adem@simplydoors.com"   # Intake list + owner copy
+    assert em[0]["subject"] == f"New lead: Maria Lopez - Exterior door, Windows [{lead['receipt']}]"
+    assert em[1]["recipients"] == "maria@example.com" and em[1]["subject"] == f"We got your project request ({lead['receipt']})"
+    assert len(pushed) == 1 and lead["receipt"] in pushed[0][0][0] and pushed[0][1]["click"].endswith(f"/leads#lead={lead['id']}")
+    # the office's email: details, files attached, and a button to open the lead
+    msg = mailer._send_lead(em[0])
+    html = msg.get_body(("html",)).get_content()
+    assert "Open this lead" in html and f"/leads#lead={lead['id']}" in html and "(210) 555-0142" in html
+    assert sorted(p.get_content_type() for p in msg.iter_attachments()) == ["application/pdf", "image/jpeg"]
+    # the customer's receipt: from SimplyDoors, replies reach the office, never repeats what they typed
+    msg = mailer._send_lead(em[1])
+    html = msg.get_body(("html",)).get_content()
+    assert msg["From"].startswith("SimplyDoors") and msg["Reply-To"] == mailer.CUSTOMER_REPLY_TO
+    assert lead["receipt"] in html and "Hi Maria" in html and "within 1 business day" in html and "sidelites" not in html
+    # a lead is saved before anyone is emailed, and an email that can't go out never loses it
+    monkeypatch.setattr(mailer, "configured", lambda: True)
+    monkeypatch.setattr(mailer, "SMTP_PORT", 1)
+    mailer.process_queue_once()
+    assert conn().execute("SELECT attempts, status FROM emails WHERE id=?", (em[0]["id"],)).fetchone()[0] == 1
+    assert _lead("lead-mail-0001") is not None
+    # without an email: only the office's email
+    r = _intake(client, "lead-mail-0002", email="", name="Bob Ray")
+    assert r.status_code == 200, r.text
+    lead2 = _lead("lead-mail-0002")
+    assert [e["audience"] for e in _lead_emails(lead2["id"])] == ["staff"]
+    assert int(lead2["receipt"][4:]) == int(lead["receipt"][4:]) + 1        # its own counter
+    # "Tell us more" goes onto the same lead; anything else about it is refused
+    assert client.post("/start/api/more", json={"submission_id": "lead-mail-0002", "doors": 3, "windows": 0,
+                       "timeline": "ASAP", "who": "Homeowner", "best_time": "Evening", "budget": 9}, headers=H).json() == {"ok": True}
+    more = json.loads(_lead("lead-mail-0002")["data"])["more"]
+    assert more == {"doors": 3, "windows": 0, "timeline": "ASAP", "who": "Homeowner", "best_time": "Evening"}
+    assert client.post("/start/api/more", json={"submission_id": "lead-mail-0002", "doors": 500}, headers=H).status_code == 422
+    assert client.post("/start/api/more", json={"submission_id": "never-sent-0001", "doors": 1}, headers=H).json() == {"ok": True}
+    # step 1 checks: a name, and a phone or an email
+    r = _intake(client, "lead-mail-0003", phone="", email="", name="X")
+    assert r.status_code == 422 and "name" in r.json()["detail"] and "phone number or an email" in r.json()["detail"]
+    assert _intake(client, "lead-mail-0004", phone="555-12").status_code == 422
+    assert _lead("lead-mail-0003") is None and _lead("lead-mail-0004") is None
+
+
+def test_intake_retry_with_same_id_makes_one_lead(client):
+    r1 = _intake(client, "lead-retry-0001")
+    r2 = _intake(client, "lead-retry-0001", name="Changed On Retry")
+    assert r1.status_code == r2.status_code == 200 and r1.json() == r2.json()
+    assert conn().execute("SELECT COUNT(*) FROM leads WHERE submission_id='lead-retry-0001'").fetchone()[0] == 1
+    assert len(_lead_emails(_lead("lead-retry-0001")["id"])) == 2          # emailed once, not per try
+    assert _intake(client, "bad id!").status_code == 400
+
+
+def test_intake_bots_are_caught_quietly(client, monkeypatch):
+    from app import alerts
+    pushed = []
+    monkeypatch.setattr(alerts, "push", lambda *a, **k: pushed.append(a))
+    emails_before = conn().execute("SELECT COUNT(*) FROM emails").fetchone()[0]
+    cases = {"bot-trap-0001": {"website": "http://spam.example"},     # the hidden trap box
+             "bot-fast-0001": {"age": 1},                              # under 3 seconds after the page opened
+             "bot-notoken-01": {"token": "1234.abcd"}}                 # never opened the form page
+    for sid, over in cases.items():
+        age = over.pop("age", 30)
+        r = _intake(client, sid, ip="203.0.113.50", age=age, **over)
+        assert r.status_code == 200 and set(r.json()) == {"ok", "receipt"} and r.json()["receipt"].startswith("INT-")
+        assert _lead(sid) is None
+        row = conn().execute("SELECT * FROM intake_blocked WHERE submission_id=?", (sid,)).fetchone()
+        assert row and row["receipt"] == r.json()["receipt"]
+        assert _intake(client, sid, ip="203.0.113.50", age=age, **over).json() == r.json()   # same answer on a retry
+    reasons = [r[0] for r in conn().execute("SELECT reason FROM intake_blocked WHERE submission_id LIKE 'bot-%' ORDER BY id")]
+    assert "trap" in reasons[0] and "seconds" in reasons[1] and "form page" in reasons[2]
+    assert conn().execute("SELECT COUNT(*) FROM emails").fetchone()[0] == emails_before and not pushed
+    # per connection: 5 an hour are normal, 6 to 20 go to Suspected spam, past 20 it's a bot
+    ip = "203.0.113.77"
+    for i in range(1, 22):
+        r = _intake(client, f"rate-{i:04d}-xx", ip=ip, name=f"Person {i}")
+        assert r.status_code == 200
+        lead = _lead(f"rate-{i:04d}-xx")
+        if i <= 5:
+            assert lead["spam"] == ""
+        elif i <= 20:
+            assert "same connection" in lead["spam"]
+        else:
+            assert lead is None and conn().execute("SELECT 1 FROM intake_blocked WHERE submission_id='rate-0021-xx'").fetchone()
+    assert len(pushed) == 5                                    # only the real-looking ones alerted the owner
+    assert _intake(client, "rate-other-ip-1", ip="203.0.113.78").json()   # another connection isn't held up
+    assert _lead("rate-other-ip-1")["spam"] == ""
+
+
+def test_intake_suspected_spam_can_be_moved_to_leads(client, monkeypatch):
+    from app import alerts
+    pushed = []
+    monkeypatch.setattr(alerts, "push", lambda *a, **k: pushed.append(a))
+    r = _intake(client, "spam-links-0001", ip="192.0.2.31",
+                description="Best prices http://a.example and http://b.example www.c.example")
+    assert r.status_code == 200
+    s = _lead("spam-links-0001")
+    assert "links in the text" in s["spam"] and not _lead_emails(s["id"]) and not pushed
+    _intake(client, "spam-fast-0001", ip="192.0.2.32", age=6)
+    assert "seconds after the page opened" in _lead("spam-fast-0001")["spam"]
+    _intake(client, "fast-plain-0001", ip="192.0.2.33", age=6, address="", description="")   # autofilled, nothing typed
+    assert _lead("fast-plain-0001")["spam"] == ""
+    login(client, "Paz Galambos", "112233")
+    tab = client.get("/ops/api/leads?tab=spam", headers=H).json()
+    assert any(x["id"] == s["id"] for x in tab["leads"]) and tab["counts"]["spam"] >= 2
+    assert "blocked" in tab and tab["blocked"]["count"] >= 1
+    assert all(x["spam"] == "" for x in client.get("/ops/api/leads", headers=H).json()["leads"])
+    assert client.post(f"/ops/api/leads/{s['id']}/claim", headers=H).status_code == 409        # move it first
+    # one tap: it becomes a lead, emailed and alerted like any new one
+    d = client.post(f"/ops/api/leads/{s['id']}/not-spam", headers=H).json()
+    assert d["spam"] == "" and "Moved it from Suspected spam to Leads" in [h["what"] for h in d["history"]]
+    em = _lead_emails(s["id"])
+    assert [e["audience"] for e in em] == ["staff", "customer"] and "(moved from Suspected spam)" in em[0]["subject"]
+    assert [a[0] for a in pushed if "Moved from Suspected spam" in a[1]] == [f"New lead {s['receipt']}"]
+    assert len(pushed) == 2                                     # that one, and the autofilled real lead above
+    assert conn().execute("SELECT 1 FROM audit WHERE action='lead_moved_to_leads' AND actor_name='Paz Galambos'"
+                          " AND target=?", (f"lead:{s['id']}",)).fetchone()
+
+
+def test_intake_file_type_and_size_refused(client):
+    jpg = jpeg(size=(400, 300))
+    r = _intake(client, "file-bad-0001", files=[("files", ("x.exe", b"MZ\x90\x00 not a photo", "image/jpeg"))])
+    assert r.status_code == 422 and "can't be sent" in r.json()["detail"]
+    r = _intake(client, "file-bad-0002", files=[("files", ("x.html", b"<script>alert(1)</script>", "text/html"))])
+    assert r.status_code == 422
+    big_pdf = b"%PDF-1.4\n" + b"0" * (10 * 1024 * 1024) + b"\n%%EOF\n"
+    r = _intake(client, "file-bad-0003", files=[("files", ("big.pdf", big_pdf, "application/pdf"))])
+    assert r.status_code == 422 and "too big" in r.json()["detail"]
+    r = _intake(client, "file-bad-0004", files=[("files", ("cut.pdf", b"%PDF-1.4\nhalf a file", "application/pdf"))])
+    assert r.status_code == 422
+    r = _intake(client, "file-bad-0005", files=[("files", (f"p{i}.jpg", jpg, "image/jpeg")) for i in range(6)])
+    assert r.status_code == 400                                         # more than 5 files
+    assert all(_lead(f"file-bad-000{i}") is None for i in range(1, 6))
+    # the whole upload is capped before it's read
+    r = client.post("/start/api/submit", content=b"x", headers={**H, "Content-Type": "multipart/form-data; boundary=x",
+                                                                 "Content-Length": str(70 * 1024 * 1024)})
+    assert r.status_code == 413
+    r = _intake(client, "file-good-0001", files=[("files", (f"p{i}.jpg", jpg, "image/jpeg")) for i in range(5)])
+    assert r.status_code == 200 and conn().execute(
+        "SELECT COUNT(*) FROM lead_files WHERE lead_id=?", (_lead("file-good-0001")["id"],)).fetchone()[0] == 5
+
+
+def test_leads_need_the_switch(client):
+    login(client, "Jaime Mendoza", "135790")
+    assert client.get("/ops/api/me", headers=H).json()["leads"] is False
+    lid = _lead("lead-retry-0001")["id"]
+    fid = conn().execute("SELECT id FROM lead_files LIMIT 1").fetchone()[0]
+    for method, path, body in [("get", "/ops/api/leads", None), ("get", "/ops/api/leads?tab=spam", None),
+                               ("get", f"/ops/api/leads/{lid}", None), ("post", f"/ops/api/leads/{lid}/claim", None),
+                               ("post", f"/ops/api/leads/{lid}/assign", {"staff_id": 1}),
+                               ("put", f"/ops/api/leads/{lid}/status", {"status": "won"}),
+                               ("post", f"/ops/api/leads/{lid}/notes", {"text": "hi"}),
+                               ("post", f"/ops/api/leads/{lid}/not-spam", None), ("get", f"/ops/api/leads/files/{fid}", None),
+                               ("post", "/ops/api/leads/test-link", None), ("delete", f"/ops/api/leads/{lid}", None)]:
+        kw = {"headers": H} | ({"json": body} if body is not None else {})
+        assert getattr(client, method)(path, **kw).status_code == 403, path
+    assert conn().execute("SELECT 1 FROM audit WHERE action='leads_denied' AND actor_name='Jaime Mendoza'").fetchone()
+    # an admin switches it on in Admin > Staff > Edit; admins always have it
+    login(client, "Paz Galambos", "112233")
+    assert client.get("/ops/api/me", headers=H).json()["leads"] is True
+    jaime = _sid("Jaime Mendoza")
+    assert client.patch(f"/ops/api/admin/staff/{jaime}", json={"leads": True}, headers=H).status_code == 200
+    assert next(s for s in client.get("/ops/api/admin/staff", headers=H).json() if s["name"] == "Jaime Mendoza")["leads"]
+    login(client, "Jaime Mendoza", "135790")
+    assert client.get("/ops/api/me", headers=H).json()["leads"] is True
+    assert client.get("/ops/api/leads", headers=H).status_code == 200
+    login(client, "Paz Galambos", "112233")
+    client.patch(f"/ops/api/admin/staff/{jaime}", json={"leads": False}, headers=H)
+    login(client, "Jaime Mendoza", "135790")
+    assert client.get("/ops/api/leads", headers=H).status_code == 403
+    # the Intake email list is in Admin > Email lists, and the owner's private copy is on
+    login(client, "Adem Atis", "246810")
+    rule = next(r for r in client.get("/ops/api/admin/email-rules", headers=H).json() if r["form_type"] == "Customer Intake")
+    assert rule["recipients"] == "admin@simplydoors.com" and rule["live"]
+    assert any(f["type"] == "Customer Intake" and f["on"] for f in client.get("/ops/api/admin/my-copies", headers=H).json()["forms"])
+
+
+def test_leads_claim_status_notes_and_log(client):
+    from app import leads
+    _intake(client, "work-0001-lead", ip="192.0.2.90", name="Carla Diaz")
+    lead = _lead("work-0001-lead")
+    lid = lead["id"]
+    login(client, "Paz Galambos", "112233")
+    lst = client.get("/ops/api/leads", headers=H).json()
+    ids = [x["id"] for x in lst["leads"]]
+    assert ids == sorted(ids, reverse=True) and lid in ids                  # newest first
+    row = next(x for x in lst["leads"] if x["id"] == lid)
+    assert row["status"] == "new" and row["owner"] is None and not row["stale"]
+    d = client.get(f"/ops/api/leads/{lid}", headers=H).json()
+    assert d["phone"] == "(210) 555-0142" and d["types"] == ["Exterior door", "Windows"] and d["heard"] == "Google"
+    d = client.post(f"/ops/api/leads/{lid}/claim", headers=H).json()
+    assert d["owner"] == "Paz Galambos" and d["claimed_at"]
+    login(client, "Adem Atis", "246810")
+    r = client.post(f"/ops/api/leads/{lid}/claim", headers=H)
+    assert r.status_code == 409 and "Paz Galambos" in r.json()["detail"]    # claimed leads show their owner
+    jaime = _sid("Jaime Mendoza")
+    assert client.post(f"/ops/api/leads/{lid}/assign", json={"staff_id": jaime}, headers=H).status_code == 422  # no Leads
+    d = client.post(f"/ops/api/leads/{lid}/assign", json={"staff_id": int(_sid("Adem Atis"))}, headers=H).json()
+    assert d["owner"] == "Adem Atis"
+    assert client.put(f"/ops/api/leads/{lid}/status", json={"status": "sold"}, headers=H).status_code == 422
+    for st in ("called", "measure_booked", "quoted", "won"):
+        d = client.put(f"/ops/api/leads/{lid}/status", json={"status": st}, headers=H).json()
+    assert d["status"] == "won"
+    d = client.post(f"/ops/api/leads/{lid}/notes", json={"text": "Booked the measure for Tue 9 AM."}, headers=H).json()
+    assert d["notes"][-1]["by"] == "Adem Atis" and "Tue 9 AM" in d["notes"][-1]["text"]
+    assert client.post(f"/ops/api/leads/{lid}/notes", json={"text": "  "}, headers=H).status_code == 422
+    whats = [h["what"] for h in d["history"]]
+    assert whats[0] == "Sent the form" and "Claimed it" in whats and "Gave it to Adem Atis (was Paz Galambos)" in whats
+    assert "Status: Quoted → Won" in whats and "Added a note" in whats
+    acts = {r[0]: r[1] for r in conn().execute("SELECT action, actor_name FROM audit WHERE target=?", (f"lead:{lid}",))}
+    for a in ("lead_received", "lead_viewed", "lead_claimed", "lead_reassigned", "lead_status_changed", "lead_note_added"):
+        assert a in acts, a
+    assert conn().execute("SELECT 1 FROM audit WHERE action='leads_list_viewed'").fetchone()
+    note = json.loads(conn().execute("SELECT details FROM audit WHERE action='lead_note_added' AND target=?",
+                                     (f"lead:{lid}",)).fetchone()[0])
+    assert note["note"] == "Booked the measure for Tue 9 AM."
+    # claimed but not touched for 24 hours: flagged (won and lost leads aren't)
+    _intake(client, "work-0002-lead", ip="192.0.2.91", name="Dan Fox")
+    l2 = _lead("work-0002-lead")["id"]
+    client.post(f"/ops/api/leads/{l2}/claim", headers=H)
+    old = leads._ago(hours=25)
+    conn().execute("UPDATE leads SET claimed_at=?, touched_at=? WHERE id IN (?,?)", (old, old, lid, l2))
+    rows = {x["id"]: x for x in client.get("/ops/api/leads", headers=H).json()["leads"]}
+    assert rows[l2]["stale"] and not rows[lid]["stale"]
+    client.put(f"/ops/api/leads/{l2}/status", json={"status": "called"}, headers=H)
+    assert not {x["id"]: x for x in client.get("/ops/api/leads", headers=H).json()["leads"]}[l2]["stale"]
+    # photos open for people with Leads, and the view is logged; a PDF downloads
+    fid = conn().execute("SELECT id FROM lead_files WHERE kind='photo' LIMIT 1").fetchone()[0]
+    r = client.get(f"/ops/api/leads/files/{fid}", headers=H)
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
+    pid = conn().execute("SELECT id FROM lead_files WHERE kind='pdf' LIMIT 1").fetchone()[0]
+    assert client.get(f"/ops/api/leads/files/{pid}", headers=H).headers["content-disposition"].startswith("attachment")
+    assert conn().execute("SELECT 1 FROM audit WHERE action='lead_file_viewed'").fetchone()
+
+
+def test_intake_test_mode_sends_everything_to_the_owner(client, monkeypatch):
+    from app import alerts
+    pushed = []
+    monkeypatch.setattr(alerts, "push", lambda *a, **k: pushed.append(a))
+    login(client, "Adem Atis", "246810")
+    client.put("/ops/api/owner/test-mode", json={"on": False}, headers=H)
+    assert client.post("/ops/api/leads/test-link", headers=H).status_code == 409          # test mode must be on
+    client.put("/ops/api/owner/test-mode", json={"on": True}, headers=H)
+    login(client, "Paz Galambos", "112233")
+    assert client.post("/ops/api/leads/test-link", headers=H).status_code == 403          # owner only
+    login(client, "Adem Atis", "246810")
+    link = client.post("/ops/api/leads/test-link", headers=H).json()["url"]
+    assert link.startswith("https://optiplex-ai.tailf0af63.ts.net/start?t=")
+    code = link.split("t=", 1)[1]
+    assert 'data-test="on"' in client.get(f"/start?t={code}").text
+    r = _intake(client, "test-lead-0001", ip="192.0.2.200", t=code, email="real.customer@example.com", name="Tess Tester")
+    assert r.status_code == 200 and r.json()["receipt"] == "TEST-INT-00001"
+    lead = _lead("test-lead-0001")
+    assert lead["is_test"]
+    em = _lead_emails(lead["id"])
+    assert [e["audience"] for e in em] == ["staff", "customer"]
+    for e in em:                                          # every email about it goes only to the owner, marked TEST
+        assert e["recipients"] == "adem@simplydoors.com" and e["bcc"] == "" and e["subject"].startswith("TEST - ")
+    assert "real.customer@example.com" not in " ".join(e["recipients"] + e["bcc"] for e in em)
+    assert pushed and pushed[0][0].startswith("TEST New lead")
+    # real numbering isn't touched by test leads
+    assert _intake(client, "real-after-test-1", ip="192.0.2.201").json()["receipt"].startswith("INT-")
+    # only the owner sees test leads
+    assert any(x["id"] == lead["id"] and x["is_test"] for x in client.get("/ops/api/leads", headers=H).json()["leads"])
+    login(client, "Paz Galambos", "112233")
+    assert all(x["id"] != lead["id"] for x in client.get("/ops/api/leads", headers=H).json()["leads"])
+    assert client.get(f"/ops/api/leads/{lead['id']}", headers=H).status_code == 404
+    assert client.delete(f"/ops/api/leads/{lead['id']}", headers=H).status_code == 403
+    # a made-up code is refused; switching test mode off ends the link
+    r = _intake(client, "test-lead-0002", ip="192.0.2.200", t="not-a-real-code")
+    assert r.status_code == 410 and _lead("test-lead-0002") is None
+    login(client, "Adem Atis", "246810")
+    client.put("/ops/api/owner/test-mode", json={"on": False}, headers=H)
+    assert 'data-test="ended"' in client.get(f"/start?t={code}").text
+    assert _intake(client, "test-lead-0003", ip="192.0.2.200", t=code).status_code == 410
+    # the owner can delete a test lead (never a real one), and its log lines go with it
+    real = _lead("real-after-test-1")["id"]
+    assert client.delete(f"/ops/api/leads/{real}", headers=H).status_code == 403
+    assert client.delete(f"/ops/api/leads/{lead['id']}", headers=H).json() == {"deleted": "TEST-INT-00001"}
+    assert _lead("test-lead-0001") is None and not _lead_emails(lead["id"])
+    assert not conn().execute("SELECT 1 FROM audit WHERE target=?", (f"lead:{lead['id']}",)).fetchone()
+    assert conn().execute("SELECT 1 FROM audit WHERE action='test_lead_deleted' AND target='TEST-INT-00001'").fetchone()

@@ -25,6 +25,7 @@ MAIL_REPLY_TO = os.environ.get("MAIL_REPLY_TO", "noreply@simplydoors.com")
 # the customer's own copy: from "SimplyDoors", and a reply reaches the office instead of a no-reply box
 CUSTOMER_FROM_NAME = os.environ.get("CUSTOMER_FROM_NAME", "SimplyDoors")
 CUSTOMER_REPLY_TO = os.environ.get("CUSTOMER_REPLY_TO", "admin@simplydoors.com")
+LEAD_ATTACH_MAX = 15 * 1024 * 1024   # a lead's photos/PDFs are attached when together they're under this
 MAX_ATTEMPTS = 6
 RETRY_SECONDS = [0, 60, 300, 900, 1800, 3600]  # wait before attempt n+1
 
@@ -54,6 +55,92 @@ def queue_po_email(po_id: int, vendor_email: str, subject: str) -> None:
                    " VALUES (NULL,?,?,?,?,?,?,'vendor')",
                    (po_id, vendor_email, cc, subject, now_iso(), now_iso()))
     _wake.set()
+
+
+def queue_lead_email(lead_id: int, recipients: list[str], subject: str, bcc: list[str] = (),
+                     audience: str = "staff") -> None:
+    """About a lead from the customer form: the office's email (staff) or the customer's receipt (customer)."""
+    if not recipients and not bcc:
+        audit(None, "system", "email_skipped_no_recipients", f"lead:{lead_id}")
+        return
+    conn().execute("INSERT INTO emails(report_id, lead_id, recipients, subject, created_at, next_try_at, bcc, audience)"
+                   " VALUES (NULL,?,?,?,?,?,?,?)",
+                   (lead_id, ", ".join(recipients), subject, now_iso(), now_iso(), ", ".join(bcc), audience))
+    _wake.set()
+
+
+def _lead_html(lead, data, files, link: str, attached: bool) -> str:
+    from .leads import more_rows
+    rows = [("Name", lead["name"]), ("Phone", lead["phone"] or "—"), ("Email", lead["email"] or "—"),
+            ("Project address", lead["address"] or "—"), ("Project", ", ".join(data.get("types") or []) or "—"),
+            ("About the project", data.get("description") or "—"), ("How they heard about us", data.get("heard") or "—")]
+    rows += more_rows(data)
+    if files:
+        rows.append(("Photos and files", f"{len(files)} " + ("attached" if attached else "in the app (too big to attach)")))
+    if data.get("files_not_saved"):
+        rows.append(("Files not saved", f"{data['files_not_saved']} (the server was low on space)"))
+    rows.append(("Received", local_time(lead["submitted_at"])))
+    body = "".join(
+        f"<tr><td style='padding:8px 12px;border:1px solid #e0e0e0;background:#f2f9eb;font-weight:bold;width:38%'>{escape(a)}</td>"
+        f"<td style='padding:8px 12px;border:1px solid #e0e0e0;white-space:pre-line'>{escape(str(b))}</td></tr>" for a, b in rows)
+    tag = " — TEST" if lead["is_test"] else ""
+    return f"""<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #ddd;border-radius:8px;overflow:hidden">
+<div style="background:#f8d7da;color:#721c24;padding:8px;text-align:center;font-size:12px;font-weight:bold">AUTOMATED MESSAGE — DO NOT REPLY</div>
+<div style="background:#2f6f1f;color:#ffffff;padding:16px 20px"><h2 style="margin:0;color:#ffffff">New lead{tag}</h2>
+<div style="font-size:13px;color:#ffffff">Receipt {escape(lead['receipt'])} · from the customer form</div></div>
+<div style="padding:20px"><p style="margin:0 0 18px"><a href="{escape(link)}" style="display:inline-block;background:#2f6f1f;color:#ffffff;
+text-decoration:none;font-weight:bold;font-size:16px;padding:12px 22px;border-radius:8px">Open this lead</a></p>
+<table style="border-collapse:collapse;width:100%;font-size:14px">{body}</table>
+<p style="font-size:12px;color:#666;margin-top:20px">Claim it in the app so everyone knows who is calling.</p></div></div>"""
+
+
+def _lead_customer_html(lead) -> str:
+    """The customer's receipt: short and warm. It never repeats what they typed (a spammer can't use it to send
+    their text to someone else's address); just the number, and when we'll call."""
+    from .leads import OFFICE_CITY, OFFICE_PHONE, OFFICE_STREET, greeting_name
+    first = greeting_name(lead["name"])
+    return f"""<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #e3e7ea;border-radius:10px;overflow:hidden;color:#1f2a33">
+<div style="background:#2f6f1f;color:#ffffff;padding:18px 22px"><h2 style="margin:0;color:#ffffff;font-size:20px">We got your project request</h2>
+<div style="font-size:13px;color:#ffffff;opacity:.9">Your number: {escape(lead['receipt'])}</div></div>
+<div style="padding:22px;font-size:15px;line-height:1.5">
+<p style="margin:0 0 12px">Hi{(' ' + escape(first)) if first else ' there'},</p>
+<p style="margin:0">Thank you for reaching out to SimplyDoors. <b>We'll call you within 1 business day.</b></p>
+<p style="margin:16px 0 0">Want to add something, or send more photos? Just reply to this email.</p>
+<p style="margin:20px 0 0">Thank you,<br><b>The SimplyDoors team</b><br>
+<span style="color:#5f6b76;font-size:13px">{escape(OFFICE_STREET)}, {escape(OFFICE_CITY)} · {escape(OFFICE_PHONE)}</span></p></div></div>"""
+
+
+def _send_lead(email_row) -> EmailMessage:
+    from .leads import OFFICE_PHONE, OPS_URL, bundle
+    got = bundle(email_row["lead_id"])
+    if not got:
+        raise RuntimeError("that lead was deleted")
+    lead, data, files = got
+    msg = EmailMessage()
+    msg["To"] = email_row["recipients"] or "undisclosed-recipients:;"
+    msg["Subject"] = email_row["subject"]
+    if email_row["audience"] == "customer":
+        msg["From"] = formataddr((CUSTOMER_FROM_NAME, SMTP_USER))
+        msg["Reply-To"] = CUSTOMER_REPLY_TO
+        msg.set_content(f"Thank you for reaching out to SimplyDoors. We got your project request {lead['receipt']}. "
+                        f"We'll call you within 1 business day. Questions? Reply to this email or call {OFFICE_PHONE}.")
+        msg.add_alternative(_lead_customer_html(lead), subtype="html")
+        return msg
+    link = f"{OPS_URL}/leads#lead={lead['id']}"
+    attach = sum(f["bytes"] for f in files) <= LEAD_ATTACH_MAX and all(os.path.isfile(f["path"]) for f in files)
+    msg["From"] = formataddr((MAIL_FROM_NAME, SMTP_USER))
+    msg["Reply-To"] = MAIL_REPLY_TO
+    msg.set_content(f"New lead {lead['receipt']}: {lead['name']}, {lead['phone'] or lead['email']}.\nOpen this lead: {link}")
+    msg.add_alternative(_lead_html(lead, data, files, link, attach), subtype="html")
+    if attach:
+        for i, f in enumerate(files, 1):
+            with open(f["path"], "rb") as fh:
+                b = fh.read()
+            if f["kind"] == "pdf":
+                msg.add_attachment(b, maintype="application", subtype="pdf", filename=f"{lead['receipt']}_{i}.pdf")
+            else:
+                msg.add_attachment(b, maintype="image", subtype="jpeg", filename=f"{lead['receipt']}_{i}.jpg")
+    return msg
 
 
 def _size_html(ln: dict) -> str:
@@ -180,6 +267,9 @@ def _send_one(email_row) -> None:
     if "po_id" in email_row.keys() and email_row["po_id"]:
         _smtp_send(_send_po(email_row), email_row)
         return
+    if "lead_id" in email_row.keys() and email_row["lead_id"]:
+        _smtp_send(_send_lead(email_row), email_row)
+        return
     r, data, photos = _report_bundle(email_row["report_id"])
     if (email_row["audience"] if "audience" in email_row.keys() else "staff") == "customer":
         _smtp_send(_send_customer(email_row, r, data, photos), email_row)
@@ -225,6 +315,8 @@ def process_queue_once() -> None:
             details = {"report_id": e["report_id"], "to": e["recipients"], "subject": e["subject"]}
             if e["po_id"]:
                 details = {"po_id": e["po_id"], "to": e["recipients"], "cc": e["cc"], "subject": e["subject"]}
+            elif e["lead_id"]:
+                details = {"lead_id": e["lead_id"], "to": e["recipients"], "subject": e["subject"]}
             if e["bcc"]:
                 details["private_copies"] = len([x for x in e["bcc"].split(",") if x.strip()])
             audit(None, "system", "email_sent", f"email:{e['id']}", details)
@@ -236,10 +328,12 @@ def process_queue_once() -> None:
             c.execute("UPDATE emails SET attempts=?, status=?, last_error=?, next_try_at=? WHERE id=?",
                       (attempts, status, str(ex)[:500], next_try, e["id"]))
             audit(None, "system", "email_failed", f"email:{e['id']}",
+                  {"lead_id": e["lead_id"], "attempt": attempts, "error": str(ex)[:300]} if e["lead_id"] else
                   {"report_id": e["report_id"], "attempt": attempts, "error": str(ex)[:300]})
             if attempts == 3 or status == "failed":
+                kind = "PO" if e["po_id"] else "Lead" if e["lead_id"] else "Report"
                 alerts.push("Ops app: email not sending",
-                            f"{'PO' if e['po_id'] else 'Report'} email '{e['subject']}' failed {attempts}x: {str(ex)[:150]}", "high")
+                            f"{kind} email '{e['subject']}' failed {attempts}x: {str(ex)[:150]}", "high")
 
 
 def resend(report_id: int, actor, ip=None, agent=None) -> None:

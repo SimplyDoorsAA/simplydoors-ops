@@ -338,8 +338,9 @@ for _i, _k in enumerate(sorted(FORMS, key=lambda k: (FORMS[k]["order"], {"Instal
     FORMS[_k]["order"] = _i
 MAX_TEXT = 4000
 
-# Extra email lists beyond each form's main list (editable in Admin > Email lists)
-EXTRA_RULES = {"Vehicle Inspection: when something is Defective": "admin@simplydoors.com"}
+# Extra email lists beyond each form's main list, and lists that aren't a staff form (editable in Admin > Email lists)
+EXTRA_RULES = {"Vehicle Inspection: when something is Defective": "admin@simplydoors.com",
+               "Customer Intake": "admin@simplydoors.com"}      # new leads from the customer form (leads.py)
 
 
 # ------------------------------------------------------------------ lists

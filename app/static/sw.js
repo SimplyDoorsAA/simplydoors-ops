@@ -16,7 +16,8 @@ self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET" || url.origin !== location.origin) return;
   const scope = new URL(self.registration.scope).pathname;
   const rel = url.pathname.slice(scope.length);
-  if (rel.startsWith("api/") || rel.startsWith("admin") || rel.startsWith("pricelist")) return;   // always live
+  if (rel.startsWith("api/") || rel.startsWith("admin") || rel.startsWith("pricelist") || rel.startsWith("leads")
+      || rel.startsWith("start")) return;   // always live
   const nav = e.request.mode === "navigate";
   e.respondWith(
     fetch(e.request).then(resp => {

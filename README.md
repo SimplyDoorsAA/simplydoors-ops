@@ -73,6 +73,43 @@ GitHub Pages portal + Google Apps Script, one form at a time.
   sends the PO only to the owner. Every PO, sheet load and vendor email change is in the activity log; a vendor email
   change also reaches the owner's phone.
 
+## Customer intake + Leads
+
+- **The customer form:** https://optiplex-ai.tailf0af63.ts.net/start (Studio's public address, no :10000). No sign-in.
+  Name, a phone or an email (at least one), project address, what the project is, a description, up to 5 photos or PDFs,
+  and how they heard about us. They get "Got it" with a receipt number (`INT-00001`), then an optional "Tell us more"
+  (number of doors and windows, timeline, who they are, best time to call), saved onto the same lead. No budget question.
+- **Saved on their phone first.** What the customer sends stays on their phone until the server has it, and is sent again
+  on a bad signal (also when they open the page again). Each send carries its own id, so a retry never makes a second lead.
+- **Saved before anyone is emailed.** Then the **Customer Intake** list (Admin → Email lists: admin@, plus the owner's
+  private copy) gets the details, the photos and an **Open this lead** button; the owner's phone gets an alert; and if
+  they gave an email, the customer gets a receipt from "SimplyDoors" (replies go to admin@). Emails use the normal queue,
+  so a failed email never loses a lead.
+- **Files:** photos are saved on the server next to the report photos (`photos/lead-<id>/`, copied off-site the same way),
+  smaller, with no stamp and no hidden location. PDFs are kept as sent and download when opened. Up to 5 files: photos
+  up to 15 MB, PDFs up to 10 MB. Anything else is refused.
+- **Leads screen:** the **Leads** tile on the home screen (`/ops/leads`). Admins, and people with **Can see Leads**
+  switched on (Admin → Staff & PINs → Edit); everyone else gets a 403 from every lead endpoint. Tabs: Leads and Suspected
+  spam. Claim, Give it to, status (New → Called → Measure booked → Quoted → Won / Lost), notes, and Call / Text / Email
+  buttons. A lead claimed but with no claim, status change or note for 24 hours is flagged. Every view, claim, status
+  change and note is in the activity log. Leads stay in this app: nothing goes to Service Fusion.
+- **Spam (no outside service):**
+  - **Robots** get a normal-looking "Got it", are never emailed and never alert anyone. They're listed under Suspected
+    spam → "Stopped automatically" for 30 days. Caught when: the hidden trap box is filled in, it's sent under 3 seconds
+    after the page opened, it didn't come from the form page, or a connection sends more than 20 forms in an hour.
+  - **Suspected spam** is kept, but nobody is emailed or alerted until someone taps **Not spam: move to Leads** (then it's
+    emailed and alerted like any new lead). Flagged when: address and description filled in and sent under 10 seconds,
+    2 or more links in the text or a link in the name, or the 6th to 20th form from one connection in an hour.
+  - Cloudflare Turnstile can be added later in one place: `captcha_ok` in `app/leads.py`.
+- **Test mode:** with Test mode on, the owner taps **Make a test link** on the Leads screen. Anything sent through that link
+  is a TEST lead (`TEST-INT-00001`) that only the owner sees, and every email about it, the customer's receipt too, goes
+  only to the owner with "TEST -" in the subject. The link ends after 24 hours, when a new one is made, or when Test mode
+  is turned off. Test links skip the per-hour limit. The owner can delete a test lead.
+- **One-time server change (after hours):** `bash ~/ai-server/opsapp/deploy/intake-setup.sh`. It saves Tailscale's
+  setting, records how Studio answers, adds only `/start`, checks Studio answers exactly the same, and puts the old
+  setting back by itself if anything differs. Safe to run twice. Undo: `bash ~/ai-server/opsapp/deploy/intake-setup.sh undo`.
+  Autodeploy never touches Tailscale.
+
 ## Stage 3 (this version): Measure
 
 - **Measure** form on the phone: one job (customer, PO, date), then any number of **door** and **window** cards. Field names and choices are copied from the old Measure App.
