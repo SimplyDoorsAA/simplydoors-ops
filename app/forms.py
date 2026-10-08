@@ -432,9 +432,11 @@ def public_spec(form_type: str) -> dict:
 
 
 # ------------------------------------------------------------------ validation
-def _shown(f, raw) -> bool:
+def _shown(f, raw, hidden=()) -> bool:
+    """hidden: keys already found hidden, so a field that depends on a hidden one (RMA restocking fee amount
+    on a vendor return) is hidden too, whatever the phone left in it."""
     cond = f.get("show_if")
-    return not cond or (raw.get(cond["field"]) or "").strip() in cond["in"]
+    return not cond or (cond["field"] not in hidden and (raw.get(cond["field"]) or "").strip() in cond["in"])
 
 
 def _truthy(v) -> bool:
@@ -476,9 +478,11 @@ def clean(form_type: str, raw: dict) -> tuple[dict, list[str]]:
         return data, errors
     data, errors = {}, []
     any_defective = False
+    hidden = set()
     for f in spec["fields"]:
         key, label, t = f["key"], f["label"], f["type"]
-        if not _shown(f, raw):
+        if not _shown(f, raw, hidden):
+            hidden.add(key)
             continue
         if t == "joblookup":
             continue                      # handled after every field is cleaned (lookup_changes)

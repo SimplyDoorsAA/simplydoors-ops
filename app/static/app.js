@@ -559,7 +559,10 @@
     $$(".fld[data-show-field]", form).forEach(div => {
       const ctl = form.elements[div.dataset.showField];
       const val = ctl ? (ctl.value !== undefined ? ctl.value : "") : "";
-      div.classList.toggle("hidden", !div.dataset.showIn.split("|").includes(val));
+      // a field that depends on a hidden one is hidden too (page order: the controlling field comes first)
+      const ctlEl = ctl && (ctl.closest ? ctl : ctl[0]);
+      const ctlHidden = !!(ctlEl && ctlEl.closest(".fld.hidden"));
+      div.classList.toggle("hidden", ctlHidden || !div.dataset.showIn.split("|").includes(val));
     });
     $$("select", form).forEach(sel => {
       const other = form.elements[sel.name + "_custom"];
