@@ -43,6 +43,8 @@
     log_lines_deleted: "Deleted own log lines", studio_opened: "Opened Simply Studio", test_report_deleted: "Deleted a test report",
     price_list_viewed: "Opened the Price List", po_sent: "Sent a purchase order", po_pdf_downloaded: "Opened a PO PDF",
     vendor_changed: "Changed a vendor (Price List)", price_sheet_loaded: "Loaded a price sheet", price_sheet_removed: "Removed a price sheet",
+    price_item_changed: "Changed a Price List item", price_item_added: "Added a Price List item", price_item_deleted: "Deleted a Price List item",
+    price_sheet_downloaded: "Downloaded a price sheet",
   };
 
   // ------------------------------------------------------------ tabs
@@ -167,7 +169,7 @@
       $("#depts").innerHTML = [...new Set(rows.map(r => r.dept))].map(d => `<option>${esc(d)}</option>`).join("");
       $("#staffList").innerHTML = `<table class="rows"><thead><tr><th>Name</th><th class="hide-sm">Dept</th><th class="hide-sm">Email</th><th>PIN</th><th></th></tr></thead><tbody>` +
         rows.map(r => `<tr${r.active ? "" : ' style="opacity:.5"'}><td><b>${esc(r.name)}</b>
-          ${r.is_owner ? ' <span class="badge ok">owner</span>' : r.is_admin ? ' <span class="badge ok">admin</span>' : ""}${r.sales_notify ? ' <span class="badge">sales list</span>' : ""}${r.price_list ? ' <span class="badge">price list</span>' : ""}
+          ${r.is_owner ? ' <span class="badge ok">owner</span>' : r.is_admin ? ' <span class="badge ok">admin</span>' : ""}${r.sales_notify ? ' <span class="badge">sales list</span>' : ""}${r.price_list ? ` <span class="badge">price list${r.price_edit ? " · edits" : ""}</span>` : ""}
           ${r.active ? "" : ' <span class="badge">turned off</span>'}${r.locked ? ' <span class="badge bad">locked</span>' : ""}</td>
           <td class="hide-sm">${esc(r.dept)}</td><td class="hide-sm">${esc(r.email)}</td>
           <td>${r.has_pin ? `<span class="badge ok">set</span><div class="det">${esc(PIN_SRC[r.pin_source] || r.pin_source || "")}</div>` : '<span class="badge bad">none</span>'}
@@ -223,6 +225,7 @@
         <label class="inline"><input name="sales_notify" type="checkbox" ${r.sales_notify ? "checked" : ""}> Shows in "Notify a sales rep"</label>
         <label class="inline"><input name="studio_link" type="checkbox" ${r.studio ? "checked" : ""}> Shows the Simply Studio tile</label>
         <label class="inline"><input name="price_list" type="checkbox" ${r.price_list ? "checked" : ""}> Can open the Price List (vendor net costs, send POs)</label>
+        <label class="inline"><input name="price_edit" type="checkbox" ${r.price_edit ? "checked" : ""}> Can edit Price List items: names, prices, notes; add and delete (e.g. the purchaser)</label>
         <label class="inline"><input name="is_admin" type="checkbox" ${r.is_admin ? "checked" : ""}${!r.is_admin && !amOwner ? " disabled" : ""}> Admin (sees everything)</label>
         <label class="inline"><input name="active" type="checkbox" ${r.active ? "checked" : ""}> Can sign in</label>
         <button class="mini primary" type="submit">Save changes</button>
@@ -242,7 +245,8 @@
       const body = { name: el.name.value, dept: el.dept.value, ...(el.email ? { email: el.email.value } : {}),
         sales_notify: el.sales_notify.checked, is_admin: el.is_admin.checked, active: el.active.checked,
         ...(el.studio_link.checked !== !!r.studio ? { studio_link: el.studio_link.checked } : {}),
-        ...(el.price_list.checked !== !!r.price_list ? { price_list: el.price_list.checked } : {}) };
+        ...(el.price_list.checked !== !!r.price_list ? { price_list: el.price_list.checked } : {}),
+        ...(el.price_edit.checked !== !!r.price_edit ? { price_edit: el.price_edit.checked } : {}) };
       if (body.is_admin && !r.is_admin && !confirm(`Make ${r.name} an admin? Admins can see every report, including disciplinary records, and the full activity log.`)) return;
       try { await api(`api/admin/staff/${r.id}`, { method: "PATCH", json: body }); toast("Saved"); closeSheet(); loadStaff(); } catch (e) { fail(e); }
     };
@@ -335,9 +339,10 @@
     try {
       const d = await api("api/admin/pricelist");
       PL = d;
-      $("#plPeople").innerHTML = `Can open it now: <b>${esc(d.people.join(", ") || "nobody yet")}</b>`;
+      $("#plPeople").innerHTML = `Can open it now: <b>${esc(d.people.join(", ") || "nobody yet")}</b><br>Can edit items: <b>${esc(d.editors.join(", ") || "nobody yet")}</b>`;
       $("#plVendors").innerHTML = d.vendors.map(v => `<div class="rule"><h3>${esc(v.name)} ${v.sheet ? `<span class="badge ok">${v.sheet.items} items</span>` : '<span class="badge">no sheet</span>'}</h3>
-        ${v.sheets.map(s => `<div class="det">Live: <b>${esc(s.label)}</b> · ${s.items} items · loaded ${esc(when(s.uploaded_at))} by ${esc(s.uploaded_by)}
+        ${v.sheets.map(s => `<div class="det">Live: <b>${esc(s.label)}</b> · ${s.items} items${s.edited ? ` · <b>${s.edited} edited in the app</b>` : ""} · loaded ${esc(when(s.uploaded_at))} by ${esc(s.uploaded_by)}
+          <a class="mini" href="api/pricelist/sheets/${s.id}/csv" download>Download</a>
           <button class="mini" type="button" data-remove="${s.id}" data-label="${esc(s.label)}">Remove</button></div>`).join("")}
         <form class="grid" data-vendor="${esc(v.code)}">
           <label>PO email (where purchase orders go)<input name="order_email" type="email" value="${esc(v.order_email)}" placeholder="orders@vendor.com"></label>
@@ -375,7 +380,10 @@
     const rep = f.elements.replace.value;
     if (!rep) { toast("Pick which sheet this one replaces, or “Add as a new sheet”"); return; }
     const what = rep === "new" ? `add it to ${vendorName}'s Price List` : `it replaces “${f.elements.replace.selectedOptions[0].textContent.replace(/^Replace: /, "")}” for everyone`;
-    if (!confirm(`Load this sheet? ${what[0].toUpperCase() + what.slice(1)}.`)) return;
+    const old = rep === "new" ? null : PL.vendors.flatMap(v => v.sheets).find(s => String(s.id) === rep);
+    const edits = old && old.edited ? `\n\n${old.edited} item${old.edited > 1 ? "s" : ""} on that sheet were edited in the app. The new file replaces those edits. ` +
+      "Cancel and use Download first if you want to keep a copy." : "";
+    if (!confirm(`Load this sheet? ${what[0].toUpperCase() + what.slice(1)}.${edits}`)) return;
     btn.disabled = true; btn.textContent = "Loading…";
     try {
       const r = await fetch("api/admin/pricelist/upload", { method: "POST", credentials: "same-origin", headers: { "X-SD-App": "1" }, body: new FormData(f) });

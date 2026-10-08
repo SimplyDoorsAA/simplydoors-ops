@@ -47,7 +47,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-34"
+APP_VERSION = "stage3-35"
 
 
 @asynccontextmanager
@@ -346,6 +346,7 @@ def me(staff=Depends(current_staff)):
         "forms": [public_spec(t) for t in visible_forms(staff)],
         "job_lookup": sfjobs.configured(),
         "price_list": pricelist.allowed(staff),
+        "price_edit": pricelist.can_edit(staff),
     }
 
 
@@ -1038,7 +1039,7 @@ def _staff_out(r, viewer=None):
     return {"id": r["id"], "name": r["name"], "dept": r["dept"], "email": r["email"],
             "is_admin": bool(r["is_admin"]), "is_owner": bool(r["is_owner"]),
             "sales_notify": bool(r["sales_notify"]), "active": bool(r["active"]), "has_pin": bool(r["pin_hash"]),
-            "studio": shows_studio(r), "price_list": bool(r["price_list"]),
+            "studio": shows_studio(r), "price_list": bool(r["price_list"]), "price_edit": bool(r["price_edit"]),
             "pin_set_at": r["pin_set_at"], "pin_source": r["pin_source"], "locked": locked, "invite": invite,
             "invite_expires": inv["expires_at"] if inv else None}
 
@@ -1075,6 +1076,13 @@ def _validate_staff(body: dict, partial: bool):
         out["studio_link"] = 1 if body["studio_link"] else 0
     if "price_list" in body:
         out["price_list"] = 1 if body["price_list"] else 0
+    if "price_edit" in body:
+        out["price_edit"] = 1 if body["price_edit"] else 0
+    # editing prices needs the Price List itself; taking the Price List away takes editing away too
+    if out.get("price_edit") == 1:
+        out["price_list"] = 1
+    if out.get("price_list") == 0:
+        out["price_edit"] = 0
     return out
 
 
@@ -1355,6 +1363,80 @@ def pl_items(request: Request, vendor: str, staff=Depends(current_pricelist)):
     return {"vendor": v["code"], "sheet": v["sheet"], "items": rows}
 
 
+def current_pricelist_editor(request: Request):
+    row = current_pricelist(request)
+    if not pricelist.can_edit(row):
+        raise HTTPException(403, "Editing the Price List isn't switched on for you. Ask Adem or Paz.")
+    return row
+
+
+def _edit_alert(staff, what: str):
+    # one heads-up per person per 10 minutes, so a run of edits doesn't flood the owner's phone
+    alerts.push_throttled(f"pl-edit:{staff['id']}", "Ops app: Price List edited",
+                          f"{staff['name']} is editing Price List items ({what}). Details are in the activity log.",
+                          every_seconds=600)
+
+
+@app.patch("/api/pricelist/items/{iid}")
+async def pl_edit_item(iid: int, request: Request, staff=Depends(current_pricelist_editor)):
+    body = await request.json()
+    try:
+        vendor, sku, name, changes = pricelist.update_item(iid, body if isinstance(body, dict) else {}, staff["name"])
+    except LookupError as e:
+        raise HTTPException(404, str(e)) from None
+    except pricelist.SheetError as e:
+        raise HTTPException(422, str(e)) from None
+    if changes:
+        audit(staff["id"], staff["name"], "price_item_changed", f"{_vendor(vendor)['name']}: {sku}",
+              {"item": name, **changes}, client_ip(request), ua(request))
+        _edit_alert(staff, f"changed {sku}")
+    return pricelist.get_item(iid)
+
+
+@app.post("/api/pricelist/items")
+async def pl_add_item(request: Request, staff=Depends(current_pricelist_editor)):
+    body = await request.json()
+    body = body if isinstance(body, dict) else {}
+    sheet_id = body.get("sheet_id")
+    try:
+        iid = pricelist.add_item(int(sheet_id) if str(sheet_id).isdigit() else 0, body, staff["name"])
+    except LookupError as e:
+        raise HTTPException(404, str(e)) from None
+    except pricelist.SheetError as e:
+        raise HTTPException(422, str(e)) from None
+    d = pricelist.get_item(iid)
+    audit(staff["id"], staff["name"], "price_item_added", f"{_vendor(d['vendor'])['name']}: {d['sku']}",
+          {"item": d["name"], "sheet": d["sheet"], "price": d["price"]}, client_ip(request), ua(request))
+    _edit_alert(staff, f"added {d['sku']}")
+    return d
+
+
+@app.delete("/api/pricelist/items/{iid}")
+def pl_delete_item(iid: int, request: Request, staff=Depends(current_pricelist_editor)):
+    r = pricelist.delete_item(iid)
+    if not r:
+        raise HTTPException(404, "That item isn't on a live sheet any more.")
+    audit(staff["id"], staff["name"], "price_item_deleted", f"{_vendor(r['sv'])['name']}: {r['sku']}",
+          {"item": r["name"], "sheet": r["sheet_label"], "price": r["price"]}, client_ip(request), ua(request))
+    _edit_alert(staff, f"deleted {r['sku']}")
+    return {"ok": True}
+
+
+@app.get("/api/pricelist/sheets/{sid}/csv")
+def pl_sheet_csv(sid: int, request: Request):
+    staff = current_staff(request)
+    if not (pricelist.can_edit(staff) or staff["is_admin"]):
+        raise HTTPException(403, "Only people who can edit the Price List can download a sheet.")
+    s, text = pricelist.sheet_csv(sid)
+    if not s:
+        raise HTTPException(404, "That sheet isn't live any more.")
+    audit(staff["id"], staff["name"], "price_sheet_downloaded", _vendor(s["vendor"])["name"], {"sheet": s["label"]},
+          client_ip(request), ua(request))
+    name = re.sub(r"[^A-Za-z0-9-]+", "_", f"{s['vendor']}_{s['label']}").strip("_")[:80] or "sheet"
+    return Response(text.encode("utf-8-sig"), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{name}.csv"', "Cache-Control": "no-store"})
+
+
 @app.get("/api/pricelist/po-check")
 def pl_po_check(po: str = "", staff=Depends(current_pricelist)):
     return {"sent_before": pricelist.sent_before(po.strip()[:60])}
@@ -1463,7 +1545,9 @@ def admin_pricelist(admin=Depends(current_admin)):
                                          " FROM pl_sheets ORDER BY id DESC LIMIT 30")]
     return {"vendors": pricelist.vendors(), "sheets": sheets, "columns": list(pricelist.CSV_COLUMNS),
             "required": list(pricelist.REQUIRED), "categories": list(pricelist.CATS),
-            "people": [r["name"] for r in c.execute("SELECT name FROM staff WHERE active=1 AND (price_list=1 OR is_owner=1) ORDER BY name")]}
+            "people": [r["name"] for r in c.execute("SELECT name FROM staff WHERE active=1 AND (price_list=1 OR is_owner=1) ORDER BY name")],
+            "editors": [r["name"] for r in c.execute("SELECT name FROM staff WHERE active=1 AND ((price_list=1 AND price_edit=1) OR is_owner=1)"
+                                                     " ORDER BY name")]}
 
 
 @app.put("/api/admin/pricelist/vendors/{code}")
@@ -1490,8 +1574,18 @@ async def admin_pricelist_vendor(code: str, request: Request, admin=Depends(curr
     return {"ok": True}
 
 
+def current_sheet_manager(request: Request):
+    # loading and removing sheets: admins, and the people who can edit Price List items (e.g. the purchaser).
+    # Where a vendor's POs are emailed stays admins-only.
+    row = current_staff(request)
+    if not (row["is_admin"] or pricelist.can_edit(row)):
+        audit(row["id"], row["name"], "admin_denied", request.url.path, None, client_ip(request), ua(request))
+        raise HTTPException(403, "Only admins and people who can edit the Price List can load sheets.")
+    return row
+
+
 @app.post("/api/admin/pricelist/upload")
-async def admin_pricelist_upload(request: Request, admin=Depends(current_admin)):
+async def admin_pricelist_upload(request: Request, admin=Depends(current_sheet_manager)):
     form = await request.form()
     v = _vendor(str(form.get("vendor", "")))
     label = str(form.get("label", "")).strip()[:120]
@@ -1536,7 +1630,7 @@ async def admin_pricelist_upload(request: Request, admin=Depends(current_admin))
 
 
 @app.post("/api/admin/pricelist/sheets/{sid}/remove")
-def admin_pricelist_remove(sid: int, request: Request, admin=Depends(current_admin)):
+def admin_pricelist_remove(sid: int, request: Request, admin=Depends(current_sheet_manager)):
     s = pricelist.remove_sheet(sid)
     if not s:
         raise HTTPException(404, "That sheet isn't live any more.")

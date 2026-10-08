@@ -7,6 +7,8 @@
 - A sheet can carry other price levels ("compare Container", "compare Pallet", ...) shown for comparison only; a PO
   always uses the main price.
 - Only people with the Price List switch on (Admin -> Staff) can see net costs; the owner always can.
+- A few of them (e.g. the purchaser) can also edit items in the app: change any field, add, delete. Every change is in
+  the activity log, and an edited item says who changed it. Replacing a sheet with a new upload replaces its edits too.
 - A purchase order's number is the PO number already on the Service Fusion job. The app never writes to Service Fusion.
 - Sending a PO emails a PDF to the vendor's order address, with a copy to admin@simplydoors.com.
 - Prices on a PO are always worked out here from the loaded sheet, never taken from the phone.
@@ -68,7 +70,9 @@ CREATE TABLE IF NOT EXISTS pl_items (
     brand TEXT NOT NULL DEFAULT '',
     page INTEGER,
     flag TEXT NOT NULL DEFAULT '',               -- why this line needs checking with the rep
-    compare TEXT NOT NULL DEFAULT ''             -- JSON [[label, price], ...]: other price levels, for comparison only
+    compare TEXT NOT NULL DEFAULT '',            -- JSON [[label, price], ...]: other price levels, for comparison only
+    edited_at TEXT,                              -- set when someone changed or added this item in the app
+    edited_by TEXT
 );
 CREATE INDEX IF NOT EXISTS pl_items_sheet ON pl_items(sheet_id);
 
@@ -111,8 +115,12 @@ def init(c) -> None:
     for code, name, addr, email, sort in SEED_VENDORS:
         c.execute("INSERT OR IGNORE INTO pl_vendors(code, name, address, order_email, sort) VALUES (?,?,?,?,?)",
                   (code, name, addr, email, sort))
-    if "compare" not in [r[1] for r in c.execute("PRAGMA table_info(pl_items)")]:
+    cols = [r[1] for r in c.execute("PRAGMA table_info(pl_items)")]
+    if "compare" not in cols:
         c.execute("ALTER TABLE pl_items ADD COLUMN compare TEXT NOT NULL DEFAULT ''")
+    if "edited_at" not in cols:
+        c.execute("ALTER TABLE pl_items ADD COLUMN edited_at TEXT")
+        c.execute("ALTER TABLE pl_items ADD COLUMN edited_by TEXT")
 
 
 # ------------------------------------------------------------------ who can see it
@@ -121,10 +129,16 @@ def allowed(staff) -> bool:
     return bool(staff["is_owner"]) or bool("price_list" in keys and staff["price_list"])
 
 
+def can_edit(staff) -> bool:
+    keys = staff.keys()
+    return bool(staff["is_owner"]) or bool(allowed(staff) and "price_edit" in keys and staff["price_edit"])
+
+
 # ------------------------------------------------------------------ vendors + sheets
 def live_sheets(vendor: str) -> list[dict]:
-    rows = conn().execute("SELECT id, label, filename, items, uploaded_at, uploaded_by FROM pl_sheets"
-                          " WHERE vendor=? AND active=1 ORDER BY id", (vendor,))
+    rows = conn().execute("SELECT s.id, s.label, s.filename, s.items, s.uploaded_at, s.uploaded_by,"
+                          " (SELECT COUNT(*) FROM pl_items i WHERE i.sheet_id=s.id AND i.edited_at IS NOT NULL) AS edited"
+                          " FROM pl_sheets s WHERE s.vendor=? AND s.active=1 ORDER BY s.id", (vendor,))
     return [dict(r) for r in rows]
 
 
@@ -155,17 +169,31 @@ def _compare(raw: str) -> list[dict]:
 
 
 def items(vendor: str) -> list[dict]:
-    rows = conn().execute(f"SELECT {', '.join('i.' + k for k in ITEM_COLS)}, i.compare, s.label AS sheet"
+    rows = conn().execute(f"SELECT {', '.join('i.' + k for k in ITEM_COLS)}, i.compare, i.edited_at, i.edited_by,"
+                          " i.sheet_id, s.label AS sheet"
                           " FROM pl_items i JOIN pl_sheets s ON s.id=i.sheet_id"
                           " WHERE s.vendor=? AND s.active=1 ORDER BY s.id, i.id", (vendor,))
     out = []
     for r in rows:
         d = {k: r[k] for k in ITEM_COLS}
         d["stock"] = None if d["stock"] is None else bool(d["stock"])
-        d["sheet"] = r["sheet"]
+        d["sheet"], d["sheet_id"] = r["sheet"], r["sheet_id"]
         d["compare"] = _compare(r["compare"])
+        d["edited_at"], d["edited_by"] = r["edited_at"], r["edited_by"]
         out.append(d)
     return out
+
+
+def get_item(item_id: int):
+    """One item on a live sheet, as items() returns it, plus its vendor. None if it isn't live."""
+    r = conn().execute("SELECT s.vendor FROM pl_items i JOIN pl_sheets s ON s.id=i.sheet_id WHERE i.id=? AND s.active=1",
+                       (item_id,)).fetchone()
+    if not r:
+        return None
+    d = next((x for x in items(r["vendor"]) if x["id"] == item_id), None)
+    if d:
+        d["vendor"] = r["vendor"]
+    return d
 
 
 # The upload format. One row per item; the first row holds these names (any order, case doesn't matter).
@@ -181,17 +209,18 @@ class SheetError(ValueError):
 
 
 def _num(v, field, line, allow_blank=True):
+    at = f"Line {line}: " if line else ""     # line 0: typed in the app, not a line of a file
     v = (v or "").strip().replace("$", "").replace(",", "")
     if not v:
         if allow_blank:
             return None
-        raise SheetError(f"Line {line}: {field} is empty.")
+        raise SheetError(f"{at}{field} is empty.")
     try:
         n = float(v)
     except ValueError:
-        raise SheetError(f"Line {line}: {field} “{v[:20]}” isn't a number.") from None
+        raise SheetError(f"{at}{field} “{v[:20]}” isn't a number.") from None
     if n < 0 or n > 1_000_000:
-        raise SheetError(f"Line {line}: {field} {n} is out of range.")
+        raise SheetError(f"{at}{field} {n} is out of range.")
     return n
 
 
@@ -310,6 +339,128 @@ def remove_sheet(sheet_id: int):
         c.execute("ROLLBACK")
         raise
     return s
+
+
+# ------------------------------------------------------------------ editing items in the app
+# field in the app -> (column, max length or kind). Same limits as an uploaded sheet.
+EDIT_FIELDS = {"sku": ("sku", 60), "name": ("name", 160), "cat": ("cat", "cat"), "grp": ("grp", 120), "mfr": ("mfr", 60),
+               "w": ("w", "num"), "h": ("h", "num"), "th": ("th", 20), "core": ("core", 40), "price": ("price", "price"),
+               "stock": ("stock", "stock"), "uom": ("uom", 30), "hand": ("hand", 4), "brand": ("brand", 40),
+               "flag": ("flag", 300), "compare": ("compare", "compare")}
+
+
+def clean_fields(body: dict, partial: bool) -> dict:
+    """Check the fields sent from the edit form. Returns {column: value}; raises SheetError with a plain reason."""
+    out = {}
+    for key, (col, kind) in EDIT_FIELDS.items():
+        if key not in body:
+            if partial:
+                continue
+            body = {**body, key: None}
+        v = body[key]
+        if kind == "cat":
+            if v not in CATS:
+                raise SheetError(f"Category must be one of: {', '.join(CATS)}.")
+            out[col] = v
+        elif kind == "num":
+            n = _num(str(v if v is not None else ""), key == "w" and "Width" or "Height", 0)
+            out[col] = n or 0
+        elif kind == "price":
+            n = _num(str(v if v is not None else ""), "Price", 0)
+            out[col] = None if not n else round(n, 2)
+        elif kind == "stock":
+            out[col] = None if v is None or v == "" else (1 if v in (True, 1, "1", "Y", "y") else 0)
+        elif kind == "compare":
+            rows = []
+            for c in (v or [])[:MAX_COMPARE]:
+                lbl = str((c or {}).get("label", "")).strip()[:30]
+                n = _num(str((c or {}).get("price", "") or ""), f"“{lbl or 'compare'}” price", 0)
+                if lbl and n:
+                    rows.append([lbl, round(n, 2)])
+            out[col] = json.dumps(rows) if rows else ""
+        else:
+            out[col] = str(v if v is not None else "").strip()[:kind]
+    if "sku" in out and not out["sku"]:
+        raise SheetError("The part number can't be empty.")
+    if "name" in out and not out["name"]:
+        out["name"] = out.get("sku") or ""
+        if not out["name"]:
+            raise SheetError("The name can't be empty.")
+    return out
+
+
+def _shown(col, v):
+    if col == "compare":
+        return ", ".join(f"{lbl} {p:.2f}" for lbl, p in json.loads(v)) if v else ""
+    if col == "stock":
+        return {1: "stocked", 0: "non-stock"}.get(v, "not marked")
+    return v
+
+
+def update_item(item_id: int, body: dict, who: str):
+    """Change a live item. Returns (vendor, sku, name, {field: {from, to}}); raises SheetError / LookupError."""
+    c = conn()
+    old = c.execute("SELECT i.*, s.vendor AS sv FROM pl_items i JOIN pl_sheets s ON s.id=i.sheet_id"
+                    " WHERE i.id=? AND s.active=1", (item_id,)).fetchone()
+    if not old:
+        raise LookupError("That item isn't on a live sheet any more. Reload the Price List.")
+    new = clean_fields(body, partial=True)
+    changes = {col: {"from": _shown(col, old[col]), "to": _shown(col, val)} for col, val in new.items() if old[col] != val}
+    if changes:
+        cols = [col for col in new if col in changes]
+        c.execute(f"UPDATE pl_items SET {', '.join(col + '=?' for col in cols)}, edited_at=?, edited_by=? WHERE id=?",
+                  [new[col] for col in cols] + [now_iso(), who, item_id])
+    return old["sv"], old["sku"], old["name"], changes
+
+
+def add_item(sheet_id: int, body: dict, who: str) -> int:
+    c = conn()
+    s = c.execute("SELECT * FROM pl_sheets WHERE id=? AND active=1", (sheet_id,)).fetchone()
+    if not s:
+        raise LookupError("Pick a live sheet to add the item to.")
+    d = clean_fields(body, partial=False)
+    cols = list(d)
+    cur = c.execute(f"INSERT INTO pl_items(sheet_id, vendor, {', '.join(cols)}, edited_at, edited_by)"
+                    f" VALUES (?,?,{','.join('?' * len(cols))},?,?)", [sheet_id, s["vendor"]] + [d[k] for k in cols] + [now_iso(), who])
+    c.execute("UPDATE pl_sheets SET items=items+1 WHERE id=?", (sheet_id,))
+    return cur.lastrowid
+
+
+def delete_item(item_id: int):
+    """Delete a live item. Returns its row (with the sheet's vendor and label), or None if it wasn't live."""
+    c = conn()
+    r = c.execute("SELECT i.*, s.vendor AS sv, s.label AS sheet_label FROM pl_items i JOIN pl_sheets s ON s.id=i.sheet_id"
+                  " WHERE i.id=? AND s.active=1", (item_id,)).fetchone()
+    if r:
+        c.execute("DELETE FROM pl_items WHERE id=?", (item_id,))
+        c.execute("UPDATE pl_sheets SET items=MAX(items-1, 0) WHERE id=?", (r["sheet_id"],))
+    return r
+
+
+def sheet_csv(sheet_id: int):
+    """A live sheet, with any edits, in the upload format (so it can be changed in Excel and loaded back).
+    Returns (sheet row, CSV text) or (None, "")."""
+    c = conn()
+    s = c.execute("SELECT * FROM pl_sheets WHERE id=? AND active=1", (sheet_id,)).fetchone()
+    if not s:
+        return None, ""
+    rows = c.execute("SELECT * FROM pl_items WHERE sheet_id=? ORDER BY id", (sheet_id,)).fetchall()
+    labels: list[str] = []
+    for r in rows:
+        for lbl, _ in json.loads(r["compare"] or "[]"):
+            if lbl not in labels:
+                labels.append(lbl)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(list(CSV_COLUMNS) + [COMPARE_PREFIX + lbl for lbl in labels[:MAX_COMPARE]])
+    num = lambda v: ("%g" % v) if v else ""  # noqa: E731
+    for r in rows:
+        cmp = dict((lbl, p) for lbl, p in json.loads(r["compare"] or "[]"))
+        w.writerow([r["sku"], r["name"], r["cat"], "" if r["price"] is None else f"{r['price']:.2f}", r["grp"], r["mfr"],
+                    num(r["w"]), num(r["h"]), r["th"], r["core"], {1: "Y", 0: "N"}.get(r["stock"], ""), r["uom"],
+                    r["hand"], r["brand"], "" if r["page"] is None else r["page"], r["flag"]]
+                   + [f"{cmp[lbl]:.2f}" if lbl in cmp else "" for lbl in labels[:MAX_COMPARE]])
+    return s, buf.getvalue()
 
 
 # ------------------------------------------------------------------ purchase orders

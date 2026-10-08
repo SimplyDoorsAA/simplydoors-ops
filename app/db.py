@@ -212,6 +212,9 @@ def init_db() -> None:
     if "price_list" not in cols:
         # 1 = can open the Price List (vendor net costs). Off for everyone until an admin switches it on.
         c.execute("ALTER TABLE staff ADD COLUMN price_list INTEGER NOT NULL DEFAULT 0")
+    if "price_edit" not in cols:
+        # 1 = can also change Price List items (names, prices, notes), add and delete them. E.g. the purchaser.
+        c.execute("ALTER TABLE staff ADD COLUMN price_edit INTEGER NOT NULL DEFAULT 0")
     if "lock_level" not in cols:
         c.execute("ALTER TABLE staff ADD COLUMN lock_level INTEGER NOT NULL DEFAULT 0")
         c.execute("ALTER TABLE staff ADD COLUMN last_lock_at TEXT")
