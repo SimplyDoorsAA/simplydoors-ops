@@ -47,7 +47,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-42"
+APP_VERSION = "stage3-43"
 
 
 @asynccontextmanager
@@ -1986,6 +1986,7 @@ def leads_list(request: Request, tab: str = "leads", staff=Depends(current_leads
     audit(staff["id"], staff["name"], "leads_list_viewed", None, {"tab": "Suspected spam" if spam else "Leads"},
           client_ip(request), ua(request))
     out = {"leads": leads.list_rows(staff, spam), "counts": leads.counts(staff), "people": leads.people(),
+           "choices": {"types": leads.TYPES, "heard": leads.HEARD, "sources": leads.SOURCES},
            "statuses": [{"key": k, "label": v} for k, v in leads.STATUSES.items()], "stale_hours": leads.STALE_HOURS}
     if spam:
         out["blocked"] = leads.blocked_recent(staff)
@@ -2115,9 +2116,30 @@ def lead_test_link(request: Request, staff=Depends(current_leads)):
         raise HTTPException(403, "Only the app owner can make a test link.")
     if get_setting("owner_test_mode") != "1":
         raise HTTPException(409, "Turn on Test mode first (on the home screen).")
-    url, expires = leads.make_test_link(staff)
+    code, expires = leads.make_test_link(staff)
     audit(staff["id"], staff["name"], "lead_test_link_made", None, {"expires": expires}, client_ip(request), ua(request))
-    return {"url": url, "expires_at": expires}
+    # url: the customers' address (works once deploy/intake-setup.sh has run); staff_url: through the staff app,
+    # which works straight away
+    return {"url": f"{leads.INTAKE_URL}?t={code}", "staff_url": f"{leads.OPS_URL}{leads.INTAKE_PATH}?t={code}",
+            "expires_at": expires}
+
+
+@app.post("/api/leads")
+async def lead_add(request: Request, staff=Depends(current_leads)):
+    """Add a lead by hand, e.g. from a phone call."""
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Bad request")
+    types = body.get("types") if isinstance(body.get("types"), list) else []
+    d, errors = leads.clean({k: str(v) for k, v in body.items() if isinstance(v, (str, int))}, types)
+    source = str(body.get("source") or "")
+    if source not in leads.SOURCES:
+        errors.append("Pick how it came in.")
+    if errors:
+        raise HTTPException(422, " ".join(errors))
+    is_test = bool(staff["is_owner"]) and get_setting("owner_test_mode") == "1"
+    lid = leads.add_by_staff(d, source, staff, body.get("claim", True) is not False, is_test, client_ip(request), ua(request))
+    return leads.detail(_lead(lid, staff))
 
 
 @app.delete("/api/leads/{lid}")

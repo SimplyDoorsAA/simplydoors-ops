@@ -72,3 +72,15 @@ h1 .tag { vertical-align: 6px; }
 .hist li { padding: 5px 0; border-bottom: 1px solid #eef1f0; }
 .ltoast { position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 30;
   background: #1f2933; color: #fff; border-radius: 10px; padding: 12px 16px; font-weight: 600; max-width: 90vw; }
+.btn.addlead { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 0 0 12px; text-decoration: none; }
+.btn.addlead span { font-weight: 600; font-size: 15px; opacity: .9; }
+.lchips { display: flex; flex-wrap: wrap; gap: 8px; }
+.lchips label { margin: 0; font-weight: 600; }
+.lchips input { position: absolute; opacity: 0; pointer-events: none; }
+.lchips span { display: inline-flex; align-items: center; min-height: 46px; padding: 6px 14px; border: 2px solid var(--line);
+  border-radius: 999px; background: #fff; cursor: pointer; }
+.lchips input:checked + span { background: var(--green); border-color: var(--green); color: #fff; }
+.lchips input:focus-visible + span { box-shadow: 0 0 0 3px rgba(118,192,67,.45); }
+#addLead label.check { margin-top: 18px; }
+#addLead input[type=tel] { width: 100%; font: inherit; padding: 13px 12px; min-height: 50px; border: 1.5px solid var(--line);
+  border-radius: 10px; background: #fff; color: var(--ink); }

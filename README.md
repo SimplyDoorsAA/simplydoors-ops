@@ -93,6 +93,8 @@ GitHub Pages portal + Google Apps Script, one form at a time.
   spam. Claim, Give it to, status (New → Called → Measure booked → Quoted → Won / Lost), notes, and Call / Text / Email
   buttons. A lead claimed but with no claim, status change or note for 24 hours is flagged. Every view, claim, status
   change and note is in the activity log. Leads stay in this app: nothing goes to Service Fusion.
+- **Add a lead by hand** (a phone call, a walk-in): **＋ Add a lead** on the Leads screen. Same numbering, claimed for
+  you unless you untick it, nobody is emailed, and it's in the activity log.
 - **Spam (no outside service):**
   - **Robots** get a normal-looking "Got it", are never emailed and never alert anyone. They're listed under Suspected
     spam → "Stopped automatically" for 30 days. Caught when: the hidden trap box is filled in, it's sent under 3 seconds
@@ -102,7 +104,8 @@ GitHub Pages portal + Google Apps Script, one form at a time.
     2 or more links in the text or a link in the name, or the 6th to 20th form from one connection in an hour.
   - Cloudflare Turnstile can be added later in one place: `captcha_ok` in `app/leads.py`.
 - **Test mode:** with Test mode on, the owner taps **Make a test link** on the Leads screen. Anything sent through that link
-  is a TEST lead (`TEST-INT-00001`) that only the owner sees, and every email about it, the customer's receipt too, goes
+  is a TEST lead (`TEST-INT-00001`) that only the owner sees (the link opens through the staff app's address, so it works before
+  the server step), and every email about it, the customer's receipt too, goes
   only to the owner with "TEST -" in the subject. The link ends after 24 hours, when a new one is made, or when Test mode
   is turned off. Test links skip the per-hour limit. The owner can delete a test lead.
 - **One-time server change (after hours):** `bash ~/ai-server/opsapp/deploy/intake-setup.sh`. It saves Tailscale's
