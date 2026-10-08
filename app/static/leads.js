@@ -92,12 +92,16 @@
     $("#list").innerHTML = d.leads.length ? d.leads.map(card).join("")
       : `<p class="muted center">${tab === "spam" ? "Nothing in Suspected spam." : "No leads yet."}</p>`;
     $$("#list .lcard").forEach(c => c.onclick = () => { location.hash = "lead=" + c.dataset.id; });
-    $("#blocked").innerHTML = tab === "spam" && d.blocked ? blockedHtml(d.blocked) : "";
+    $("#blocked").innerHTML = tab === "spam" && d.blocked ? blockedHtml(d.blocked)
+      : (d.waiting_sends || []).length ? `<details class="blocked" open><summary>Sent but not sent in after 2 days: <b>${d.waiting_sends.length}</b></summary>
+        <p class="muted small">Customers who got the form but haven't filled it in. Give them a call or a nudge.</p>
+        ${d.waiting_sends.map(s => `<div class="brow"><b>${esc(s.first_name || "Customer")}</b> <span class="muted small">${esc(s.to || "")}</span>
+          <div class="small muted">Sent by ${esc(s.by)} · ${esc(s.channel_label)} · ${esc(when(s.created_at))}${s.opened_at ? " · opened" : ""}${s.is_test ? " · TEST" : ""}</div></div>`).join("")}</details>` : "";
   }
   function card(l) {
     const who = l.owner ? `Claimed by <b>${esc(l.owner)}</b>` : `<span class="unclaimed">Not claimed</span>`;
     return `<button type="button" class="lcard${l.stale ? " stale" : ""}" data-id="${l.id}">
-      <span class="l1"><b class="lname">${esc(l.name)}</b>${l.is_test ? ' <span class="tag test">TEST</span>' : ""}
+      <span class="l1"><b class="lname">${esc(l.name)}</b>${l.company ? ` <span class="muted small">${esc(l.company)}</span>` : ""}${l.is_test ? ' <span class="tag test">TEST</span>' : ""}
         ${l.spam ? "" : `<span class="st st-${esc(l.status)}">${esc(statusLabel(l.status))}</span>`}</span>
       <span class="l2">${esc([l.types.join(", "), l.address].filter(Boolean).join(" · ") || "No details")}</span>
       <span class="l3">${l.source ? `${esc(l.source)} · ` : ""}${esc(ago(l.submitted_at))} · ${l.spam ? esc(l.receipt) : who}${l.files ? ` · 📷 ${l.files}` : ""}</span>
@@ -128,6 +132,7 @@
       <form id="addLead" class="sec" novalidate>
         <label>How did it come in?</label><div class="lchips">${CHOICES.sources.map((s, i) => chip("source", s, "radio").replace("<input", i ? "<input" : "<input checked")).join("")}</div>
         <label for="aName">Name *</label><input id="aName" name="name" type="text" maxlength="80" autocomplete="off">
+        <label for="aCompany">Company <span class="muted small">if applicable</span></label><input id="aCompany" name="company" type="text" maxlength="80" autocomplete="off">
         <label for="aPhone">Phone</label><input id="aPhone" name="phone" type="tel" inputmode="tel" maxlength="30" autocomplete="off">
         <label for="aEmail">Email</label><input id="aEmail" name="email" type="email" maxlength="120" autocomplete="off">
         <p class="muted small">A phone number or an email: at least one.</p>
@@ -145,7 +150,7 @@
     $("#addLead").onsubmit = async (ev) => {
       ev.preventDefault();
       const f = ev.target, val = (n) => f.elements[n].value.trim();
-      const body = { name: val("name"), phone: val("phone"), email: val("email"), address: val("address"), description: val("description"),
+      const body = { name: val("name"), company: val("company"), phone: val("phone"), email: val("email"), address: val("address"), description: val("description"),
         source: ($("input[name=source]:checked", f) || {}).value || "", heard: ($("input[name=heard]:checked", f) || {}).value || "",
         types: $$("input[name=types]:checked", f).map(i => i.value), claim: f.elements.claim.checked };
       const err = $("#addErr");
@@ -193,13 +198,13 @@
       d.email ? `<a class="cbtn" href="mailto:${esc(d.email)}?subject=${encodeURIComponent("Your SimplyDoors project (" + d.receipt + ")")}"><span aria-hidden="true">✉️</span>Email</a>` : "",
     ].join("");
     const others = PEOPLE.filter(p => p.id !== d.owner_id);
-    const rows = [["Phone", d.phone], ["Email", d.email],
+    const rows = [...(d.company ? [["Company", d.company]] : []), ["Phone", d.phone], ["Email", d.email],
       ["Project address", d.address ? `${esc(d.address)} <a class="maplink" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(d.address)}">Map</a>` : "", true],
       ["Project", d.types.join(", ")], ["About the project", d.description], ["How they heard about us", d.heard],
       ["Came in", d.source + (d.added_by ? ` · added by ${d.added_by}` : "")]];
     v.innerHTML = `<div class="topline"><button class="back" type="button" id="backBtn">‹ All leads</button>
         <span class="muted small">${esc(d.receipt)}</span></div>
-      <h1>${esc(d.name)}${d.is_test ? ' <span class="tag test">TEST</span>' : ""}</h1>
+      <h1>${esc(d.name)}${d.company ? ` <span class="muted small">${esc(d.company)}</span>` : ""}${d.is_test ? ' <span class="tag test">TEST</span>' : ""}</h1>
       <p class="muted small sub">${d.added_by ? "Added" : "Sent"} ${esc(when(d.submitted_at))} (${esc(ago(d.submitted_at))})</p>
       ${d.spam ? `<div class="spambox"><b>In Suspected spam</b>, so nobody was emailed or alerted.<div class="why">${esc(d.spam)}</div>
         <button type="button" class="btn" id="notSpam">Not spam: move to Leads</button>

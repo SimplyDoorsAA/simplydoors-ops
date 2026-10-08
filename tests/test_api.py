@@ -2287,3 +2287,124 @@ def test_one_customer_across_measure_studio_and_sf(client):
     assert client.put(f"/ops/api/leads/{lid}/sf-job", json={"number": "abc"}, headers=H).status_code == 422
     d = client.put(f"/ops/api/leads/{lid}/sf-job", json={"number": "10236499077"}, headers=H).json()
     assert d["sf_job"] == "10236499077" and "Service Fusion job set: 10236499077" in [h["what"] for h in d["history"]]
+
+
+def test_sending_the_customer_form(client, monkeypatch):
+    from app import alerts, mailer, sends
+    monkeypatch.setattr(alerts, "push", lambda *a, **k: None)
+    login(client, "Adem Atis", "246810")
+    client.put("/ops/api/owner/test-mode", json={"on": False}, headers=H)
+    # everyone signed in can send it, crews included (Jaime has no Leads)
+    login(client, "Jaime Mendoza", "135790")
+    r = client.post("/ops/api/intake/sends", json={"channel": "text", "first_name": "Maria", "phone": "210 555 0101"}, headers=H).json()
+    assert r["message"].startswith("Hi Maria, it's Jaime from SimplyDoors. Here's the link to start your project: https://optiplex-ai")
+    assert "?s=" in r["link"] and "Maria" not in r["link"] and "555" not in r["link"]       # a code, never their details
+    code = r["link"].split("s=", 1)[1]
+    no_name = client.post("/ops/api/intake/sends", json={"channel": "email_app"}, headers=H).json()
+    assert no_name["message"].startswith("Hi, it's Jaime from SimplyDoors.")
+    assert client.post("/ops/api/intake/sends", json={"channel": "email_sent"}, headers=H).status_code == 422   # needs an email
+    # opening fills in the name and counts as opened; sending it in tags the lead "sent by Jaime"
+    page = client.get(f"/start?s={code}").text
+    assert 'data-prefill="Maria"' in page and 'data-who="Jaime"' in page
+    _intake(client, "sent-lead-0001", ip="192.0.2.170", s=code, name="Maria Sent")
+    lead = _lead("sent-lead-0001")
+    assert json.loads(lead["data"])["source"] == "Sent by Jaime Mendoza (text)"
+    mine = client.get("/ops/api/intake/sends", headers=H).json()["sends"]
+    row = next(x for x in mine if x["id"] == r["id"])
+    assert row["opened_at"] and row["submitted_at"] and "lead_id" not in row           # no lead details without Leads
+    assert client.get(f"/ops/api/leads/{lead['id']}", headers=H).status_code == 403
+    # "Send from SimplyDoors": a branded email to the customer, replies to the office and the sender
+    r2 = client.post("/ops/api/intake/sends", json={"channel": "email_sent", "first_name": "Ana", "email": "ana@example.com"}, headers=H).json()
+    e = conn().execute("SELECT * FROM emails WHERE send_id=?", (r2["id"],)).fetchone()
+    assert e["recipients"] == "ana@example.com" and e["audience"] == "invite"
+    msg = mailer._send_invite(e)
+    html = msg.get_body(("html",)).get_content()
+    assert "Start your SimplyDoors project" in html and "Hi Ana" in html and r2["link"] in html
+    assert msg["From"].startswith("SimplyDoors") and "jaimem@simplydoors.com" in msg["Reply-To"]
+    # a lead with Leads sees where it came from
+    login(client, "Paz Galambos", "112233")
+    assert client.get(f"/ops/api/leads/{lead['id']}", headers=H).json()["source"] == "Sent by Jaime Mendoza (text)"
+    # not sent in after 2 days: flagged for the sender and on the Leads screen
+    from datetime import datetime, timedelta, timezone
+    three_days = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    conn().execute("UPDATE intake_sends SET created_at=? WHERE id=?", (three_days, r2["id"]))
+    assert any(s["id"] == r2["id"] for s in client.get("/ops/api/leads", headers=H).json()["waiting_sends"])
+    login(client, "Jaime Mendoza", "135790")
+    assert next(x for x in client.get("/ops/api/intake/sends", headers=H).json()["sends"] if x["id"] == r2["id"])["nudge"]
+    # "fill it in here": a handed-over phone skips the per-connection limit and the "fast" rule
+    ip = client.post("/ops/api/intake/sends", json={"channel": "in_person"}, headers=H).json()
+    assert ip["in_person"].startswith("start?s=")
+    ic = ip["in_person"].split("s=", 1)[1]
+    assert 'data-mode="in_person"' in client.get(f"/ops/start?s={ic}").text
+    for i in range(7):
+        _intake(client, f"inperson-{i:04d}x", ip="192.0.2.171", s=ic, age=5, name=f"Walk In {i}")
+    assert all(_lead(f"inperson-{i:04d}x")["spam"] == "" for i in range(7))
+    assert json.loads(_lead("inperson-0000x")["data"])["source"] == "Filled in with Jaime Mendoza"
+    # an installed form remembers whose device it is, and can be turned off
+    dv = client.post("/ops/api/intake/device", json={"label": "Showroom tablet"}, headers=H).json()
+    dc = dv["url"].split("s=", 1)[1].split("&")[0]
+    assert client.get(f"/start/manifest.webmanifest?s={dc}").json()["start_url"] == f"./?s={dc}"
+    _intake(client, "device-lead-001", ip="192.0.2.172", s=dc, name="Tab Let")
+    assert json.loads(_lead("device-lead-001")["data"])["source"] == "Installed form (Showroom tablet)"
+    did = next(x["id"] for x in client.get("/ops/api/intake/sends", headers=H).json()["sends"] if x["channel"] == "device")
+    login(client, "Paz Galambos", "112233")
+    assert client.post(f"/ops/api/intake/sends/{did}/off", headers=H).status_code == 200     # admins can too
+    _intake(client, "device-lead-002", ip="192.0.2.172", s=dc, name="After Off")
+    assert "source" not in json.loads(_lead("device-lead-002")["data"])                     # still saved, just untagged
+    assert sends.find(dc) is None
+
+
+def test_lead_alerts_unclaimed_and_spam_day(client, monkeypatch):
+    from datetime import datetime, timezone
+    from app import alerts, sends
+    pushed = []
+    monkeypatch.setattr(alerts, "push", lambda *a, **k: pushed.append(a))
+    # business hours: Mon-Fri 8-5 Central. Fri 4 PM to Mon 9 AM is 2 hours (1 on Friday, 1 on Monday)
+    fri4 = datetime(2026, 10, 9, 21, 0, tzinfo=timezone.utc)      # Fri 4:00 PM CDT
+    mon9 = datetime(2026, 10, 12, 14, 0, tzinfo=timezone.utc)     # Mon 9:00 AM CDT
+    assert sends.business_minutes(fri4, mon9) == 120
+    assert sends.business_minutes(datetime(2026, 10, 10, 15, tzinfo=timezone.utc), datetime(2026, 10, 11, 20, tzinfo=timezone.utc)) == 0
+    _intake(client, "unclaimed-0001x", ip="192.0.2.180", name="Wait Ing")
+    lid = _lead("unclaimed-0001x")["id"]
+    conn().execute("UPDATE leads SET submitted_at=? WHERE id=?", ("2026-10-09T21:00:00Z", lid))
+    rc = _lead("unclaimed-0001x")["receipt"]
+    mine = lambda: [p for p in pushed if p[0] == f"Lead {rc} not claimed yet"]   # earlier tests' leads alert too, rightly
+    sends.check_alerts(datetime(2026, 10, 12, 13, 0, tzinfo=timezone.utc))    # Mon 8 AM: only 1 business hour
+    assert not mine()
+    sends.check_alerts(mon9)
+    assert len(mine()) == 1
+    sends.check_alerts(mon9)                                                    # once per lead
+    assert len(mine()) == 1
+    # more than 10 caught or suspected spam in a day: one alert that day
+    now = datetime.now(timezone.utc)
+    for i in range(11):
+        _intake(client, f"spamday-{i:04d}x", ip="192.0.2.181", website="http://x.example")
+    pushed.clear()
+    sends.check_alerts(now)
+    sends.check_alerts(now)
+    assert [p[0] for p in pushed if "spam" in p[0]] == ["Customer form: lots of spam today"]
+
+
+def test_company_goes_with_the_name_everywhere(client):
+    from app import mailer
+    _intake(client, "company-lead-01", ip="192.0.2.190", name="Rob Builder", company="Hill Country Homes")
+    lead = _lead("company-lead-01")
+    assert json.loads(lead["data"])["company"] == "Hill Country Homes"
+    login(client, "Paz Galambos", "112233")
+    d = client.get(f"/ops/api/leads/{lead['id']}", headers=H).json()
+    assert d["company"] == "Hill Country Homes" and d["sf_copy"].split("\n")[:2] == ["Rob Builder", "Hill Country Homes"]
+    assert next(x for x in client.get("/ops/api/leads", headers=H).json()["leads"] if x["id"] == lead["id"])["company"]
+    e = conn().execute("SELECT * FROM emails WHERE lead_id=? AND audience='staff'", (lead["id"],)).fetchone()
+    assert "Hill Country Homes" in mailer._send_lead(e).get_body(("html",)).get_content()
+    # found by company in Measure's "Or pick a lead"
+    assert client.get("/ops/api/measure/leads?q=hill country", headers=H).json()["results"][0]["company"] == "Hill Country Homes"
+    # Add a lead and Send the customer form take it too
+    a = client.post("/ops/api/leads", json={"name": "Cal Contractor", "company": "CC Remodel", "phone": "2105550199",
+                                            "source": "Phone call"}, headers=H).json()
+    assert a["company"] == "CC Remodel"
+    s = client.post("/ops/api/intake/sends", json={"channel": "text", "first_name": "Rob", "company": "Hill Country Homes"},
+                    headers=H).json()
+    assert 'data-company="Hill Country Homes"' in client.get(f"/start?s={s['link'].split('s=', 1)[1]}").text
+    # a link in the company box counts as spam, like one in the name
+    _intake(client, "company-spam-01", ip="192.0.2.191", company="cheap http://spam.example")
+    assert "A link in the name or company" in _lead("company-spam-01")["spam"]

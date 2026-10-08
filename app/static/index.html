@@ -191,6 +191,32 @@
     </form>
   </section>
 
+  <!-- SEND THE CUSTOMER FORM -->
+  <section id="viewSend" class="view hidden">
+    <div class="topline"><button class="back" type="button" data-home>‹ Back</button></div>
+    <h1>Send the customer form</h1>
+    <p class="muted small">The customer fills in their project and photos; it comes in as a lead marked “sent by you”. Everything here is optional.</p>
+    <label for="sFirst">Customer's first name</label><input id="sFirst" type="text" maxlength="40" autocomplete="off">
+    <label for="sCompany">Company <span class="muted small">if applicable</span></label><input id="sCompany" type="text" maxlength="80" autocomplete="off">
+    <label for="sPhone">Their mobile number</label><input id="sPhone" type="tel" inputmode="tel" maxlength="30" autocomplete="off">
+    <label for="sEmail">Their email</label><input id="sEmail" type="email" maxlength="120" autocomplete="off">
+    <p class="error hidden" id="sError" role="alert"></p>
+    <div class="sendbtns">
+      <button type="button" class="btn" data-send="text">💬 Text it</button>
+      <button type="button" class="btn" data-send="email_sent">✉️ Send from SimplyDoors</button>
+      <button type="button" class="btn secondary" data-send="email_app">Open in my email</button>
+      <button type="button" class="btn secondary" data-send="in_person">📱 Fill it in here (hand them the phone)</button>
+    </div>
+    <p class="muted small">“Send from SimplyDoors” emails a branded message with a Start your project button; replies come to the office and to you.
+      “Open in my email” fills in your own mail app so it's in your Sent folder.</p>
+    <h2>Install the customer form on a device</h2>
+    <p class="muted small">For a showroom tablet or a truck iPad: its own “SD Start” icon that opens straight to the customer form. Leads from it say whose device it was.</p>
+    <label for="sLabel">Name this device</label><input id="sLabel" type="text" maxlength="60" placeholder="e.g. Showroom tablet" autocomplete="off">
+    <button type="button" class="btn secondary" id="sInstall">Install on this device</button>
+    <h2>What you sent</h2>
+    <ul class="receipts" id="sList"><li class="muted">Loading…</li></ul>
+  </section>
+
   <!-- RESULT -->
   <section id="viewDone" class="view hidden">
     <div class="result" id="resultBox"></div>

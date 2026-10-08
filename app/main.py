@@ -33,7 +33,7 @@ Image.MAX_IMAGE_PIXELS = 40_000_000           # phone photos are ~12-50 MP; refu
 warnings.simplefilter("error", Image.DecompressionBombWarning)
 PHOTO_FORMATS = ["JPEG", "PNG", "WEBP"]
 
-from . import alerts, auth, geo, leads, mailer, pricelist, sfjobs
+from . import alerts, auth, geo, leads, mailer, pricelist, sends, sfjobs
 from .db import DATA_DIR, DB_PATH, audit, conn, delete_audit_rows, get_setting, init_db, now_iso, set_setting
 from . import forms as forms_mod
 from .forms import (FORM_BY_SLUG, FORMS, EXTRA_RULES, LIST_LABELS, DEFAULT_LISTS, clean, get_list, photo_minimums,
@@ -47,7 +47,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-46"
+APP_VERSION = "stage3-47"
 
 
 @asynccontextmanager
@@ -1941,26 +1941,47 @@ async def admin_pricelist_sheet_update(sid: int, request: Request, admin=Depends
 # Customers reach it at Studio's public address + /start (deploy/intake-setup.sh). Everything it calls lives under
 # /start too. These routes only ever add a lead; they never read anything back but that lead's receipt number.
 INTAKE = leads.INTAKE_PATH
-INTAKE_STATIC = {"intake.js", "intake.css", "logo.png", "favicon-32.png", "apple-touch-icon.png", "og-intake.png"}
+INTAKE_STATIC = {"intake.js", "intake.css", "logo.png", "favicon-32.png", "apple-touch-icon.png", "og-intake.png",
+                 "icon-192.png", "icon-512.png"}
 SUBMISSION_RE = re.compile(r"[a-zA-Z0-9-]{8,64}")
 
 
 @app.get(INTAKE, include_in_schema=False)
 @app.get(INTAKE + "/", include_in_schema=False)
-def intake_page(request: Request, t: str = ""):
+def intake_page(request: Request, t: str = "", s: str = ""):
     from html import escape
     test = "on" if leads.test_link_ok(t) else "ended" if t else ""
+    send = sends.find(s) if s else None      # a sent link, "fill it in here", or an installed form
+    if send:
+        sends.opened(send)
     # "start/" from /start and "./" from /start/: the page's own folder either way, whatever is in front of it
     base = "./" if request.scope["path"].endswith("/") else INTAKE.rsplit("/", 1)[-1] + "/"
     vals = {"BASE": base, "VERSION": APP_VERSION, "TOKEN": leads.form_token(), "URL": leads.INTAKE_URL,
             "OG_IMAGE": leads.INTAKE_URL + "/static/og-intake.png", "TEST": test, "PHONE": leads.OFFICE_PHONE,
             "PHONE_TEL": "+1" + re.sub(r"\D", "", leads.OFFICE_PHONE)[-10:], "STREET": leads.OFFICE_STREET,
-            "CITY": leads.OFFICE_CITY}
+            "CITY": leads.OFFICE_CITY, "PREFILL": send["first_name"] if send and send["channel"] != "device" else "",
+            "PREFILL_COMPANY": send["company"] if send and send["channel"] != "device" else "",
+            "MODE": send["channel"] if send and send["channel"] in ("in_person", "device") else "",
+            "SEND": send["code"] if send else "", "WHO": send["staff_name"].split(" ")[0] if send else "",
+            "MANIFEST": f"manifest.webmanifest?s={send['code']}" if send and send["channel"] == "device" else "manifest.webmanifest"}
     with open(os.path.join(STATIC, "intake.html"), encoding="utf-8") as f:
         html = f.read()
     for k, v in vals.items():
         html = html.replace("{{" + k + "}}", escape(str(v), quote=True))
     return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
+
+@app.get(INTAKE + "/manifest.webmanifest", include_in_schema=False)
+def intake_manifest(s: str = ""):
+    """The installed customer form ("SimplyDoors Start"): its own icon, opening straight to the form. On an installed
+    device the link carries that device's code, so every lead from it says whose device it came from."""
+    send = sends.find(s) if s else None
+    start = f"./?s={send['code']}" if send and send["channel"] == "device" else "./"
+    return JSONResponse({"name": "SimplyDoors: Start your project", "short_name": "SD Start", "start_url": start,
+                         "scope": "./", "display": "standalone", "background_color": "#ffffff", "theme_color": "#76c043",
+                         "icons": [{"src": "static/icon-192.png", "sizes": "192x192", "type": "image/png"},
+                                   {"src": "static/icon-512.png", "sizes": "512x512", "type": "image/png"}]},
+                        media_type="application/manifest+json", headers={"Cache-Control": "no-cache"})
 
 
 @app.get(INTAKE + "/static/{name}", include_in_schema=False)
@@ -1994,6 +2015,10 @@ async def intake_submit(request: Request):
         raw = {k: v[:5000] for k, v in form.items() if isinstance(v, str)}
         code = raw.get("t", "").strip()
         is_test = leads.test_link_ok(code) if code else False
+        send = sends.find(raw.get("s", "")) if raw.get("s") else None   # an expired code still saves the lead, untagged
+        if send and send["is_test"]:
+            is_test = True
+        trusted = bool(send) and send["channel"] in ("in_person", "device")   # staff hand over the phone or tablet
         if code and not is_test:
             raise HTTPException(410, "This test link has ended. Make a new one on the Leads screen (Test mode must be on).")
         age = leads.token_age(raw.get("token", ""))
@@ -2024,17 +2049,20 @@ async def intake_submit(request: Request):
                 errors.append(f"{name} can't be sent. Send photos (JPG or PNG) or PDF files only.")
         if errors:
             raise HTTPException(422, " ".join(errors))
-        hits = 0 if is_test else leads.count_hit(ip)
+        hits = 0 if (is_test or trusted) else leads.count_hit(ip)
         if hits > leads.HARD_PER_HOUR:
             return {"ok": True, "receipt": leads.record_blocked(sid, f"{hits} forms from one connection in an hour",
                                                                  is_test, ip, raw)}
-        spam = leads.suspect_reasons(d, age, hits)
+        spam = leads.suspect_reasons(d, age, hits, in_person=trusted)
         if files and shutil.disk_usage(DATA_DIR).free < leads.LOW_DISK_BYTES:
             d["files_not_saved"], files = len(files), []
             alerts.push_throttled("intake-disk", "Ops app: server disk is low",
                                   "A customer's photos weren't saved because the server is nearly full. The lead was saved.",
                                   "high", every_seconds=6 * 3600)
-        r = await run_in_threadpool(leads.store, sid, d, spam, is_test, files, ip, agent, _save_lead_photo)
+        extra = {"source": sends.source(send), "sent_by": send["staff_name"], "send_id": send["id"]} if send else None
+        r = await run_in_threadpool(leads.store, sid, d, spam, is_test, files, ip, agent, _save_lead_photo, extra)
+        if send and not r["duplicate"]:
+            sends.submitted(send["id"], r["id"])
         return {"ok": True, "receipt": r["receipt"]}
 
 
@@ -2054,6 +2082,74 @@ async def intake_more(request: Request):
     if errors:
         raise HTTPException(422, " ".join(errors))
     leads.save_more(str(body["submission_id"]), more, client_ip(request), ua(request))
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- sending the customer form (everyone signed in)
+def _send_link(staff, code: str) -> str:
+    test = bool(staff["is_owner"]) and get_setting("owner_test_mode") == "1"
+    # test links go through the staff app's address so they work before deploy/intake-setup.sh has run
+    return f"{(leads.OPS_URL + leads.INTAKE_PATH) if test else leads.INTAKE_URL}?s={code}"
+
+
+@app.post("/api/intake/sends")
+async def intake_send(request: Request, staff=Depends(current_staff)):
+    """Text it / Email it (my mail app) / Send from SimplyDoors / Fill it in here."""
+    body = await request.json()
+    body = body if isinstance(body, dict) else {}
+    channel = str(body.get("channel", ""))
+    if channel not in ("text", "email_app", "email_sent", "in_person"):
+        raise HTTPException(422, "Pick how to send it.")
+    first = " ".join(str(body.get("first_name", "")).split())[:40]
+    phone = " ".join(str(body.get("phone", "")).split())[:30]
+    email = str(body.get("email", "")).strip()[:120]
+    if email and not EMAIL_RE.match(email):
+        raise HTTPException(422, "That email address doesn't look right.")
+    if channel == "email_sent":
+        if not email:
+            raise HTTPException(422, "Type the customer's email to send it from SimplyDoors.")
+        if sends.emails_today(staff["id"]) >= sends.EMAILS_PER_DAY:
+            raise HTTPException(429, f"You've sent {sends.EMAILS_PER_DAY} today. Use “Open in my email” instead.")
+    test = bool(staff["is_owner"]) and get_setting("owner_test_mode") == "1"
+    company = " ".join(str(body.get("company", "")).split())[:80]
+    r = sends.create(staff, channel, first, phone, email, is_test=test, company=company)
+    link = _send_link(staff, r["code"])
+    msg = sends.message(staff, first, link)
+    if channel == "email_sent":
+        from .forms import owner_email
+        to = (owner_email() or staff["email"]) if test else email
+        subject = ("TEST - " if test else "") + "Start your project with SimplyDoors"
+        mailer.queue_send_email(r["id"], to, subject)
+    audit(staff["id"], staff["name"], "intake_form_sent", f"send:{r['id']}",
+          {"how": sends.CHANNELS[channel], **({"test": True} if test else {})}, client_ip(request), ua(request))
+    return {"id": r["id"], "link": link, "in_person": f"start?s={r['code']}", "message": msg,
+            "subject": "Start your project with SimplyDoors"}
+
+
+@app.post("/api/intake/device")
+async def intake_device(request: Request, staff=Depends(current_staff)):
+    """Install the customer form on this phone or tablet; leads from it say whose device it was."""
+    body = await request.json()
+    label = " ".join(str((body or {}).get("label", "")).split())[:60] or f"{staff['name'].split(' ')[0]}’s device"
+    test = bool(staff["is_owner"]) and get_setting("owner_test_mode") == "1"
+    r = sends.create(staff, "device", label=label, is_test=test)
+    audit(staff["id"], staff["name"], "intake_device_set_up", f"send:{r['id']}", {"label": label}, client_ip(request), ua(request))
+    return {"id": r["id"], "url": f"start?s={r['code']}&install=1", "label": label}
+
+
+@app.get("/api/intake/sends")
+def intake_my_sends(staff=Depends(current_staff)):
+    """What I sent and whether it was sent in. Never the lead itself (that needs Leads)."""
+    return {"sends": sends.mine(staff), "nudge_days": sends.NUDGE_DAYS}
+
+
+@app.post("/api/intake/sends/{sid}/off")
+def intake_send_off(sid: int, request: Request, staff=Depends(current_staff)):
+    r = conn().execute("SELECT * FROM intake_sends WHERE id=?", (sid,)).fetchone()
+    if not r or (r["staff_id"] != staff["id"] and not staff["is_admin"]):
+        raise HTTPException(404)
+    conn().execute("UPDATE intake_sends SET active=0 WHERE id=?", (sid,))
+    audit(staff["id"], staff["name"], "intake_send_turned_off", f"send:{sid}", {"label": r["label"]}, client_ip(request), ua(request))
     return {"ok": True}
 
 
@@ -2088,6 +2184,8 @@ def leads_list(request: Request, tab: str = "leads", staff=Depends(current_leads
            "statuses": [{"key": k, "label": v} for k, v in leads.STATUSES.items()], "stale_hours": leads.STALE_HOURS}
     if spam:
         out["blocked"] = leads.blocked_recent(staff)
+    else:
+        out["waiting_sends"] = sends.waiting_all(bool(staff["is_owner"]))
     return out
 
 
@@ -2370,6 +2468,10 @@ def _nightly_work():
 
 def nightly_once():
     """One pass; a failure reaches the owner's phone (at most every 6 hours) instead of vanishing."""
+    try:
+        sends.check_alerts()       # unclaimed leads, busy spam days
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
     try:
         _nightly_work()
     except Exception as e:  # noqa: BLE001

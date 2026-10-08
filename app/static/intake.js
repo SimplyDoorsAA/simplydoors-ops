@@ -8,6 +8,8 @@
   const TOKEN = document.body.dataset.token || "";
   const TEST = document.body.dataset.test || "";            // "on": a working test link; "ended": an old one
   const T = new URLSearchParams(location.search).get("t") || "";
+  const B = document.body.dataset;
+  const SEND = B.send || "", MODE = B.mode || "";             // MODE: "in_person" (handed over) or "device" (installed form)
   const OPENED = Date.now();
   const MAX_FILES = 5, MAX_PDF = 10 * 1024 * 1024, MAX_PHOTO = 15 * 1024 * 1024;
   const RETRY = [3, 10, 30, 60];                             // seconds between tries while the page is open
@@ -23,6 +25,30 @@
     bar.className = "testbar bad";
     $("#f1").classList.add("hidden");
   }
+
+  // ------------------------------------------------------------ a sent link, a handed-over phone, an installed form
+  if (B.company) $("#company").value = B.company;
+  if (B.prefill) { $("#name").value = B.prefill; $("#hello").textContent = `Hi ${B.prefill}, start your project`; }
+  if (B.who && !MODE) { $("#sentBy").textContent = `${B.who} from SimplyDoors sent you this form.`; $("#sentBy").classList.remove("hidden"); }
+  if (MODE) document.body.classList.add("kiosk");
+  const params = new URLSearchParams(location.search);
+  const ibar = $("#installBar");
+  let installEvt = null;
+  const installed = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  const isApple = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+  function showInstall() {
+    if (MODE !== "device" || !params.get("install") || installed()) return;
+    ibar.classList.remove("hidden");
+    ibar.innerHTML = installEvt
+      ? `<b>Install the customer form on this device</b><button type="button" class="btn small" id="doInstall">Install</button>`
+      : isApple ? `<b>Install the customer form on this ${/iPad/.test(navigator.userAgent) || navigator.maxTouchPoints > 1 ? "iPad" : "iPhone"}:</b>
+          tap <b>Share</b> <span aria-label="Share">⬆︎</span>, then <b>Add to Home Screen</b>. It gets its own “SD Start” icon that opens this form.`
+      : `<b>Install the customer form:</b> open your browser's menu ⋮ and choose <b>Install app</b> or <b>Add to Home screen</b>.`;
+    const d = $("#doInstall");
+    if (d) d.onclick = async () => { installEvt.prompt(); await installEvt.userChoice.catch(() => null); installEvt = null; ibar.classList.add("hidden"); };
+  }
+  window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installEvt = e; showInstall(); });
+  showInstall();
 
   // ------------------------------------------------------------ storage on this phone (IndexedDB)
   const mem = new Map();          // a browser that can't store anything (some private modes) keeps it while the page is open
@@ -160,7 +186,7 @@
   const f1 = $("#f1");
   function values() {
     const v = (id) => $("#" + id).value.trim();
-    return { name: v("name"), phone: v("phone"), email: v("email"), address: v("address"), description: v("description"),
+    return { name: v("name"), company: v("company"), phone: v("phone"), email: v("email"), address: v("address"), description: v("description"),
       website: $("#website").value, types: $$("input[name=types]:checked", f1).map(i => i.value),
       heard: ($("input[name=heard]:checked", f1) || {}).value || "" };
   }
@@ -194,7 +220,7 @@
     $("#send").disabled = true; $("#send").textContent = "Sending…";
     const wait = 3500 - (Date.now() - OPENED);       // a person is never mistaken for a robot that sends at once
     if (wait > 0) await sleep(wait);
-    current = { id: newId(), token: TOKEN, t: T, fields: v, files: files.map(f => ({ blob: f.blob, name: f.name, kind: f.kind })),
+    current = { id: newId(), token: TOKEN, t: T, s: SEND, fields: v, files: files.map(f => ({ blob: f.blob, name: f.name, kind: f.kind })),
       createdAt: Date.now(), receipt: null, more: null, moreDone: false };
     await put(current);                              // on the phone before anything else
     showWaiting("Sending…", "One moment.", false);
@@ -213,7 +239,7 @@
   function backToForm(e, msg) {
     // the server refused it (a mistake to fix): put it back in the form as it was sent
     const f = e.fields || {};
-    ["name", "phone", "email", "address", "description"].forEach(k => { $("#" + k).value = f[k] || ""; });
+    ["name", "company", "phone", "email", "address", "description"].forEach(k => { $("#" + k).value = f[k] || ""; });
     $$("input[name=types]", f1).forEach(i => { i.checked = (f.types || []).includes(i.value); });
     $$("input[name=heard]", f1).forEach(i => { i.checked = i.value === f.heard; });
     files.forEach(x => x.url && URL.revokeObjectURL(x.url));
@@ -243,8 +269,9 @@
     fd.append("submission_id", e.id);
     fd.append("token", e.token);
     if (e.t) fd.append("t", e.t);
+    if (e.s) fd.append("s", e.s);
     const f = e.fields;
-    ["name", "phone", "email", "address", "description", "website"].forEach(k => fd.append(k, f[k] || ""));
+    ["name", "company", "phone", "email", "address", "description", "website"].forEach(k => fd.append(k, f[k] || ""));
     (f.types || []).forEach(t => fd.append("types", t));
     if (f.heard) fd.append("heard", f.heard);
     (e.files || []).forEach(x => fd.append("files", x.blob, x.name));
@@ -323,7 +350,17 @@
     $("#f2").classList.add("hidden");
     $("#thanksText").textContent = text;
     $("#thanks").classList.remove("hidden");
+    if (MODE) {                                   // a staff phone or the showroom tablet: ready for the next person
+      $("#thanksText").textContent = "We'll call you within 1 business day.";
+      $("#handBack").classList.remove("hidden");
+      $("#backStaff").classList.toggle("hidden", MODE !== "in_person");
+      $("#handBack .big").textContent = MODE === "in_person" ? "Please hand the phone back" : "All done. Thank you!";
+    }
   }
+  $("#nextCustomer").addEventListener("click", () => {
+    // a fresh page: new token, empty form (an in-person code works for 12 hours)
+    location.replace(location.pathname + "?s=" + encodeURIComponent(SEND));
+  });
   $("#f2").addEventListener("submit", async (ev) => {
     ev.preventDefault();
     if (!current) return;

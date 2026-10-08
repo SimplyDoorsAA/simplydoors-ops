@@ -372,6 +372,7 @@
     studio: ic('<rect x="3" y="4" width="18" height="14" rx="2"/><path d="M7 15l3-4 2 3 2-2 3 3M3 21h18"/>'),
     pricelist: ic('<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.5"/>'),
     leads: ic('<path d="M4 5h16v11H8l-4 4z"/><path d="M8 9h8M8 12h5"/>'),
+    send: ic('<path d="M3 11l18-8-8 18-2-8z"/><path d="M11 13l10-10"/>'),
     measure: ic('<path d="M3 17L17 3l4 4L7 21z"/><path d="M7 13l2 2M10 10l2 2M13 7l2 2"/>'),
     install: ic('<path d="M6 21V3h12v18"/><path d="M3 21h18M14 12h1"/>'),
     rma: ic('<path d="M4 12a8 8 0 1 0 2.3-5.7"/><path d="M4 4v4h4"/><path d="M9 10l3-2 3 2v5H9z"/>'),
@@ -435,6 +436,7 @@
     showInstall();
     if (pendingOpen) {
       const want = pendingOpen; pendingOpen = null;
+      if (want === "send") return openSend();
       if ((me.forms || []).some(f => f.slug === want)) return want === "measure" ? openMeasures() : openForm(want);
     }
     updateGeoNote();
@@ -449,6 +451,11 @@
         <span class="card-title">${esc(f.type)}</span>
         <span class="card-sub">${esc(f.blurb)}</span>
         ${me.is_admin && !f.staff_can_see ? '<span class="pillnote">hidden from staff</span>' : ""}</button>`).join("") || `<p class="muted">No forms are switched on yet.</p>`;
+    cards.insertAdjacentHTML("afterbegin", `<button class="card tilecard sendtile" type="button" id="sendTile" title="Text, email or hand over the customer form">
+        <span class="card-icon" aria-hidden="true">${FORM_ICONS.send}</span>
+        <span class="studio-txt"><span class="card-title">Send the customer form</span>
+        <span class="studio-tag">Text · email · fill it in here</span></span>
+        <span class="studio-go" aria-hidden="true">›</span></button>`);
     if (me.leads) cards.insertAdjacentHTML("afterbegin", `<a class="card tilecard leadstile" href="leads" id="leadsTile" title="Customers who sent the project form">
         <span class="card-icon" aria-hidden="true">${FORM_ICONS.leads}</span>
         <span class="studio-txt"><span class="card-title">Leads</span>
@@ -1011,6 +1018,7 @@
       find.classList.add("hidden"); picked.classList.remove("hidden");
       const lines = [];
       if (d) {
+        if (d.company) lines.push(`<div>${esc(d.company)}</div>`);
         if (d.address) lines.push(`<div><a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(d.address)}" target="_blank" rel="noopener">${esc(d.address)}</a></div>`);
         if (d.phone) lines.push(`<div><a href="tel:${esc(d.phone.replace(/[^\d+]/g, ""))}">${esc(d.phone)}</a></div>`);
         if (d.types && d.types.length) lines.push(`<div class="muted small">${esc(d.types.join(", "))}</div>`);
@@ -1049,6 +1057,53 @@
     res.addEventListener("click", (e) => { const b = e.target.closest("[data-lead]"); if (b) pick(b.dataset.lead); });
     if (mJob.lead_id) showPicked(null); else run();
   }
+  // ------------------------------------------------------------ send the customer form (everyone signed in)
+  document.addEventListener("click", (ev) => { if (ev.target.closest("#sendTile")) openSend(); });
+  async function openSend() {
+    show("viewSend");
+    ["#sFirst", "#sCompany", "#sPhone", "#sEmail"].forEach(s => { $(s).value = ""; });
+    $("#sError").classList.add("hidden");
+    loadSends();
+  }
+  const sErr = (m) => { const e = $("#sError"); e.textContent = m; e.classList.toggle("hidden", !m); };
+  $$("[data-send]").forEach(b => b.addEventListener("click", async () => {
+    const channel = b.dataset.send;
+    const body = { channel, first_name: $("#sFirst").value.trim(), company: $("#sCompany").value.trim(), phone: $("#sPhone").value.trim(), email: $("#sEmail").value.trim() };
+    if (channel === "email_sent" && !body.email) return sErr("Type their email to send it from SimplyDoors.");
+    sErr("");
+    let r;
+    try { r = await api("api/intake/sends", { method: "POST", json: body }); }
+    catch (e) { return sErr(e.status === 0 ? "No signal right now. Try again in a moment." : e.message); }
+    if (channel === "text") location.href = `sms:${encodeURIComponent(body.phone.replace(/[^\d+]/g, ""))}?&body=${encodeURIComponent(r.message)}`;
+    else if (channel === "email_app") location.href = `mailto:${encodeURIComponent(body.email)}?subject=${encodeURIComponent(r.subject)}&body=${encodeURIComponent(r.message)}`;
+    else if (channel === "in_person") { location.href = r.in_person; return; }
+    else alert(`Sent to ${body.email}. You'll see here when they open it and send it in.`);
+    loadSends();
+  }));
+  $("#sInstall").addEventListener("click", async () => {
+    try { const r = await api("api/intake/device", { method: "POST", json: { label: $("#sLabel").value.trim() } }); location.href = r.url; }
+    catch (e) { sErr(e.status === 0 ? "No signal right now." : e.message); }
+  });
+  async function loadSends() {
+    const list = $("#sList");
+    try {
+      const d = await api("api/intake/sends");
+      list.innerHTML = d.sends.map(s => {
+        const st = s.channel === "device" ? (s.active ? `${s.leads} lead${s.leads === 1 ? "" : "s"}` : "turned off")
+          : s.submitted_at ? "Sent in ✓" : s.opened_at ? "Opened" : "Sent";
+        const who = s.channel === "device" ? `📱 ${s.label}` : `${s.first_name || "Customer"}${s.company ? " (" + s.company + ")" : ""}${s.to ? " · " + s.to : ""}`;
+        return `<li><span>${esc(who)}<br><span class="muted small">${esc(s.channel_label)} · ${esc(fmtTime(s.created_at))}</span>
+          ${s.nudge ? `<br><span class="tag wait">Not sent in after ${d.nudge_days} days: give them a nudge</span>` : ""}</span>
+          <span class="tag ${s.submitted_at ? "ok" : "wait"}">${esc(st)}${s.is_test ? " · TEST" : ""}
+          ${s.channel === "device" && s.active ? `<br><button type="button" class="link" data-off="${s.id}">Turn off</button>` : ""}</span></li>`;
+      }).join("") || `<li class="muted">Nothing sent yet.</li>`;
+      $$("[data-off]", list).forEach(b => b.onclick = async () => {
+        if (!confirm("Turn off the customer form on that device? Leads already sent stay.")) return;
+        try { await api(`api/intake/sends/${b.dataset.off}/off`, { method: "POST" }); loadSends(); } catch (e) { alert(e.message); }
+      });
+    } catch (e) { list.innerHTML = `<li class="muted">${e.status === 0 ? "Can't load right now." : esc(e.message)}</li>`; }
+  }
+
   function lookupFill(d, fills, setVal) {
     const src = { last4: d.last4, customer: d.customer, email: d.email, number: d.number, address: d.address };
     const out = {};
