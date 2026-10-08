@@ -48,6 +48,11 @@ GitHub Pages portal + Google Apps Script, one form at a time.
   shows as "Call for price"; a part number used twice is kept and flagged.
 - **Vendors:** Woodgrain, Boise Cascade, Simpson and Novo are built in; an admin can add more in Admin → Price List →
   Add a vendor (name only; the PO email and address are set on the vendor's card).
+- **Compare vendors:** every door's item panel shows each other vendor's cheapest matching door (same size,
+  thickness and core; same **match style** when both groups are tagged, otherwise the same category, marked "check the
+  style"), and the **Compare** tab lists every vendor's matches for a size, cheapest first. Editors tag styles per group
+  (Price sheets → Tag match styles, or in the item editor); tags are kept by group name, so they carry over to a new
+  version of the sheet.
 - **Editing items:** people with **Can edit Price List items** (Admin → Staff, e.g. the purchaser; it needs the Price List
   switch too) get **✎ Edit this item** on every item: any field, the ⚠ note and the comparison prices. They can also add an
   item to a sheet, delete one, and download a sheet (with its edits) as a CSV to change in Excel and load back. Every change

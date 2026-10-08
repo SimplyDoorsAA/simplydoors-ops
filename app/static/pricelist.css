@@ -58,7 +58,7 @@
 .empty { text-align: center; color: var(--muted); padding: 40px 10px; }
 
 .nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; background: #fff; border-top: 1px solid var(--line);
-  display: grid; grid-template-columns: repeat(3, 1fr); padding-bottom: env(safe-area-inset-bottom); }
+  display: grid; grid-template-columns: repeat(4, 1fr); padding-bottom: env(safe-area-inset-bottom); }
 .nav button { border: 0; background: none; padding: 10px 4px 12px; font-size: 13px; font-weight: 700; color: var(--muted); cursor: pointer; position: relative; }
 .nav button .ic { display: block; font-size: 22px; line-height: 1.1; }
 .nav button.on { color: var(--green-dark); }
@@ -78,6 +78,10 @@
 .vrow .vn { font-weight: 700; }
 .vrow .vp { font-weight: 800; font-size: 18px; text-align: right; }
 .vrow.cheap .vp { color: var(--green-dark); }
+.vrow.vbtn { width: 100%; background: none; border: 0; border-bottom: 1px solid #eef1f4; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.vrow.vbtn:active { background: #f4f7f6; }
+.vrow .cheaper { color: var(--green-dark); font-weight: 700; font-size: 13px; }
+.vrow .dearer { color: #b45309; font-weight: 700; font-size: 13px; }
 .sizes { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
 .psz { border: 1.5px solid var(--line); background: #fff; border-radius: 10px; padding: 8px; text-align: center; cursor: pointer; font-size: 14px; }
 .psz b { display: block; font-size: 15px; }
