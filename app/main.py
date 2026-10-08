@@ -1624,7 +1624,10 @@ def pl_send_saved_po(pid: int, request: Request, staff=Depends(current_pricelist
         v = _vendor(po["vendor"])
         email, name = v["order_email"], v["name"]
     sent_to, test = _po_email_to(staff, email, name)
-    conn().execute("UPDATE pl_pos SET status='sent', sent_to=?, is_test=? WHERE id=?", (sent_to, 1 if test else 0, pid))
+    cur = conn().execute("UPDATE pl_pos SET status='sent', sent_to=?, is_test=? WHERE id=? AND status='downloaded'",
+                         (sent_to, 1 if test else 0, pid))
+    if cur.rowcount != 1:   # a second tap (or a retry on bad signal) got here first: don't email the vendor twice
+        raise HTTPException(409, "This PO was already sent.")
     _queue_po(pid, sent_to, test, po["po_number"])
     audit(staff["id"], staff["name"], "po_sent", f"po:{pid}", {"po": po["po_number"], "vendor": name, "to": sent_to,
           "after_download": True, **({"test": True} if test else {})}, client_ip(request), ua(request))
