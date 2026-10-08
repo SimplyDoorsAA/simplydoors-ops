@@ -2383,3 +2383,28 @@ def test_lead_alerts_unclaimed_and_spam_day(client, monkeypatch):
     sends.check_alerts(now)
     sends.check_alerts(now)
     assert [p[0] for p in pushed if "spam" in p[0]] == ["Customer form: lots of spam today"]
+
+
+def test_company_goes_with_the_name_everywhere(client):
+    from app import mailer
+    _intake(client, "company-lead-01", ip="192.0.2.190", name="Rob Builder", company="Hill Country Homes")
+    lead = _lead("company-lead-01")
+    assert json.loads(lead["data"])["company"] == "Hill Country Homes"
+    login(client, "Paz Galambos", "112233")
+    d = client.get(f"/ops/api/leads/{lead['id']}", headers=H).json()
+    assert d["company"] == "Hill Country Homes" and d["sf_copy"].split("\n")[:2] == ["Rob Builder", "Hill Country Homes"]
+    assert next(x for x in client.get("/ops/api/leads", headers=H).json()["leads"] if x["id"] == lead["id"])["company"]
+    e = conn().execute("SELECT * FROM emails WHERE lead_id=? AND audience='staff'", (lead["id"],)).fetchone()
+    assert "Hill Country Homes" in mailer._send_lead(e).get_body(("html",)).get_content()
+    # found by company in Measure's "Or pick a lead"
+    assert client.get("/ops/api/measure/leads?q=hill country", headers=H).json()["results"][0]["company"] == "Hill Country Homes"
+    # Add a lead and Send the customer form take it too
+    a = client.post("/ops/api/leads", json={"name": "Cal Contractor", "company": "CC Remodel", "phone": "2105550199",
+                                            "source": "Phone call"}, headers=H).json()
+    assert a["company"] == "CC Remodel"
+    s = client.post("/ops/api/intake/sends", json={"channel": "text", "first_name": "Rob", "company": "Hill Country Homes"},
+                    headers=H).json()
+    assert 'data-company="Hill Country Homes"' in client.get(f"/start?s={s['link'].split('s=', 1)[1]}").text
+    # a link in the company box counts as spam, like one in the name
+    _intake(client, "company-spam-01", ip="192.0.2.191", company="cheap http://spam.example")
+    assert "A link in the name or company" in _lead("company-spam-01")["spam"]

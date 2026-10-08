@@ -1018,6 +1018,7 @@
       find.classList.add("hidden"); picked.classList.remove("hidden");
       const lines = [];
       if (d) {
+        if (d.company) lines.push(`<div>${esc(d.company)}</div>`);
         if (d.address) lines.push(`<div><a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(d.address)}" target="_blank" rel="noopener">${esc(d.address)}</a></div>`);
         if (d.phone) lines.push(`<div><a href="tel:${esc(d.phone.replace(/[^\d+]/g, ""))}">${esc(d.phone)}</a></div>`);
         if (d.types && d.types.length) lines.push(`<div class="muted small">${esc(d.types.join(", "))}</div>`);
@@ -1060,14 +1061,14 @@
   document.addEventListener("click", (ev) => { if (ev.target.closest("#sendTile")) openSend(); });
   async function openSend() {
     show("viewSend");
-    ["#sFirst", "#sPhone", "#sEmail"].forEach(s => { $(s).value = ""; });
+    ["#sFirst", "#sCompany", "#sPhone", "#sEmail"].forEach(s => { $(s).value = ""; });
     $("#sError").classList.add("hidden");
     loadSends();
   }
   const sErr = (m) => { const e = $("#sError"); e.textContent = m; e.classList.toggle("hidden", !m); };
   $$("[data-send]").forEach(b => b.addEventListener("click", async () => {
     const channel = b.dataset.send;
-    const body = { channel, first_name: $("#sFirst").value.trim(), phone: $("#sPhone").value.trim(), email: $("#sEmail").value.trim() };
+    const body = { channel, first_name: $("#sFirst").value.trim(), company: $("#sCompany").value.trim(), phone: $("#sPhone").value.trim(), email: $("#sEmail").value.trim() };
     if (channel === "email_sent" && !body.email) return sErr("Type their email to send it from SimplyDoors.");
     sErr("");
     let r;
@@ -1090,7 +1091,7 @@
       list.innerHTML = d.sends.map(s => {
         const st = s.channel === "device" ? (s.active ? `${s.leads} lead${s.leads === 1 ? "" : "s"}` : "turned off")
           : s.submitted_at ? "Sent in ✓" : s.opened_at ? "Opened" : "Sent";
-        const who = s.channel === "device" ? `📱 ${s.label}` : `${s.first_name || "Customer"}${s.to ? " · " + s.to : ""}`;
+        const who = s.channel === "device" ? `📱 ${s.label}` : `${s.first_name || "Customer"}${s.company ? " (" + s.company + ")" : ""}${s.to ? " · " + s.to : ""}`;
         return `<li><span>${esc(who)}<br><span class="muted small">${esc(s.channel_label)} · ${esc(fmtTime(s.created_at))}</span>
           ${s.nudge ? `<br><span class="tag wait">Not sent in after ${d.nudge_days} days: give them a nudge</span>` : ""}</span>
           <span class="tag ${s.submitted_at ? "ok" : "wait"}">${esc(st)}${s.is_test ? " · TEST" : ""}

@@ -193,7 +193,7 @@ def add_by_staff(d: dict, source: str, staff, claim: bool, is_test: bool, ip: st
     the person adding it already has it, and it's claimed for them unless they untick that."""
     c = conn()
     now = now_iso()
-    data = {"types": d["types"], "description": d["description"], "heard": d["heard"], "source": source,
+    data = {"company": d.get("company", ""), "types": d["types"], "description": d["description"], "heard": d["heard"], "source": source,
             "added_by": staff["name"]}
     c.execute("BEGIN IMMEDIATE")
     try:
@@ -266,9 +266,9 @@ def suspect_reasons(d: dict, age: float, hits: int, in_person: bool = False) -> 
     # description too in under 10 seconds isn't
     if age < FAST_SECONDS and d["address"] and d["description"] and not in_person:
         out.append(f"Filled in and sent {int(age)} seconds after the page opened (very fast for a person)")
-    links = len(LINK_RE.findall(" ".join((d["name"], d["address"], d["description"]))))
-    if LINK_RE.search(d["name"]):
-        out.append("A link in the name")
+    links = len(LINK_RE.findall(" ".join((d["name"], d.get("company", ""), d["address"], d["description"]))))
+    if LINK_RE.search(d["name"]) or LINK_RE.search(d.get("company", "")):
+        out.append("A link in the name or company")
     elif links >= 2:
         out.append(f"{links} links in the text")
     if hits > PER_HOUR:
@@ -287,7 +287,8 @@ def _one_line(v, n: int) -> str:
 def clean(raw: dict, types: list) -> tuple[dict, list[str]]:
     """Step 1. Name, and a phone or an email, are needed; everything else is optional."""
     errors = []
-    d = {"name": _one_line(raw.get("name"), 80), "phone": _one_line(raw.get("phone"), 30),
+    d = {"name": _one_line(raw.get("name"), 80), "company": _one_line(raw.get("company"), 80),
+         "phone": _one_line(raw.get("phone"), 30),
          "email": _one_line(raw.get("email"), 120), "address": _one_line(raw.get("address"), 200),
          "description": str(raw.get("description") or "").strip()[:4000]}
     if len(d["name"]) < 2:
@@ -417,7 +418,8 @@ def store(sid: str, d: dict, spam: list, is_test: bool, files: list, ip: str, ag
     except Exception:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
-    data = {"types": d["types"], "description": d["description"], "heard": d["heard"], **(extra or {})}
+    data = {"company": d.get("company", ""), "types": d["types"], "description": d["description"], "heard": d["heard"],
+            **(extra or {})}
     if d.get("files_not_saved"):
         data["files_not_saved"] = d["files_not_saved"]
     lid = None
@@ -564,10 +566,11 @@ def search_open(q: str, include_test: bool, limit: int = 15) -> list[dict]:
     args: list = [1 if include_test else 0]
     if q:
         digits = re.sub(r"\D", "", q)
-        sql += " AND (name LIKE ? OR address LIKE ? OR receipt LIKE ?" + (" OR replace(replace(replace(replace(phone,'-',''),' ',''),'(',''),')','') LIKE ?" if len(digits) >= 3 else "") + ")"
-        args += [f"%{q}%"] * 3 + ([f"%{digits}%"] if len(digits) >= 3 else [])
+        sql += " AND (name LIKE ? OR address LIKE ? OR receipt LIKE ? OR json_extract(data, '$.company') LIKE ?" + (" OR replace(replace(replace(replace(phone,'-',''),' ',''),'(',''),')','') LIKE ?" if len(digits) >= 3 else "") + ")"
+        args += [f"%{q}%"] * 4 + ([f"%{digits}%"] if len(digits) >= 3 else [])
     rows = conn().execute(sql + " ORDER BY id DESC LIMIT ?", args + [limit]).fetchall()
-    return [{"id": r["id"], "receipt": r["receipt"], "name": r["name"], "address": r["address"],
+    return [{"id": r["id"], "receipt": r["receipt"], "name": r["name"], "company": json.loads(r["data"]).get("company") or "",
+             "address": r["address"],
              "types": json.loads(r["data"]).get("types") or [], "status": STATUSES[r["status"]], "is_test": bool(r["is_test"])}
             for r in rows]
 
@@ -578,7 +581,8 @@ def contact(lid: int, include_test: bool):
     if not r:
         return None
     d = json.loads(r["data"])
-    return {"id": r["id"], "receipt": r["receipt"], "name": r["name"], "phone": r["phone"], "email": r["email"],
+    return {"id": r["id"], "receipt": r["receipt"], "name": r["name"], "company": d.get("company") or "",
+            "phone": r["phone"], "email": r["email"],
             "address": r["address"], "types": d.get("types") or [], "description": d.get("description") or "",
             "status": STATUSES[r["status"]], "is_test": bool(r["is_test"])}
 
@@ -612,7 +616,7 @@ def quoted(lid: int, ref: str, who: str, ip: str, agent: str) -> bool:
 def sf_copy_text(r) -> str:
     """The customer's details in one block, to paste into Service Fusion (nothing is sent there from this app)."""
     d = json.loads(r["data"])
-    lines = [r["name"], r["phone"], r["email"], r["address"], ", ".join(d.get("types") or []), d.get("description") or "",
+    lines = [r["name"], d.get("company") or "", r["phone"], r["email"], r["address"], ", ".join(d.get("types") or []), d.get("description") or "",
              f"From SimplyDoors lead {r['receipt']}"]
     return "\n".join(x for x in lines if x)
 
@@ -633,6 +637,7 @@ def list_rows(staff, spam: bool) -> list[dict]:
     for r in rows:
         d = json.loads(r["data"])
         out.append({"id": r["id"], "receipt": r["receipt"], "submitted_at": r["submitted_at"], "name": r["name"],
+                    "company": d.get("company") or "",
                     "address": r["address"], "types": d.get("types") or [], "status": r["status"],
                     "owner": r["owner_name"], "owner_id": r["owner_id"], "claimed_at": r["claimed_at"],
                     "stale": _stale(r, cutoff), "is_test": bool(r["is_test"]), "spam": r["spam"],
@@ -707,7 +712,7 @@ def detail(r) -> dict:
                          " WHERE r.form_type='Measure Report' AND json_extract(r.data, '$.lead_id')=? ORDER BY r.id",
                          (r["id"],)).fetchall()
     return {"id": r["id"], "receipt": r["receipt"], "submitted_at": r["submitted_at"], "is_test": bool(r["is_test"]),
-            "spam": r["spam"], "name": r["name"], "phone": r["phone"], "email": r["email"], "address": r["address"],
+            "spam": r["spam"], "name": r["name"], "company": d.get("company") or "", "phone": r["phone"], "email": r["email"], "address": r["address"],
             "types": d.get("types") or [], "description": d.get("description") or "", "heard": d.get("heard") or "",
             "source": d.get("source") or "Customer form", "added_by": d.get("added_by"),
             "more": more_rows(d), "files_not_saved": d.get("files_not_saved", 0),

@@ -26,7 +26,7 @@
 <link rel="stylesheet" href="static/intake.css?v={{VERSION}}">
 <title>Start your project with SimplyDoors</title>
 </head>
-<body data-token="{{TOKEN}}" data-test="{{TEST}}" data-prefill="{{PREFILL}}" data-mode="{{MODE}}" data-send="{{SEND}}" data-who="{{WHO}}">
+<body data-token="{{TOKEN}}" data-test="{{TEST}}" data-prefill="{{PREFILL}}" data-company="{{PREFILL_COMPANY}}" data-mode="{{MODE}}" data-send="{{SEND}}" data-who="{{WHO}}">
 <header class="top">
   <img src="static/logo.png" alt="SimplyDoors" class="logo" width="150" height="47">
   <a class="call" href="tel:{{PHONE_TEL}}" aria-label="Call SimplyDoors at {{PHONE}}"><span aria-hidden="true">📞</span> {{PHONE}}</a>
@@ -43,6 +43,8 @@
     <form id="f1" novalidate>
       <label for="name">Your name <span class="req">*</span></label>
       <input id="name" name="name" type="text" autocomplete="name" autocapitalize="words" maxlength="80" enterkeyhint="next">
+      <label for="company">Company <span class="opt">if applicable</span></label>
+      <input id="company" name="company" type="text" autocomplete="organization" autocapitalize="words" maxlength="80" enterkeyhint="next">
       <div class="two">
         <div><label for="phone">Phone</label>
           <input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" maxlength="30" enterkeyhint="next"></div>

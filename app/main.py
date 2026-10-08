@@ -1960,6 +1960,7 @@ def intake_page(request: Request, t: str = "", s: str = ""):
             "OG_IMAGE": leads.INTAKE_URL + "/static/og-intake.png", "TEST": test, "PHONE": leads.OFFICE_PHONE,
             "PHONE_TEL": "+1" + re.sub(r"\D", "", leads.OFFICE_PHONE)[-10:], "STREET": leads.OFFICE_STREET,
             "CITY": leads.OFFICE_CITY, "PREFILL": send["first_name"] if send and send["channel"] != "device" else "",
+            "PREFILL_COMPANY": send["company"] if send and send["channel"] != "device" else "",
             "MODE": send["channel"] if send and send["channel"] in ("in_person", "device") else "",
             "SEND": send["code"] if send else "", "WHO": send["staff_name"].split(" ")[0] if send else "",
             "MANIFEST": f"manifest.webmanifest?s={send['code']}" if send and send["channel"] == "device" else "manifest.webmanifest"}
@@ -2110,7 +2111,8 @@ async def intake_send(request: Request, staff=Depends(current_staff)):
         if sends.emails_today(staff["id"]) >= sends.EMAILS_PER_DAY:
             raise HTTPException(429, f"You've sent {sends.EMAILS_PER_DAY} today. Use “Open in my email” instead.")
     test = bool(staff["is_owner"]) and get_setting("owner_test_mode") == "1"
-    r = sends.create(staff, channel, first, phone, email, is_test=test)
+    company = " ".join(str(body.get("company", "")).split())[:80]
+    r = sends.create(staff, channel, first, phone, email, is_test=test, company=company)
     link = _send_link(staff, r["code"])
     msg = sends.message(staff, first, link)
     if channel == "email_sent":

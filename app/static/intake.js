@@ -27,6 +27,7 @@
   }
 
   // ------------------------------------------------------------ a sent link, a handed-over phone, an installed form
+  if (B.company) $("#company").value = B.company;
   if (B.prefill) { $("#name").value = B.prefill; $("#hello").textContent = `Hi ${B.prefill}, start your project`; }
   if (B.who && !MODE) { $("#sentBy").textContent = `${B.who} from SimplyDoors sent you this form.`; $("#sentBy").classList.remove("hidden"); }
   if (MODE) document.body.classList.add("kiosk");
@@ -185,7 +186,7 @@
   const f1 = $("#f1");
   function values() {
     const v = (id) => $("#" + id).value.trim();
-    return { name: v("name"), phone: v("phone"), email: v("email"), address: v("address"), description: v("description"),
+    return { name: v("name"), company: v("company"), phone: v("phone"), email: v("email"), address: v("address"), description: v("description"),
       website: $("#website").value, types: $$("input[name=types]:checked", f1).map(i => i.value),
       heard: ($("input[name=heard]:checked", f1) || {}).value || "" };
   }
@@ -238,7 +239,7 @@
   function backToForm(e, msg) {
     // the server refused it (a mistake to fix): put it back in the form as it was sent
     const f = e.fields || {};
-    ["name", "phone", "email", "address", "description"].forEach(k => { $("#" + k).value = f[k] || ""; });
+    ["name", "company", "phone", "email", "address", "description"].forEach(k => { $("#" + k).value = f[k] || ""; });
     $$("input[name=types]", f1).forEach(i => { i.checked = (f.types || []).includes(i.value); });
     $$("input[name=heard]", f1).forEach(i => { i.checked = i.value === f.heard; });
     files.forEach(x => x.url && URL.revokeObjectURL(x.url));
@@ -270,7 +271,7 @@
     if (e.t) fd.append("t", e.t);
     if (e.s) fd.append("s", e.s);
     const f = e.fields;
-    ["name", "phone", "email", "address", "description", "website"].forEach(k => fd.append(k, f[k] || ""));
+    ["name", "company", "phone", "email", "address", "description", "website"].forEach(k => fd.append(k, f[k] || ""));
     (f.types || []).forEach(t => fd.append("types", t));
     if (f.heard) fd.append("heard", f.heard);
     (e.files || []).forEach(x => fd.append("files", x.blob, x.name));

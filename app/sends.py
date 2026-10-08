@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS intake_sends (
     channel TEXT NOT NULL,                  -- text | email_app | email_sent | in_person | device
     staff_id INTEGER NOT NULL REFERENCES staff(id),
     first_name TEXT NOT NULL DEFAULT '',
+    company TEXT NOT NULL DEFAULT '',
     phone TEXT NOT NULL DEFAULT '',
     email TEXT NOT NULL DEFAULT '',
     label TEXT NOT NULL DEFAULT '',         -- a device's name ("Showroom tablet")
@@ -48,18 +49,21 @@ CREATE INDEX IF NOT EXISTS intake_sends_staff ON intake_sends(staff_id, id);
 
 def init(c) -> None:
     c.executescript(SCHEMA)
+    if "company" not in {r[1] for r in c.execute("PRAGMA table_info(intake_sends)")}:
+        c.execute("ALTER TABLE intake_sends ADD COLUMN company TEXT NOT NULL DEFAULT ''")
 
 
 def _first(name: str) -> str:
     return str(name or "").strip().split(" ")[0]
 
 
-def create(staff, channel: str, first_name="", phone="", email="", label="", is_test=False) -> dict:
+def create(staff, channel: str, first_name="", phone="", email="", label="", is_test=False, company="") -> dict:
     code = "".join(secrets.choice(_ALPHABET) for _ in range(10))
     c = conn()
-    sid = c.execute("INSERT INTO intake_sends(code, channel, staff_id, first_name, phone, email, label, is_test, created_at)"
-                    " VALUES (?,?,?,?,?,?,?,?,?)",
-                    (code, channel, staff["id"], " ".join(str(first_name).split())[:40], str(phone)[:30], str(email)[:120],
+    sid = c.execute("INSERT INTO intake_sends(code, channel, staff_id, first_name, company, phone, email, label, is_test,"
+                    " created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (code, channel, staff["id"], " ".join(str(first_name).split())[:40], " ".join(str(company).split())[:80],
+                     str(phone)[:30], str(email)[:120],
                      str(label)[:60], 1 if is_test else 0, now_iso())).lastrowid
     return c.execute("SELECT * FROM intake_sends WHERE id=?", (sid,)).fetchone()
 
@@ -118,7 +122,7 @@ def out(r, with_lead: bool) -> dict:
     nudge = (r["channel"] in ("text", "email_app", "email_sent") and not r["submitted_at"]
              and r["created_at"] < _iso(datetime.now(timezone.utc) - timedelta(days=NUDGE_DAYS)))
     d = {"id": r["id"], "channel": r["channel"], "channel_label": CHANNELS[r["channel"]], "first_name": r["first_name"],
-         "to": r["phone"] or r["email"], "label": r["label"], "created_at": r["created_at"], "opened_at": r["opened_at"],
+         "company": r["company"], "to": r["phone"] or r["email"], "label": r["label"], "created_at": r["created_at"], "opened_at": r["opened_at"],
          "submitted_at": r["submitted_at"], "leads": r["leads"], "active": bool(r["active"]), "nudge": nudge,
          "is_test": bool(r["is_test"]), "by": r["staff_name"] if "staff_name" in r.keys() else None}
     if with_lead and r["lead_id"]:

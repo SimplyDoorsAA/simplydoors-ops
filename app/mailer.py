@@ -117,7 +117,7 @@ font-weight:bold;font-size:17px;padding:14px 26px;border-radius:8px">Start your 
 
 def _lead_html(lead, data, files, link: str, attached: bool) -> str:
     from .leads import more_rows
-    rows = [("Name", lead["name"]), ("Phone", lead["phone"] or "—"), ("Email", lead["email"] or "—"),
+    rows = [("Name", lead["name"])] + ([("Company", data["company"])] if data.get("company") else []) + [("Phone", lead["phone"] or "—"), ("Email", lead["email"] or "—"),
             ("Project address", lead["address"] or "—"), ("Project", ", ".join(data.get("types") or []) or "—"),
             ("About the project", data.get("description") or "—"), ("How they heard about us", data.get("heard") or "—")]
     rows += more_rows(data)
