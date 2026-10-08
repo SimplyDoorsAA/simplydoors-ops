@@ -47,7 +47,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-43"
+APP_VERSION = "stage3-44"
 
 
 @asynccontextmanager
@@ -1837,6 +1837,38 @@ def admin_pricelist_remove(sid: int, request: Request, admin=Depends(current_she
           client_ip(request), ua(request))
     alerts.push("Ops app: price sheet removed", f"{admin['name']} took {v['name']}: {s['label']} out of the Price List.")
     return {"ok": True}
+
+
+@app.patch("/api/admin/pricelist/sheets/{sid}")
+async def admin_pricelist_sheet_update(sid: int, request: Request, admin=Depends(current_sheet_manager)):
+    """Rename a sheet, or move it to another vendor (e.g. a sheet loaded under the wrong vendor)."""
+    body = await request.json()
+    body = body if isinstance(body, dict) else {}
+    label = vendor = None
+    if "label" in body:
+        label = " ".join(str(body.get("label") or "").split())[:120]
+        if len(label) < 3:
+            raise HTTPException(422, "Give the sheet a name, like “Full Line Catalog eff. 6/15/2026”.")
+    if "vendor" in body:
+        vendor = _vendor(str(body.get("vendor") or ""))["code"]
+        if vendor == pricelist.ONE_OFF:
+            raise HTTPException(404, "No such vendor.")
+    if label is None and vendor is None:
+        raise HTTPException(422, "Nothing to change.")
+    r = await run_in_threadpool(pricelist.update_sheet, sid, label, vendor)
+    if not r:
+        raise HTTPException(404, "That sheet isn't live any more.")
+    before, after = r
+    v_from, v_to = _vendor(before["vendor"]), _vendor(after["vendor"])
+    changes = {**({"label": {"from": before["label"], "to": after["label"]}} if before["label"] != after["label"] else {}),
+               **({"vendor": {"from": v_from["name"], "to": v_to["name"]}} if v_from["code"] != v_to["code"] else {})}
+    if changes:
+        audit(admin["id"], admin["name"], "price_sheet_changed", v_to["name"], {"sheet": after["label"], **changes},
+              client_ip(request), ua(request))
+    if "vendor" in changes:   # its POs now go to a different vendor's order email
+        alerts.push("Ops app: price sheet moved", f"{admin['name']} moved “{after['label']}” ({after['items']} items) "
+                    f"from {v_from['name']} to {v_to['name']}. Its POs now go to {v_to['name']}.", "high")
+    return {"ok": True, "vendor": v_to["code"], "label": after["label"]}
 
 
 # ---------------------------------------------------------------- customer intake: the public form (no sign-in)

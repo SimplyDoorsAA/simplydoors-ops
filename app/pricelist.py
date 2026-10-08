@@ -437,6 +437,33 @@ def remove_sheet(sheet_id: int):
     return s
 
 
+def update_sheet(sheet_id: int, label: str | None = None, vendor: str | None = None):
+    """Rename a live sheet and/or move it to another vendor (its items, edits and match-style tags go with it).
+    Returns (sheet row before, sheet row after), or None if it isn't live."""
+    c = conn()
+    c.execute("BEGIN IMMEDIATE")
+    try:
+        s = c.execute("SELECT * FROM pl_sheets WHERE id=? AND active=1", (sheet_id,)).fetchone()
+        if not s:
+            c.execute("ROLLBACK")
+            return None
+        if label is not None:
+            c.execute("UPDATE pl_sheets SET label=? WHERE id=?", (label, sheet_id))
+        if vendor is not None and vendor != s["vendor"]:
+            # tags are kept per vendor group: copy this sheet's ones over (an existing tag on the new vendor wins)
+            c.execute("INSERT OR IGNORE INTO pl_styles(vendor, grp, style, set_by, set_at)"
+                      " SELECT ?, grp, style, set_by, set_at FROM pl_styles WHERE vendor=?"
+                      " AND grp IN (SELECT DISTINCT grp FROM pl_items WHERE sheet_id=?)", (vendor, s["vendor"], sheet_id))
+            c.execute("UPDATE pl_sheets SET vendor=? WHERE id=?", (vendor, sheet_id))
+            c.execute("UPDATE pl_items SET vendor=? WHERE sheet_id=?", (vendor, sheet_id))
+        after = c.execute("SELECT * FROM pl_sheets WHERE id=?", (sheet_id,)).fetchone()
+        c.execute("COMMIT")
+    except Exception:
+        c.execute("ROLLBACK")
+        raise
+    return s, after
+
+
 # ------------------------------------------------------------------ editing items in the app
 # field in the app -> (column, max length or kind). Same limits as an uploaded sheet.
 EDIT_FIELDS = {"sku": ("sku", 60), "name": ("name", 160), "cat": ("cat", "cat"), "grp": ("grp", 120), "mfr": ("mfr", 60),
@@ -634,6 +661,7 @@ def po_out(r, with_lines=False) -> dict:
          "sheet_label": r["sheet_label"], "sent_to": r["sent_to"], "created_at": r["created_at"],
          "is_test": bool(r["is_test"]), "status": r["status"], "manual": bool(r["manual"]),
          "vendor_name": r["vendor_name"], "vendor_address": r["vendor_address"].split("\n") if r["vendor_address"] else [],
+         "vendor_email_set": bool(r["vendor_email"]),       # a one-off vendor: whether it can be emailed from here
          "by": r["staff_name"] if "staff_name" in r.keys() else ""}
     lines = json.loads(r["lines"])
     d["line_count"] = len(lines)

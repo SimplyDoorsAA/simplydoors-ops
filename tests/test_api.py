@@ -2170,3 +2170,55 @@ def test_po_pdf_keeps_line_breaks_in_notes():
           "ship_to": "shop", "ship_address": "", "notes": "Call before delivery\nGate code 1234", "lines": [], "total": 0,
           "sheet_label": "Test", "by": "Test", "manual": 1}
     assert pdf.build_po_pdf(po, {"name": "Test Vendor", "address": []})[:4] == b"%PDF"
+
+
+def test_price_sheet_rename_and_move_to_another_vendor(client, monkeypatch):
+    from app import alerts, pricelist, sfjobs
+    pushed = []
+    monkeypatch.setattr(alerts, "push", lambda *a, **k: pushed.append(a))
+    login(client, "Adem Atis", "246810")
+    r = _upload(client, b"sku,name,category,price,group,width_in,height_in\nTST-MV-1,Move test slab,Interior molded,50,Move group,30,80\n"
+                        b"TST-MV-2,Move test hinge,Parts & hardware,3,Move hinges,,\n", vendor="SP", label="Boise_Simpson_rift_2026", replace="new")
+    assert r.status_code == 200, r.text
+    sid = r.json()["sheet_id"]
+    assert client.put("/ops/api/pricelist/styles", json={"vendor": "SP", "grp": "Move group", "style": "1-panel shaker"}, headers=H).status_code == 200
+    # rename
+    assert client.patch(f"/ops/api/admin/pricelist/sheets/{sid}", json={"label": "  x "}, headers=H).status_code == 422
+    r = client.patch(f"/ops/api/admin/pricelist/sheets/{sid}", json={"label": "Simpson rift white oak   eff. 10/7/2026"}, headers=H)
+    assert r.status_code == 200 and r.json()["label"] == "Simpson rift white oak eff. 10/7/2026"
+    # move to Boise Cascade: items, edits and the style tag go with it; POs for them now go to Boise
+    assert client.patch(f"/ops/api/admin/pricelist/sheets/{sid}", json={"vendor": "NOPE"}, headers=H).status_code == 404
+    assert client.patch(f"/ops/api/admin/pricelist/sheets/{sid}", json={}, headers=H).status_code == 422
+    r = client.patch(f"/ops/api/admin/pricelist/sheets/{sid}", json={"vendor": "BC"}, headers=H)
+    assert r.status_code == 200 and r.json()["vendor"] == "BC"
+    assert not any(i["sku"].startswith("TST-MV") for i in client.get("/ops/api/pricelist/items?vendor=SP", headers=H).json()["items"])
+    moved = {i["sku"]: i for i in client.get("/ops/api/pricelist/items?vendor=BC", headers=H).json()["items"] if i["sku"].startswith("TST-MV")}
+    assert set(moved) == {"TST-MV-1", "TST-MV-2"} and moved["TST-MV-1"]["style"] == "1-panel shaker"
+    assert moved["TST-MV-1"]["sheet"] == "Simpson rift white oak eff. 10/7/2026"
+    lines, _, _ = pricelist.build_lines("BC", [{"item_id": moved["TST-MV-2"]["id"], "qty": 2}])
+    assert lines[0]["sku"] == "TST-MV-2"
+    assert any("moved" in a[1] and "Boise Cascade" in a[1] for a in pushed)
+    acts = [json.loads(r[0]) for r in conn().execute("SELECT details FROM audit WHERE action='price_sheet_changed' ORDER BY id")]
+    assert acts[0]["label"]["to"] == "Simpson rift white oak eff. 10/7/2026" and acts[1]["vendor"] == {"from": "Simpson", "to": "Boise Cascade"}
+    # only admins and Price List editors can do it
+    jid = conn().execute("SELECT id FROM staff WHERE name='Jaime Mendoza'").fetchone()[0]
+    conn().execute("UPDATE staff SET price_list=1, price_edit=0 WHERE id=?", (jid,))
+    login(client, "Jaime Mendoza", "135790")
+    assert client.patch(f"/ops/api/admin/pricelist/sheets/{sid}", json={"label": "Nope nope"}, headers=H).status_code == 403
+    assert pricelist.update_sheet(999999, label="x") is None
+    # a PO list for Price List: before anything is typed, only jobs still waiting on product
+    _seed_job("10236499101", "PO-STAGE-1", customer="Stage Need")
+    _seed_job("10236499102", "PO-STAGE-2", customer="Stage Delivery")
+    conn().execute("UPDATE sf_jobs SET data=json_set(data, '$.status', '15Delivery Scheduled') WHERE number='10236499102'")
+    nums = [j["number"] for j in sfjobs.search("po", "")]
+    assert "10236499101" in nums and "10236499102" not in nums
+    assert "10236499102" in [j["number"] for j in sfjobs.search("po", "9102")]      # typed: any open job
+
+
+def test_saved_po_says_whether_a_one_off_vendor_can_be_emailed(client):
+    login(client, "Adem Atis", "246810")
+    body = {"action": "download", "po_number": "SHOP-EM-1", "ship_method": "Delivery", "lines": [{"qty": 1, "name": "Thing", "price": "5"}]}
+    a = client.post("/ops/api/pricelist/pos/manual", json={**body, "other_vendor": {"name": "No Email Co"}}, headers=H).json()
+    b = client.post("/ops/api/pricelist/pos/manual", json={**body, "other_vendor": {"name": "Email Co", "email": "x@email.test"}}, headers=H).json()
+    assert a["vendor_email_set"] is False and b["vendor_email_set"] is True
+    assert "x@email.test" not in json.dumps(client.get("/ops/api/pricelist/pos", headers=H).json())       # the flag, not the address

@@ -19,6 +19,13 @@
 </header>
 <div class="betanote">Beta: new and still being checked. Confirm prices and part numbers with the vendor before relying on them.</div>
 
+<nav class="nav hidden" id="nav">
+  <button type="button" data-tab="search" class="on"><span class="ic">🏷️</span>Shop</button>
+  <button type="button" data-tab="list"><span class="ic">🧾</span>Buy list / PO<span class="badge hidden" id="listcount"></span></button>
+  <button type="button" data-tab="compare"><span class="ic">⚖️</span>Compare</button>
+  <button type="button" data-tab="sheets"><span class="ic">📄</span>Price sheets</button>
+</nav>
+
 <main class="wrap plwrap">
   <div id="gate" class="hidden"><h1>Price List</h1><p id="gateMsg"></p><p><a class="link" href="./">Back to the staff app</a></p></div>
 
@@ -81,12 +88,6 @@
   </section>
 </main>
 
-<nav class="nav hidden" id="nav">
-  <button type="button" data-tab="search" class="on"><span class="ic">🏷️</span>Shop</button>
-  <button type="button" data-tab="list"><span class="ic">🧾</span>Buy list / PO<span class="badge hidden" id="listcount"></span></button>
-  <button type="button" data-tab="compare"><span class="ic">⚖️</span>Compare</button>
-  <button type="button" data-tab="sheets"><span class="ic">📄</span>Price sheets</button>
-</nav>
 
 <div class="sheet-bg hidden" id="sheetbg"></div>
 <div class="sheet hidden" id="sheet" role="dialog" aria-modal="true"></div>
