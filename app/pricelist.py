@@ -16,6 +16,7 @@
 import csv
 import io
 import json
+import math
 import re
 
 from .db import conn, now_iso
@@ -305,8 +306,8 @@ def _num(v, field, line, allow_blank=True):
         n = float(v)
     except ValueError:
         raise SheetError(f"{at}{field} “{v[:20]}” isn't a number.") from None
-    if n < 0 or n > 1_000_000:
-        raise SheetError(f"{at}{field} {n} is out of range.")
+    if not math.isfinite(n) or n < 0 or n > 1_000_000:   # "nan" would pass the range check and break the item list
+        raise SheetError(f"{at}{field} “{v[:20]}” is out of range.")
     return n
 
 
