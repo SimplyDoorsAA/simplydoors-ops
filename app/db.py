@@ -249,12 +249,16 @@ def init_db() -> None:
         # a purchase order to a vendor (audience 'vendor'); report_id is NULL for these
         c.execute("ALTER TABLE emails ADD COLUMN po_id INTEGER")
         c.execute("ALTER TABLE emails ADD COLUMN cc TEXT NOT NULL DEFAULT ''")
+    if "send_id" not in ecols:
+        # "Send from SimplyDoors": the customer form emailed to a customer (audience 'invite')
+        c.execute("ALTER TABLE emails ADD COLUMN send_id INTEGER")
     if "lead_id" not in ecols:
         # about a lead from the customer form (audience 'staff' or 'customer'); report_id is NULL for these
         c.execute("ALTER TABLE emails ADD COLUMN lead_id INTEGER")
-    from . import leads, pricelist
+    from . import leads, pricelist, sends
     pricelist.init(c)
     leads.init(c)
+    sends.init(c)
     _move_owner_off_lists(c)
     leads.seed_owner_copy()
 

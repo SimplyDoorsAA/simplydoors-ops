@@ -92,7 +92,11 @@
     $("#list").innerHTML = d.leads.length ? d.leads.map(card).join("")
       : `<p class="muted center">${tab === "spam" ? "Nothing in Suspected spam." : "No leads yet."}</p>`;
     $$("#list .lcard").forEach(c => c.onclick = () => { location.hash = "lead=" + c.dataset.id; });
-    $("#blocked").innerHTML = tab === "spam" && d.blocked ? blockedHtml(d.blocked) : "";
+    $("#blocked").innerHTML = tab === "spam" && d.blocked ? blockedHtml(d.blocked)
+      : (d.waiting_sends || []).length ? `<details class="blocked" open><summary>Sent but not sent in after 2 days: <b>${d.waiting_sends.length}</b></summary>
+        <p class="muted small">Customers who got the form but haven't filled it in. Give them a call or a nudge.</p>
+        ${d.waiting_sends.map(s => `<div class="brow"><b>${esc(s.first_name || "Customer")}</b> <span class="muted small">${esc(s.to || "")}</span>
+          <div class="small muted">Sent by ${esc(s.by)} · ${esc(s.channel_label)} · ${esc(when(s.created_at))}${s.opened_at ? " · opened" : ""}${s.is_test ? " · TEST" : ""}</div></div>`).join("")}</details>` : "";
   }
   function card(l) {
     const who = l.owner ? `Claimed by <b>${esc(l.owner)}</b>` : `<span class="unclaimed">Not claimed</span>`;

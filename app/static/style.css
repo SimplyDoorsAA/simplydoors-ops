@@ -315,6 +315,14 @@ a.card.tilecard.pricelist { grid-column: 1 / -1; flex-direction: row; align-item
 .card.tilecard.pricelist .card-icon { width: 46px; height: 46px; flex: none; color: #2f5d50; background: #fff; border-radius: 12px; }
 .card.tilecard.pricelist .card-icon svg { width: 28px; height: 28px; }
 .card.tilecard.pricelist .card-title { margin: 0; font-size: 19px; color: #fff; }
+/* Send the customer form: full-width tile */
+.card.tilecard.sendtile { grid-column: 1 / -1; flex-direction: row; align-items: center; gap: 14px; min-height: 76px; padding: 12px 16px;
+  border-color: #2a6f9b; }
+.card.tilecard.sendtile .card-icon { width: 46px; height: 46px; flex: none; color: #1b4f72; background: #e3eef6; border-radius: 12px; }
+.card.tilecard.sendtile .card-title { margin: 0; font-size: 18px; }
+.card.tilecard.sendtile .studio-tag { color: var(--muted); }
+.sendbtns .btn { margin-top: 12px; }
+#viewSend input[type=tel] { width: 100%; font: inherit; padding: 13px 12px; min-height: 50px; border: 1.5px solid var(--line); border-radius: 10px; background: #fff; }
 /* Leads: full-width tile, blue so it doesn't look like Studio or the Price List */
 a.card.tilecard.leadstile { grid-column: 1 / -1; flex-direction: row; align-items: center; gap: 14px; min-height: 84px; padding: 14px 16px;
   text-decoration: none; color: #fff; background: linear-gradient(135deg, #1b4f72, #2a6f9b); border-color: #1b4f72; }

@@ -69,6 +69,52 @@ def queue_lead_email(lead_id: int, recipients: list[str], subject: str, bcc: lis
     _wake.set()
 
 
+def queue_send_email(send_id: int, to: str, subject: str) -> None:
+    """"Send from SimplyDoors": the customer form, emailed to a customer with a Start your project button."""
+    if not to:
+        audit(None, "system", "email_skipped_no_recipients", f"send:{send_id}")
+        return
+    conn().execute("INSERT INTO emails(report_id, send_id, recipients, subject, created_at, next_try_at, audience)"
+                   " VALUES (NULL,?,?,?,?,?,'invite')", (send_id, to, subject, now_iso(), now_iso()))
+    _wake.set()
+
+
+def _send_invite(email_row) -> EmailMessage:
+    from .leads import INTAKE_URL, OFFICE_CITY, OFFICE_PHONE, OFFICE_STREET, OPS_URL, INTAKE_PATH
+    from .forms import owner_email
+    s = conn().execute("SELECT s.*, st.name AS staff_name, st.email AS staff_email FROM intake_sends s"
+                       " JOIN staff st ON st.id=s.staff_id WHERE s.id=?", (email_row["send_id"],)).fetchone()
+    if not s:
+        raise RuntimeError("that send was removed")
+    link = f"{(OPS_URL + INTAKE_PATH) if s['is_test'] else INTAKE_URL}?s={s['code']}"
+    me, hi = s["staff_name"].split(" ")[0], f"Hi {s['first_name']}" if s["first_name"] else "Hi"
+    msg = EmailMessage()
+    msg["From"] = formataddr((CUSTOMER_FROM_NAME, SMTP_USER))
+    msg["To"] = email_row["recipients"]
+    # replies reach the office and the person who sent it (never the owner's own address, as with every customer email)
+    reply = [CUSTOMER_REPLY_TO]
+    se = (s["staff_email"] or "").strip()
+    if se and se.lower() not in (CUSTOMER_REPLY_TO.lower(), owner_email().lower()):
+        reply.append(se)
+    msg["Reply-To"] = ", ".join(reply)
+    msg["Subject"] = email_row["subject"]
+    msg.set_content(f"{hi}, it's {me} from SimplyDoors. Here's the link to start your project: {link}\n\n"
+                    f"SimplyDoors · {OFFICE_STREET}, {OFFICE_CITY} · {OFFICE_PHONE}")
+    msg.add_alternative(f"""<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #e3e7ea;border-radius:10px;overflow:hidden;color:#1f2a33">
+<div style="background:#2f6f1f;color:#ffffff;padding:18px 22px"><h2 style="margin:0;color:#ffffff;font-size:20px">Start your project with SimplyDoors</h2></div>
+<div style="padding:22px;font-size:15px;line-height:1.5">
+<p style="margin:0 0 12px">{escape(hi)},</p>
+<p style="margin:0">It's {escape(me)} from SimplyDoors. Tell us about your doors, windows or millwork and add a few photos.
+We'll call you within 1 business day.</p>
+<p style="margin:22px 0"><a href="{escape(link)}" style="display:inline-block;background:#2f6f1f;color:#ffffff;text-decoration:none;
+font-weight:bold;font-size:17px;padding:14px 26px;border-radius:8px">Start your SimplyDoors project</a></p>
+<p style="margin:0;font-size:13px;color:#5f6b76">Questions? Just reply to this email.</p>
+<p style="margin:20px 0 0">Thank you,<br><b>{escape(s['staff_name'])}</b>, SimplyDoors<br>
+<span style="color:#5f6b76;font-size:13px">{escape(OFFICE_STREET)}, {escape(OFFICE_CITY)} · {escape(OFFICE_PHONE)}</span></p></div></div>""",
+                        subtype="html")
+    return msg
+
+
 def _lead_html(lead, data, files, link: str, attached: bool) -> str:
     from .leads import more_rows
     rows = [("Name", lead["name"]), ("Phone", lead["phone"] or "—"), ("Email", lead["email"] or "—"),
@@ -270,6 +316,9 @@ def _send_one(email_row) -> None:
     if "lead_id" in email_row.keys() and email_row["lead_id"]:
         _smtp_send(_send_lead(email_row), email_row)
         return
+    if "send_id" in email_row.keys() and email_row["send_id"]:
+        _smtp_send(_send_invite(email_row), email_row)
+        return
     r, data, photos = _report_bundle(email_row["report_id"])
     if (email_row["audience"] if "audience" in email_row.keys() else "staff") == "customer":
         _smtp_send(_send_customer(email_row, r, data, photos), email_row)
@@ -317,6 +366,8 @@ def process_queue_once() -> None:
                 details = {"po_id": e["po_id"], "to": e["recipients"], "cc": e["cc"], "subject": e["subject"]}
             elif e["lead_id"]:
                 details = {"lead_id": e["lead_id"], "to": e["recipients"], "subject": e["subject"]}
+            elif e["send_id"]:
+                details = {"send_id": e["send_id"], "to": e["recipients"], "subject": e["subject"]}
             if e["bcc"]:
                 details["private_copies"] = len([x for x in e["bcc"].split(",") if x.strip()])
             audit(None, "system", "email_sent", f"email:{e['id']}", details)
@@ -331,7 +382,7 @@ def process_queue_once() -> None:
                   {"lead_id": e["lead_id"], "attempt": attempts, "error": str(ex)[:300]} if e["lead_id"] else
                   {"report_id": e["report_id"], "attempt": attempts, "error": str(ex)[:300]})
             if attempts == 3 or status == "failed":
-                kind = "PO" if e["po_id"] else "Lead" if e["lead_id"] else "Report"
+                kind = "PO" if e["po_id"] else "Lead" if e["lead_id"] else "Customer form" if e["send_id"] else "Report"
                 alerts.push("Ops app: email not sending",
                             f"{kind} email '{e['subject']}' failed {attempts}x: {str(ex)[:150]}", "high")
 

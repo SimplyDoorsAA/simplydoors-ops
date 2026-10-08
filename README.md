@@ -100,6 +100,18 @@ GitHub Pages portal + Google Apps Script, one form at a time.
   lead the same way for a quote (signed, like its Service Fusion lookup) and tells this app when a quote is made: the
   lead shows it and moves to Quoted. Statuses only ever move forward this way, never off Won or Lost. The lead page has
   **Copy details for Service Fusion** and a box for the Service Fusion job #; nothing is sent to Service Fusion.
+- **Send the customer form** (home screen tile, everyone signed in, crews too; also on the Leads screen). Optional first
+  name, phone, email, then: **Text it** (opens Messages, filled in), **Send from SimplyDoors** (a branded email with a
+  Start your project button; replies go to admin@ and to you; 30 a day each), **Open in my email** (your own mail app),
+  or **Fill it in here** (hand the customer your phone; skips the spam limits; "Please hand the phone back" at the
+  end). Each link has a short random code, never the customer's details: opening it fills in their name, and the lead
+  arrives tagged "Sent by Jose". **What you sent** shows sent → opened → sent in, with a nudge after 2 days; people
+  without Leads see only that, never the lead. In test mode the links go through the staff address and are TEST.
+- **Install the customer form on a device** (showroom tablet, truck iPad): a "SD Start" icon that opens straight to the
+  form, and every lead from it says which device. iPhones and iPads install it from Share → Add to Home Screen (Apple
+  doesn't let a button do it); Android shows an Install button. It can be turned off from What you sent.
+- **Alerts:** a lead nobody claimed after 2 business hours (Mon-Fri 8 AM-5 PM Central) alerts the owner's phone once;
+  more than 10 robots or suspected spam in a day sends one alert ("time to add Turnstile").
 - **Spam (no outside service):**
   - **Robots** get a normal-looking "Got it", are never emailed and never alert anyone. They're listed under Suspected
     spam → "Stopped automatically" for 30 days. Caught when: the hidden trap box is filled in, it's sent under 3 seconds

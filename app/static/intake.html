@@ -20,20 +20,25 @@
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="static/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="static/apple-touch-icon.png">
+<link rel="manifest" href="{{MANIFEST}}">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="SD Start">
 <link rel="stylesheet" href="static/intake.css?v={{VERSION}}">
 <title>Start your project with SimplyDoors</title>
 </head>
-<body data-token="{{TOKEN}}" data-test="{{TEST}}">
+<body data-token="{{TOKEN}}" data-test="{{TEST}}" data-prefill="{{PREFILL}}" data-mode="{{MODE}}" data-send="{{SEND}}" data-who="{{WHO}}">
 <header class="top">
   <img src="static/logo.png" alt="SimplyDoors" class="logo" width="150" height="47">
   <a class="call" href="tel:{{PHONE_TEL}}" aria-label="Call SimplyDoors at {{PHONE}}"><span aria-hidden="true">📞</span> {{PHONE}}</a>
 </header>
 <div class="testbar hidden" id="testBar" role="status"></div>
+<div class="installbar hidden" id="installBar" role="status"></div>
 
 <main class="wrap">
   <!-- STEP 1: the lead is saved the moment this is sent -->
   <section id="stepOne">
-    <h1>Start your project</h1>
+    <h1 id="hello">Start your project</h1>
+    <p class="muted small hidden" id="sentBy"></p>
     <p class="lead">Tell us what you need and add a few photos. <b>We'll call you within 1 business day.</b></p>
     <form id="f1" novalidate>
       <label for="name">Your name <span class="req">*</span></label>
@@ -162,6 +167,11 @@
     <div class="box thanks hidden" id="thanks">
       <div class="big">Thank you!</div>
       <p id="thanksText">That helps us prepare. You can close this page.</p>
+    </div>
+    <div class="handback hidden" id="handBack">
+      <p class="big">Please hand the phone back</p>
+      <button class="btn" type="button" id="nextCustomer">Start for the next customer</button>
+      <a class="link" href="../" id="backStaff">Back to the staff app</a>
     </div>
   </section>
 </main>

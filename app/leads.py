@@ -259,12 +259,12 @@ def count_hit(ip: str) -> int:
     return c.execute("SELECT COUNT(*) FROM intake_hits WHERE ip=? AND at>=?", (ip, _ago(hours=1))).fetchone()[0]
 
 
-def suspect_reasons(d: dict, age: float, hits: int) -> list[str]:
+def suspect_reasons(d: dict, age: float, hits: int, in_person: bool = False) -> list[str]:
     """Borderline: kept, but in Suspected spam (no emails, no alert) until someone moves it to Leads."""
     out = []
     # fast but complete: a phone filling in name and number for the person is quick, typing an address and a
     # description too in under 10 seconds isn't
-    if age < FAST_SECONDS and d["address"] and d["description"]:
+    if age < FAST_SECONDS and d["address"] and d["description"] and not in_person:
         out.append(f"Filled in and sent {int(age)} seconds after the page opened (very fast for a person)")
     links = len(LINK_RE.findall(" ".join((d["name"], d["address"], d["description"]))))
     if LINK_RE.search(d["name"]):
@@ -407,7 +407,8 @@ def _write_files(dest: str, files: list, save_photo) -> list:
     return out
 
 
-def store(sid: str, d: dict, spam: list, is_test: bool, files: list, ip: str, agent: str, save_photo) -> dict:
+def store(sid: str, d: dict, spam: list, is_test: bool, files: list, ip: str, agent: str, save_photo,
+          extra: dict | None = None) -> dict:
     """Saves the files, then the lead, then queues its emails, all before the customer is told "Got it"."""
     c = conn()
     tmp = os.path.join(FILE_DIR, f"tmp-{secrets.token_hex(8)}")
@@ -416,7 +417,7 @@ def store(sid: str, d: dict, spam: list, is_test: bool, files: list, ip: str, ag
     except Exception:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
-    data = {"types": d["types"], "description": d["description"], "heard": d["heard"]}
+    data = {"types": d["types"], "description": d["description"], "heard": d["heard"], **(extra or {})}
     if d.get("files_not_saved"):
         data["files_not_saved"] = d["files_not_saved"]
     lid = None
@@ -461,7 +462,7 @@ def store(sid: str, d: dict, spam: list, is_test: bool, files: list, ip: str, ag
         alert(lid)
     from . import mailer
     mailer._wake.set()
-    return {"receipt": receipt, "duplicate": False}
+    return {"receipt": receipt, "duplicate": False, "id": lid}
 
 
 def save_more(sid: str, more: dict, ip: str, agent: str) -> None:
