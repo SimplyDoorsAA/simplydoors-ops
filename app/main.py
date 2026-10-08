@@ -1574,8 +1574,18 @@ async def admin_pricelist_vendor(code: str, request: Request, admin=Depends(curr
     return {"ok": True}
 
 
+def current_sheet_manager(request: Request):
+    # loading and removing sheets: admins, and the people who can edit Price List items (e.g. the purchaser).
+    # Where a vendor's POs are emailed stays admins-only.
+    row = current_staff(request)
+    if not (row["is_admin"] or pricelist.can_edit(row)):
+        audit(row["id"], row["name"], "admin_denied", request.url.path, None, client_ip(request), ua(request))
+        raise HTTPException(403, "Only admins and people who can edit the Price List can load sheets.")
+    return row
+
+
 @app.post("/api/admin/pricelist/upload")
-async def admin_pricelist_upload(request: Request, admin=Depends(current_admin)):
+async def admin_pricelist_upload(request: Request, admin=Depends(current_sheet_manager)):
     form = await request.form()
     v = _vendor(str(form.get("vendor", "")))
     label = str(form.get("label", "")).strip()[:120]
@@ -1620,7 +1630,7 @@ async def admin_pricelist_upload(request: Request, admin=Depends(current_admin))
 
 
 @app.post("/api/admin/pricelist/sheets/{sid}/remove")
-def admin_pricelist_remove(sid: int, request: Request, admin=Depends(current_admin)):
+def admin_pricelist_remove(sid: int, request: Request, admin=Depends(current_sheet_manager)):
     s = pricelist.remove_sheet(sid)
     if not s:
         raise HTTPException(404, "That sheet isn't live any more.")

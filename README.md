@@ -50,7 +50,8 @@ GitHub Pages portal + Google Apps Script, one form at a time.
   switch too) get **✎ Edit this item** on every item: any field, the ⚠ note and the comparison prices. They can also add an
   item to a sheet, delete one, and download a sheet (with its edits) as a CSV to change in Excel and load back. Every change
   is in the activity log with the old and new value, the owner gets one phone alert per editor per 10 minutes, and an edited
-  item shows who changed it. Uploading a new version of a sheet replaces its edits; Admin warns first and offers the download.
+  item shows who changed it. Editors can also load and remove sheets (Price List → Price sheets); where a vendor's POs are
+  emailed stays admins-only. Uploading a new version of a sheet replaces its edits; the app warns first.
 - **Shop:** pick a vendor, then a category, then items (or search). Flagged lines (wrong part number, odd price on the
   vendor's sheet) show **⚠ Check** with the reason. Non-stock interior slabs add 30% under 10 of one size/style.
 - **Purchase orders:** the buy list (kept on that phone) becomes a PO for one vendor. The PO number is the **PO number already

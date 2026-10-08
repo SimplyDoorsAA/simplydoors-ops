@@ -1562,8 +1562,17 @@ def test_price_list_editors_can_change_add_delete_and_download(client, monkeypat
     assert json.loads(rows["TST-ED-1"]["compare"]) == [["Pallet", 71.0], ["Container", 64.4]]
     acts = {r[0] for r in conn().execute("SELECT action FROM audit WHERE action LIKE 'price_item_%' OR action='price_sheet_downloaded'")}
     assert acts == {"price_item_changed", "price_item_added", "price_item_deleted", "price_sheet_downloaded"}
+    # the purchaser can load and remove sheets, but not change where a vendor's POs go
+    r = _upload(client, b"sku,name,category,price\nTST-ED-9,Purchaser upload,Parts & hardware,5\n", vendor="BC",
+                label="Purchaser test", replace="new")
+    assert r.status_code == 200, r.text
+    assert client.post(f"/ops/api/admin/pricelist/sheets/{r.json()['sheet_id']}/remove", headers=H).json()["ok"]
+    assert client.put("/ops/api/admin/pricelist/vendors/BC", json={"order_email": "x@evil.test"}, headers=H).status_code == 403
+    assert client.get("/ops/api/admin/pricelist", headers=H).status_code == 403
     # taking the Price List away takes editing away too
     login(client, "Paz Galambos", "112233")
     assert client.patch(f"/ops/api/admin/staff/{jid}", json={"price_list": False}, headers=H).json()["ok"]
     assert tuple(conn().execute("SELECT price_list, price_edit FROM staff WHERE id=?", (jid,)).fetchone()) == (0, 0)
     assert client.get(f"/ops/api/pricelist/sheets/{sid}/csv", headers=H).status_code == 200          # admins can download
+    login(client, "Jaime Mendoza", "135790")
+    assert _upload(client, csv_bytes, vendor="BC", label="Nope", replace="new").status_code == 403

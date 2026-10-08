@@ -499,12 +499,60 @@
   function renderSheets() {
     $("#sheetCards").innerHTML = VENDORS.map(v => `<div class="vcard ${v.sheet ? "live" : ""}"><div class="vt">${esc(v.name)} ${v.sheet ? '<span class="tag stock">Live</span>' : '<span class="tag ns">No sheet yet</span>'}</div>
       ${v.sheet ? `${(v.sheets || []).map(s => `<div class="muted small">${esc(s.label)} · ${s.items.toLocaleString()} items · loaded ${esc(new Date(s.uploaded_at).toLocaleDateString())} by ${esc(s.uploaded_by)}${s.edited ? ` · ${s.edited} edited in the app` : ""}
-        ${me.price_edit ? `<div style="margin:6px 0 4px"><a class="link" href="api/pricelist/sheets/${s.id}/csv" download>Download (Excel / CSV)</a> · <button type="button" class="link" data-additem="${s.id}">+ Add an item</button></div>` : ""}</div>`).join("")}
+        ${me.price_edit ? `<div style="margin:6px 0 4px"><a class="link" href="api/pricelist/sheets/${s.id}/csv" download>Download (Excel / CSV)</a> · <button type="button" class="link" data-additem="${s.id}">+ Add an item</button> · <button type="button" class="link danger-text" data-rmsheet="${s.id}">Remove</button></div>` : ""}</div>`).join("")}
         <div class="stats"><div class="stat"><b>${(ITEMS[v.code] || []).length.toLocaleString()}</b><span>items</span></div>
           <div class="stat"><b>${(ITEMS[v.code] || []).filter(d => d.flag).length}</b><span>flagged to check</span></div>
           <div class="stat"><b>${(ITEMS[v.code] || []).filter(d => d.price == null).length}</b><span>call for price</span></div></div>`
-        : '<div class="muted small">An admin loads the sheet in Admin → Price List.</div>'}
+        : `<div class="muted small">${me.price_edit ? "No sheet loaded yet. Use “Load a price sheet” below." : "No sheet loaded yet."}</div>`}
       <div class="small" style="margin-top:8px">${v.can_order ? "✓ Order email set" : "No order email set yet, so POs can't be sent."}</div></div>`).join("");
+    $("#sheetUpload").innerHTML = !me.price_edit ? "" : `<div class="box"><h2 style="margin-top:0">Load a price sheet</h2>
+      <p class="small muted">A CSV in the upload format (the Download links above give you one). Changes are live for everyone.</p>
+      <form id="upForm">
+        <div class="field"><label for="up-vendor">Vendor</label><select id="up-vendor" name="vendor">${VENDORS.map(v => `<option value="${esc(v.code)}" ${v.code === S.upVendor ? "selected" : ""}>${esc(v.name)}</option>`).join("")}</select></div>
+        <div class="field"><label for="up-replace">Replaces</label><select id="up-replace" name="replace"></select></div>
+        <div class="field"><label for="up-label">Sheet name</label><input id="up-label" name="label" placeholder="e.g. Simpson shaker eff. 5/21/2025" maxlength="120"></div>
+        <div class="field"><label for="up-file">CSV file</label><input id="up-file" name="file" type="file" accept=".csv,text/csv"></div>
+        <button type="submit" class="btn" id="upGo">Load sheet</button>
+      </form></div>`;
+    if (me.price_edit) upReplaceOptions();
+  }
+  function upReplaceOptions() {
+    const v = VENDORS.find(x => x.code === $("#up-vendor").value), sheets = (v && v.sheets) || [];
+    $("#up-replace").innerHTML = (sheets.length ? '<option value="">Pick one…</option>' : "") +
+      sheets.map(s => `<option value="${s.id}">Replace: ${esc(s.label)} (${s.items} items)</option>`).join("") +
+      `<option value="new">${sheets.length ? "Add as a new sheet (keep the others)" : "New sheet"}</option>`;
+  }
+  async function reloadVendor(code) {
+    // after a sheet is loaded or removed: fetch that vendor's items again
+    VENDORS = await api("api/pricelist/vendors");
+    (ITEMS[code] || []).forEach(d => BYID.delete(d.id));
+    const v = VENDORS.find(x => x.code === code);
+    ITEMS[code] = [];
+    if (v && v.sheet) { const r = await api(`api/pricelist/items?vendor=${encodeURIComponent(code)}`); ITEMS[code] = r.items; r.items.forEach(d => prep(d, code)); }
+    renderSheets(); render();
+  }
+  async function uploadSheet(f) {
+    const v = VENDORS.find(x => x.code === f.vendor.value), rep = f.replace.value;
+    if (!rep) { toast("Pick which sheet this one replaces, or “Add as a new sheet”"); return; }
+    if (f.label.value.trim().length < 3) { toast("Give the sheet a name"); return; }
+    if (!f.file.files.length) { toast("Pick the CSV file"); return; }
+    const old = rep === "new" ? null : (v.sheets || []).find(s => String(s.id) === rep);
+    const edits = old && old.edited ? `\n\n${old.edited} item${old.edited > 1 ? "s" : ""} on that sheet were edited in the app. The new file replaces those edits. Cancel and use Download first if you want a copy.` : "";
+    if (!confirm(`Load this sheet? ${old ? `It replaces “${old.label}” for everyone.` : `It's added to ${v.name}.`}${edits}`)) return;
+    const btn = $("#upGo"); btn.disabled = true; btn.textContent = "Loading…";
+    try {
+      const r = await fetch("api/admin/pricelist/upload", { method: "POST", credentials: "same-origin", headers: { "X-SD-App": "1" }, body: new FormData(f) });
+      const data = await r.json().catch(() => null);
+      if (!r.ok) throw new Error((data && data.detail) || `Error ${r.status}`);
+      S.upVendor = v.code; await reloadVendor(v.code); toast(`Loaded ${data.items} items`);
+    } catch (e) { toast(e.message); btn.disabled = false; btn.textContent = "Load sheet"; }
+  }
+  async function removeSheet(id) {
+    const v = VENDORS.find(x => (x.sheets || []).some(s => s.id === id)); if (!v) return;
+    const s = v.sheets.find(x => x.id === id);
+    if (!confirm(`Take “${s.label}” out of the Price List? Its ${s.items} items disappear for everyone. POs already sent keep their copy.`)) return;
+    try { await api(`api/admin/pricelist/sheets/${id}/remove`, { method: "POST" }); await reloadVendor(v.code); toast("Removed"); }
+    catch (e) { toast(e.message); }
   }
 
   // ------------------------------------------------------------ events
@@ -550,6 +598,7 @@
     if (t.id === "edDelete") { deleteEdited(); return; }
     if (t.id === "edCancel") { const id = +$("#sheet").dataset.id; if (id && BYID.has(id)) openItem(id); else closeSheet(); return; }
     const ad = t.closest("[data-additem]"); if (ad) { openEditor(null, +ad.dataset.additem); return; }
+    const rs = t.closest("[data-rmsheet]"); if (rs) { removeSheet(+rs.dataset.rmsheet); return; }
     if (t.id === "copy") { const d = BYID.get(+$("#sheet").dataset.id); if (navigator.clipboard) navigator.clipboard.writeText(d.sku).catch(() => {}); toast("Copied " + d.sku); return; }
     const lq = t.closest("[data-lq]"); if (lq) { const v = lq.dataset.v, id = +lq.dataset.id; setQty(v, id, ((S.list[v] || {})[id] || 0) + +lq.dataset.lq); return; }
     const pv = t.closest("[data-povendor]"); if (pv) { S.poVendor = pv.dataset.povendor; renderList(); return; }
@@ -572,7 +621,9 @@
     if (e.target.id === "jobq") { clearTimeout(jobTimer); jobTimer = setTimeout(runJobSearch, 250); return; }
     if (e.target.dataset.d && e.target.tagName === "TEXTAREA") { const f = draft(S.poVendor); f[e.target.dataset.d] = e.target.value; saveDraft(S.poVendor, f); }
   });
+  document.addEventListener("submit", (e) => { if (e.target.id === "upForm") { e.preventDefault(); uploadSheet(e.target); } });
   document.addEventListener("change", (e) => {
+    if (e.target.id === "up-vendor") { S.upVendor = e.target.value; upReplaceOptions(); return; }
     if (e.target.dataset.lid) { setQty(e.target.dataset.lv, +e.target.dataset.lid, e.target.value); return; }
     if (e.target.dataset.d) { const f = draft(S.poVendor); f[e.target.dataset.d] = e.target.value; saveDraft(S.poVendor, f); }
   });
