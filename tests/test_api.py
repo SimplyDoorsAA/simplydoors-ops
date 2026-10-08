@@ -1705,3 +1705,14 @@ def test_hand_written_po_download_then_send(client, smtp, monkeypatch):
     assert acts.count("po_downloaded") == 2 and acts.count("po_sent") == 2
     # the one-off vendor never shows in the vendor list
     assert all(v["code"] != "XX" for v in client.get("/ops/api/pricelist/vendors", headers=H).json())
+
+
+def test_price_sheet_odd_numbers_and_damaged_csv_are_refused_cleanly():
+    from app import pricelist
+    for bad in ("nan", "NaN", "inf", "-inf"):
+        with pytest.raises(pricelist.SheetError):
+            pricelist._num(bad, "Price", 0)
+    with pytest.raises(pricelist.SheetError):   # a cell over the csv module's size limit: a message, not a 500
+        pricelist.parse_sheet(b'sku,name,category,price\nA1,"' + b"x" * 200_000 + b'",Doors,10\n')
+    out = pricelist.clean_fields({"compare": ["not a dict", {"label": "Lvl 2", "price": "5"}]}, partial=True)
+    assert list(out.values()) == ['[["Lvl 2", 5.0]]']
