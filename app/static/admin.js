@@ -362,8 +362,14 @@
         try { await api(`api/admin/pricelist/vendors/${f.dataset.vendor}`, { method: "PUT", json: { order_email: el.order_email.value.trim(), address: el.address.value } });
           toast("Saved"); loadPriceList(); } catch (e) { fail(e); }
       });
+      // tap twice to remove: no browser confirm(), which Chrome can silently switch off for a site after a few
       $$("#plVendors [data-remove]").forEach(b => b.onclick = async () => {
-        if (!confirm(`Take “${b.dataset.label}” out of the Price List? Its items disappear for everyone. POs already sent keep their copy.`)) return;
+        if (!b.dataset.armed) {
+          b.dataset.armed = "1"; b.textContent = "Tap again to remove"; b.classList.add("danger");
+          toast(`“${b.dataset.label}” comes out of the Price List for everyone. POs already sent keep their copy.`);
+          setTimeout(() => { delete b.dataset.armed; b.textContent = "Remove"; b.classList.remove("danger"); }, 5000);
+          return;
+        }
         try { await api(`api/admin/pricelist/sheets/${b.dataset.remove}/remove`, { method: "POST" }); toast("Removed"); loadPriceList(); }
         catch (e) { fail(e); }
       });
