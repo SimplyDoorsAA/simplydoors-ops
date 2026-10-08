@@ -365,7 +365,8 @@
       plReplaceOptions();
       $("#plCols").innerHTML = `First row: column names (any order). Needed: <b>${esc(d.required.join(", "))}</b>. Optional: ${esc(d.columns.filter(c => !d.required.includes(c)).join(", "))}.<br>
         category must be one of: ${esc(d.categories.join(" · "))}. price blank = call for price. stocked: Y / N / blank. width_in / height_in: door size in inches.<br>
-        Other price levels: add columns named <b>compare</b> + a name (e.g. “compare Pallet”, up to 6). They show on the item for comparison; a PO always uses price.`;
+        Other price levels: add columns named <b>compare</b> + a name (e.g. “compare Pallet”, up to 6). They show on the item for comparison; a PO always uses price.<br>
+        pack: the pack sizes it's sold in (e.g. 25, or 6, 12). The buy list warns when a quantity isn't whole packs.`;
       $("#plSheets").innerHTML = d.sheets.length ? `<table class="rows"><thead><tr><th>Vendor</th><th>Sheet</th><th>Items</th><th class="hide-sm">Loaded</th></tr></thead><tbody>` +
         d.sheets.map(s => `<tr${s.active ? "" : ' style="opacity:.55"'}><td>${esc((d.vendors.find(v => v.code === s.vendor) || {}).name || s.vendor)}</td>
           <td>${esc(s.label)}${s.active ? ' <span class="badge ok">live</span>' : ""}<div class="det">${esc(s.filename)}</div></td><td>${s.items}</td>

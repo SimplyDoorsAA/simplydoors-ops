@@ -73,7 +73,8 @@ CREATE TABLE IF NOT EXISTS pl_items (
     flag TEXT NOT NULL DEFAULT '',               -- why this line needs checking with the rep
     compare TEXT NOT NULL DEFAULT '',            -- JSON [[label, price], ...]: other price levels, for comparison only
     edited_at TEXT,                              -- set when someone changed or added this item in the app
-    edited_by TEXT
+    edited_by TEXT,
+    pack TEXT NOT NULL DEFAULT ''                -- pack sizes it's sold in, e.g. "25" or "6, 12" ('' = any quantity)
 );
 CREATE INDEX IF NOT EXISTS pl_items_sheet ON pl_items(sheet_id);
 
@@ -134,6 +135,8 @@ def init(c) -> None:
     if "edited_at" not in cols:
         c.execute("ALTER TABLE pl_items ADD COLUMN edited_at TEXT")
         c.execute("ALTER TABLE pl_items ADD COLUMN edited_by TEXT")
+    if "pack" not in cols:
+        c.execute("ALTER TABLE pl_items ADD COLUMN pack TEXT NOT NULL DEFAULT ''")
 
 
 # ------------------------------------------------------------------ who can see it
@@ -193,7 +196,7 @@ def vendors() -> list[dict]:
 
 
 ITEM_COLS = ("id", "sku", "mfr", "name", "cat", "grp", "w", "h", "th", "core", "price", "stock", "uom", "hand",
-             "brand", "page", "flag")
+             "brand", "page", "flag", "pack")
 
 
 def _compare(raw: str) -> list[dict]:
@@ -254,7 +257,7 @@ def get_item(item_id: int):
 
 # The upload format. One row per item; the first row holds these names (any order, case doesn't matter).
 CSV_COLUMNS = ("sku", "name", "category", "price", "group", "mfr", "width_in", "height_in", "thickness", "core",
-               "stocked", "uom", "hand", "brand", "page", "flag")
+               "stocked", "uom", "hand", "brand", "page", "flag", "pack")
 REQUIRED = ("sku", "name", "category", "price")
 COMPARE_PREFIX = "compare "   # e.g. a column named "compare Pallet": another price level, shown for comparison only
 MAX_COMPARE = 6
@@ -262,6 +265,23 @@ MAX_COMPARE = 6
 
 class SheetError(ValueError):
     pass
+
+
+def clean_pack(v) -> str:
+    """Pack sizes as "6, 12": whole numbers 2-999, any separators, smallest first. 1 or blank = any quantity."""
+    sizes = sorted({int(x) for x in re.findall(r"\d+", str(v or "")) if 2 <= int(x) <= 999})[:5]
+    return ", ".join(str(x) for x in sizes)
+
+
+def pack_ok(qty: int, pack: str) -> bool:
+    """Can qty be made of whole packs (any mix of the sizes)?"""
+    sizes = [int(x) for x in re.findall(r"\d+", pack or "")]
+    if not sizes:
+        return True
+    can = [True] + [False] * qty
+    for q in range(1, qty + 1):
+        can[q] = any(q >= s and can[q - s] for s in sizes)
+    return can[qty]
 
 
 def _num(v, field, line, allow_blank=True):
@@ -327,7 +347,7 @@ def parse_sheet(raw: bytes) -> list[dict]:
             "stock": 1 if stocked in ("Y", "YES", "1", "TRUE") else 0 if stocked in ("N", "NO", "0", "FALSE") else None,
             "uom": get(row, "uom")[:30], "hand": get(row, "hand")[:4], "brand": get(row, "brand")[:40],
             "page": int(page) if page is not None else None, "flag": get(row, "flag")[:300],
-            "compare": json.dumps(compare) if compare else "",
+            "compare": json.dumps(compare) if compare else "", "pack": clean_pack(get(row, "pack")),
         })
     if not out:
         raise SheetError("The file has no items.")
@@ -363,10 +383,10 @@ def load_sheet(vendor: str, label: str, filename: str, rows: list[dict], who: st
         sid = cur.lastrowid
         c.executemany(
             "INSERT INTO pl_items(sheet_id, vendor, sku, mfr, name, cat, grp, w, h, th, core, price, stock, uom, hand, brand,"
-            " page, flag, compare) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " page, flag, compare, pack) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [(sid, vendor, r["sku"], r["mfr"], r["name"], r["cat"], r["grp"], r["w"], r["h"], r["th"], r["core"],
-              r["price"], r["stock"], r["uom"], r["hand"], r["brand"], r["page"], r["flag"], r.get("compare", ""))
-             for r in rows])
+              r["price"], r["stock"], r["uom"], r["hand"], r["brand"], r["page"], r["flag"], r.get("compare", ""),
+              r.get("pack", "")) for r in rows])
         _drop_dead_items(c, vendor)
         c.execute("COMMIT")
     except Exception:
@@ -402,7 +422,7 @@ def remove_sheet(sheet_id: int):
 EDIT_FIELDS = {"sku": ("sku", 60), "name": ("name", 160), "cat": ("cat", "cat"), "grp": ("grp", 120), "mfr": ("mfr", 60),
                "w": ("w", "num"), "h": ("h", "num"), "th": ("th", 20), "core": ("core", 40), "price": ("price", "price"),
                "stock": ("stock", "stock"), "uom": ("uom", 30), "hand": ("hand", 4), "brand": ("brand", 40),
-               "flag": ("flag", 300), "compare": ("compare", "compare")}
+               "flag": ("flag", 300), "compare": ("compare", "compare"), "pack": ("pack", "pack")}
 
 
 def clean_fields(body: dict, partial: bool) -> dict:
@@ -426,6 +446,8 @@ def clean_fields(body: dict, partial: bool) -> dict:
             out[col] = None if not n else round(n, 2)
         elif kind == "stock":
             out[col] = None if v is None or v == "" else (1 if v in (True, 1, "1", "Y", "y") else 0)
+        elif kind == "pack":
+            out[col] = clean_pack(v)
         elif kind == "compare":
             rows = []
             for c in (v or [])[:MAX_COMPARE]:
@@ -514,7 +536,7 @@ def sheet_csv(sheet_id: int):
         cmp = dict((lbl, p) for lbl, p in json.loads(r["compare"] or "[]"))
         w.writerow([r["sku"], r["name"], r["cat"], "" if r["price"] is None else f"{r['price']:.2f}", r["grp"], r["mfr"],
                     num(r["w"]), num(r["h"]), r["th"], r["core"], {1: "Y", 0: "N"}.get(r["stock"], ""), r["uom"],
-                    r["hand"], r["brand"], "" if r["page"] is None else r["page"], r["flag"]]
+                    r["hand"], r["brand"], "" if r["page"] is None else r["page"], r["flag"], r["pack"]]
                    + [f"{cmp[lbl]:.2f}" if lbl in cmp else "" for lbl in labels[:MAX_COMPARE]])
     return s, buf.getvalue()
 
@@ -568,7 +590,8 @@ def build_lines(vendor: str, wanted: list) -> tuple[list[dict], float, str]:
         calc = line_calc(it, min(qty, MAX_QTY))
         lines.append({"item_id": iid, "sku": it["sku"], "name": it["name"], "size": size_label(it["w"], it["h"]),
                       "qty": min(qty, MAX_QTY), "price": it["price"], "uom": it["uom"], "surcharge": calc["surcharge"],
-                      "total": calc["total"] if it["price"] is not None else None, "flag": it["flag"]})
+                      "total": calc["total"] if it["price"] is not None else None, "flag": it["flag"],
+                      **({"pack": it["pack"], "not_full_packs": True} if not pack_ok(min(qty, MAX_QTY), it["pack"]) else {})})
         total += calc["total"] if it["price"] is not None else 0
     return lines, round(total, 2), " · ".join(labels)
 

@@ -45,7 +45,8 @@ GitHub Pages portal + Google Apps Script, one form at a time.
   next to them, and a sheet can be removed. Columns: `sku, name, category, price` (required) plus `group, mfr, width_in,
   height_in, thickness, core, stocked, uom, hand, brand, page, flag`, and up to 6 `compare <name>` columns (e.g.
   `compare Pallet`): other price levels shown on the item for comparison only; a PO always uses `price`. A blank price
-  shows as "Call for price"; a part number used twice is kept and flagged.
+  shows as "Call for price"; a part number used twice is kept and flagged. A `pack` column (e.g. `25` or `6, 12`)
+  makes the buy list and PO preview warn when a quantity isn't whole packs, with a one-tap round-up.
 - **Vendors:** Woodgrain, Boise Cascade, Simpson and Novo are built in; an admin can add more in Admin → Price List →
   Add a vendor (name only; the PO email and address are set on the vendor's card).
 - **Compare vendors:** every door's item panel shows each other vendor's cheapest matching door (same size,
