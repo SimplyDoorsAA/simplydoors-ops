@@ -2121,3 +2121,22 @@ def test_price_list_review_fixes(client, smtp, monkeypatch):
                                                            "lines": lines}, headers=H)
     assert r.status_code == 200, r.text
     assert any("typed-in vendor" in a[0] for a in sent_alerts)
+
+
+def test_price_sheet_odd_numbers_and_damaged_csv_are_refused_cleanly():
+    from app import pricelist
+    for bad in ("nan", "NaN", "inf", "-inf"):
+        with pytest.raises(pricelist.SheetError):
+            pricelist._num(bad, "Price", 0)
+    with pytest.raises(pricelist.SheetError):   # a cell over the csv module's size limit: a message, not a 500
+        pricelist.parse_sheet(b'sku,name,category,price\nA1,"' + b"x" * 200_000 + b'",Doors,10\n')
+    out = pricelist.clean_fields({"compare": ["not a dict", {"label": "Lvl 2", "price": "5"}]}, partial=True)
+    assert list(out.values()) == ['[["Lvl 2", 5.0]]']
+
+
+def test_po_pdf_keeps_line_breaks_in_notes():
+    from app import pdf
+    po = {"po_number": "PO-NL-1", "order_date": "2026-10-08", "job_number": "", "job_customer": "", "ship_method": "Delivery",
+          "ship_to": "shop", "ship_address": "", "notes": "Call before delivery\nGate code 1234", "lines": [], "total": 0,
+          "sheet_label": "Test", "by": "Test", "manual": 1}
+    assert pdf.build_po_pdf(po, {"name": "Test Vendor", "address": []})[:4] == b"%PDF"

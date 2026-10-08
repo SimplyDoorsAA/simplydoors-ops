@@ -666,11 +666,11 @@
         <div class="grid2"><div class="field"><label for="man-date">Order date</label><input id="man-date" type="date" data-m="date" value="${esc(m.date)}"></div>
           <div class="field"><label for="man-method">Shipping method</label><select id="man-method" data-m="method">${SHIP.map(x => opt(x, x, m.method)).join("")}</select></div></div>
         <div class="field"><label for="man-ship">Ship to</label><select id="man-ship" data-m="shipto">${opt("shop", "Our shop (Schertz)", m.shipto)}${opt("site", "Job site", m.shipto)}</select></div>
-        <div class="field"><label>Lines</label></div>
+        <div class="field"><label>Lines</label><div class="small">No price yet? Leave Unit $ blank and it shows as TBD.</div></div>
         ${m.lines.map((l, i) => `<div class="mline">
           <div class="r1"><input data-ml="${i}:qty" inputmode="numeric" placeholder="Qty" value="${esc(l.qty)}" aria-label="Quantity">
             <input data-ml="${i}:sku" placeholder="Part #" maxlength="60" value="${esc(l.sku)}" aria-label="Part number">
-            <input data-ml="${i}:price" inputmode="decimal" placeholder="Unit $ (blank = TBD)" value="${esc(l.price)}" aria-label="Unit price">
+            <input data-ml="${i}:price" inputmode="decimal" placeholder="Unit $" value="${esc(l.price)}" aria-label="Unit price">
             <input data-ml="${i}:uom" placeholder="Per" maxlength="30" value="${esc(l.uom)}" aria-label="Per"></div>
           <div class="r2"><input data-ml="${i}:name" placeholder="Description" maxlength="160" value="${esc(l.name)}" aria-label="Description">
             <button type="button" class="rm" data-mrm="${i}" aria-label="Remove line">×</button></div>
