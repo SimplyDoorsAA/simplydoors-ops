@@ -313,8 +313,6 @@ def item_rows(it: dict) -> list[tuple[str, str]]:
         k, ft, v = f["key"], f["type"], it.get(f["key"])
         if k in ("bore_mode", "db_mode") and v == "Standard" and standard_bore(it, k == "db_mode"):
             v = f"Standard ({standard_bore(it, k == 'db_mode')})"
-        if k == "db_mode" and v == "None":
-            v = "None"
         if ft == "size":
             v = fmt_size(v) + ((f" ({_dec(v)})" if v.get("f") else "") + " from top" if k in ("bore_at", "db_at") and fmt_size(v) else "")
         elif ft == "hinges":
