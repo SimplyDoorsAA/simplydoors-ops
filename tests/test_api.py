@@ -1656,3 +1656,52 @@ def test_pack_sizes_are_checked_on_the_po(client, monkeypatch):
     assert r.status_code == 200 and r.json()["pack"] == "250"
     csv_text = client.get(f"/ops/api/pricelist/sheets/{by['TST-PK-1']['sheet_id']}/csv", headers=H).content
     assert {x["sku"]: x["pack"] for x in pricelist.parse_sheet(csv_text)} == {"TST-PK-1": "25", "TST-PK-2": "250"}
+
+
+def test_hand_written_po_download_then_send(client, smtp, monkeypatch):
+    from app import sfjobs
+    monkeypatch.setattr(sfjobs, "CLIENT_ID", "id")
+    monkeypatch.setattr(sfjobs, "CLIENT_SECRET", "secret")
+    _seed_job("10236499003", "PO-HAND-1", customer="Hand Customer", street="9 Hand St")
+    login(client, "Jaime Mendoza", "135790")                      # Price List on (earlier tests); not an admin
+    conn().execute("UPDATE staff SET price_list=1 WHERE name='Jaime Mendoza'")
+    lines = [{"qty": "2", "sku": "CUSTOM-1", "name": "Special order slab", "price": "125.50", "uom": "EA"},
+             {"qty": 1, "sku": "", "name": "Freight", "price": ""}]
+    # one-off vendor, no job, typed PO #: download only
+    body = {"action": "download", "other_vendor": {"name": "Acme Millwork", "address": "1 Main St\nAustin, TX"},
+            "po_number": "SHOP-1042", "ship_method": "Delivery", "ship_to": "shop", "lines": lines, "notes": "Hold for pickup"}
+    assert client.post("/ops/api/pricelist/pos/manual", json={**body, "po_number": ""}, headers=H).status_code == 422
+    assert client.post("/ops/api/pricelist/pos/manual", json={**body, "lines": [{"qty": 0, "name": "x"}]}, headers=H).status_code == 422
+    assert client.post("/ops/api/pricelist/pos/manual", json={**body, "lines": [{"qty": 1, "name": "x", "price": "abc"}]}, headers=H).status_code == 422
+    r = client.post("/ops/api/pricelist/pos/manual", json=body, headers=H)
+    assert r.status_code == 200, r.text
+    po = r.json()
+    assert po["status"] == "downloaded" and po["manual"] and po["vendor_name"] == "Acme Millwork" and po["sent_to"] == ""
+    assert po["vendor_address"] == ["1 Main St", "Austin, TX"] and po["total"] == 251.0 and po["lines"][1]["total"] is None
+    assert conn().execute("SELECT COUNT(*) FROM emails WHERE po_id=?", (po["id"],)).fetchone()[0] == 0     # nothing emailed
+    pdf = client.get(f"/ops/api/pricelist/pos/{po['id']}/pdf?download=1", headers=H)
+    assert pdf.status_code == 200 and pdf.content[:4] == b"%PDF" and pdf.headers["content-disposition"].startswith("attachment")
+    assert any(p["id"] == po["id"] and p["status"] == "downloaded" for p in client.get("/ops/api/pricelist/pos", headers=H).json())
+    # sending it later needs a vendor email; a one-off vendor without one can't be sent
+    assert client.post(f"/ops/api/pricelist/pos/{po['id']}/send", headers=H).status_code == 400
+    # listed vendor with a Service Fusion job, sent straight away
+    r = client.post("/ops/api/pricelist/pos/manual", json={"action": "send", "vendor": "WG", "job_number": "10236499003",
+                                                           "ship_method": "Delivery", "ship_to": "site", "lines": lines}, headers=H)
+    assert r.status_code == 200, r.text
+    po2 = r.json()
+    assert po2["po_number"] == "PO-HAND-1" and po2["status"] == "sent" and po2["sent_to"] == "orders@vendor.test"
+    assert po2["job_customer"] == "Hand Customer" and "9 Hand St" in po2["ship_address"]
+    assert client.post(f"/ops/api/pricelist/pos/{po2['id']}/send", headers=H).status_code == 409             # already sent
+    # a listed-vendor PO saved first, sent later
+    r = client.post("/ops/api/pricelist/pos/manual", json={**body, "other_vendor": None, "vendor": "WG", "po_number": "SHOP-1043"}, headers=H)
+    po3 = r.json()
+    assert po3["status"] == "downloaded" and po3["vendor_name"] == ""
+    r = client.post(f"/ops/api/pricelist/pos/{po3['id']}/send", headers=H)
+    assert r.status_code == 200 and r.json()["status"] == "sent" and r.json()["sent_to"] == "orders@vendor.test"
+    e = conn().execute("SELECT recipients, cc FROM emails WHERE po_id=?", (po3["id"],)).fetchone()
+    assert e["recipients"] == "orders@vendor.test" and e["cc"] == "admin@simplydoors.com"
+    acts = [r[0] for r in conn().execute("SELECT action FROM audit WHERE target IN (?,?,?)",
+                                         (f"po:{po['id']}", f"po:{po2['id']}", f"po:{po3['id']}"))]
+    assert acts.count("po_downloaded") == 2 and acts.count("po_sent") == 2
+    # the one-off vendor never shows in the vendor list
+    assert all(v["code"] != "XX" for v in client.get("/ops/api/pricelist/vendors", headers=H).json())

@@ -47,7 +47,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-38"
+APP_VERSION = "stage3-39"
 
 
 @asynccontextmanager
@@ -1516,6 +1516,121 @@ async def pl_send_po(request: Request, staff=Depends(current_pricelist)):
     return pricelist.po_out(pricelist.get_po(pid), with_lines=True)
 
 
+PO_NUMBER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._/#-]{0,39}$")
+
+
+def _po_email_to(staff, v_email: str, v_name: str):
+    """(send to, is test) for emailing a PO: the owner in test mode gets it instead of the vendor."""
+    test = bool(staff["is_owner"]) and get_setting("owner_test_mode") == "1"
+    if test:
+        em = (staff["email"] or "").strip()
+        if not em:
+            raise HTTPException(400, "Test mode sends the PO to you, but your account has no email.")
+        return em, True
+    if not v_email:
+        raise HTTPException(400, f"{v_name} has no order email yet. Download the PO instead, or an admin sets the email in Admin → Price List.")
+    return v_email, False
+
+
+def _queue_po(pid: int, sent_to: str, test: bool, po_number: str):
+    subject = f"{'TEST - ' if test else ''}SimplyDoors Purchase Order {po_number}"
+    if test:
+        conn().execute("INSERT INTO emails(report_id, po_id, recipients, cc, subject, created_at, next_try_at, audience)"
+                       " VALUES (NULL,?,?,'',?,?,?,'vendor')", (pid, sent_to, subject, now_iso(), now_iso()))
+        mailer._wake.set()
+    else:
+        mailer.queue_po_email(pid, sent_to, subject)
+
+
+@app.post("/api/pricelist/pos/manual")
+async def pl_manual_po(request: Request, staff=Depends(current_pricelist)):
+    """A PO filled in by hand: any lines and prices, a listed or one-off vendor, a Service Fusion job or a typed PO #.
+    action "download" saves it as 'downloaded' (nothing emailed); "send" emails it like any PO."""
+    body = await request.json()
+    body = body if isinstance(body, dict) else {}
+    action = "send" if body.get("action") == "send" else "download"
+    other = body.get("other_vendor") if isinstance(body.get("other_vendor"), dict) else None
+    if other:
+        code = pricelist.ONE_OFF
+        v_name = " ".join(str(other.get("name", "")).split())[:80]
+        v_addr = "\n".join(x.strip() for x in str(other.get("address", "")).splitlines() if x.strip())[:400]
+        v_email = str(other.get("email", "")).strip()[:120]
+        if len(v_name) < 2:
+            raise HTTPException(422, "Type the vendor's name.")
+        if v_email and not EMAIL_RE.match(v_email):
+            raise HTTPException(422, "That vendor email doesn't look right.")
+        order_email = v_email
+    else:
+        v = _vendor(str(body.get("vendor", "")))
+        code, v_name, v_addr, v_email, order_email = v["code"], "", "", "", v["order_email"]
+    job = str(body.get("job_number", "")).strip()
+    customer, address = "", str(body.get("ship_address", "")).strip()[:300]
+    if job:
+        if not re.fullmatch(r"\d{4,20}", job):
+            raise HTTPException(422, "That job number doesn't look right. Pick the job again.")
+        if not sfjobs.configured():
+            raise HTTPException(400, "The job lookup isn't connected to Service Fusion. Use “No job” and type the PO #.")
+        d = await run_in_threadpool(sfjobs.details, job)
+        if not d:
+            raise HTTPException(404, "That job isn't in the open-jobs list any more. Tap Refresh and pick it again.")
+        po_number = (d.get("po_number") or "").strip()
+        if not po_number:
+            raise HTTPException(422, "This job has no PO number in Service Fusion. Add it there, or use “No job” and type one.")
+        customer, address = d.get("customer") or "", d.get("address") or ""
+    else:
+        po_number = " ".join(str(body.get("po_number", "")).split())
+        if not PO_NUMBER_RE.match(po_number):
+            raise HTTPException(422, "Type a PO number (letters, numbers, - / . #, up to 40).")
+    method = str(body.get("ship_method", ""))
+    if method not in pricelist.SHIP_METHODS:
+        raise HTTPException(422, "Pick a shipping method.")
+    ship_to = "site" if body.get("ship_to") == "site" else "shop"
+    day = str(body.get("order_date", ""))
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        day = datetime.now(pricelist_tz()).strftime("%Y-%m-%d")
+    try:
+        lines, total = pricelist.clean_manual_lines(body.get("lines"))
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+    notes = str(body.get("notes", "")).strip()[:1000]
+    sent_to, test = (_po_email_to(staff, order_email, v_name or _vendor(code)["name"]) if action == "send" else ("", False))
+    c = conn()
+    cur = c.execute(
+        "INSERT INTO pl_pos(po_number, vendor, job_number, job_customer, order_date, ship_method, ship_to, ship_address,"
+        " notes, lines, total, sheet_label, staff_id, sent_to, is_test, created_at, status, manual, vendor_name,"
+        " vendor_address, vendor_email) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)",
+        (po_number, code, job, customer, day, method, ship_to, address, notes, json.dumps(lines), total,
+         "Written by hand", staff["id"], sent_to, 1 if test else 0, now_iso(), "sent" if action == "send" else "downloaded",
+         v_name, v_addr, v_email))
+    pid = cur.lastrowid
+    if action == "send":
+        _queue_po(pid, sent_to, test, po_number)
+    audit(staff["id"], staff["name"], "po_sent" if action == "send" else "po_downloaded", f"po:{pid}",
+          {"po": po_number, "vendor": v_name or _vendor(code)["name"], "job": job, "to": sent_to, "lines": len(lines),
+           "total": total, "by_hand": True, **({"test": True} if test else {})}, client_ip(request), ua(request))
+    return pricelist.po_out(pricelist.get_po(pid), with_lines=True)
+
+
+@app.post("/api/pricelist/pos/{pid}/send")
+def pl_send_saved_po(pid: int, request: Request, staff=Depends(current_pricelist)):
+    """Email a PO that was saved and downloaded earlier."""
+    r = _po_or_404(pid)
+    if r["status"] != "downloaded":
+        raise HTTPException(409, "This PO was already sent.")
+    po = pricelist.po_out(r)
+    if po["vendor_name"]:
+        email, name = r["vendor_email"], po["vendor_name"]
+    else:
+        v = _vendor(po["vendor"])
+        email, name = v["order_email"], v["name"]
+    sent_to, test = _po_email_to(staff, email, name)
+    conn().execute("UPDATE pl_pos SET status='sent', sent_to=?, is_test=? WHERE id=?", (sent_to, 1 if test else 0, pid))
+    _queue_po(pid, sent_to, test, po["po_number"])
+    audit(staff["id"], staff["name"], "po_sent", f"po:{pid}", {"po": po["po_number"], "vendor": name, "to": sent_to,
+          "after_download": True, **({"test": True} if test else {})}, client_ip(request), ua(request))
+    return pricelist.po_out(pricelist.get_po(pid), with_lines=True)
+
+
 def pricelist_tz():
     from zoneinfo import ZoneInfo
     return ZoneInfo(os.environ.get("TZ_DISPLAY", "America/Chicago"))
@@ -1544,14 +1659,14 @@ def pl_po(pid: int, staff=Depends(current_pricelist)):
 
 
 @app.get("/api/pricelist/pos/{pid}/pdf")
-def pl_po_pdf(pid: int, request: Request, staff=Depends(current_pricelist)):
+def pl_po_pdf(pid: int, request: Request, download: int = 0, staff=Depends(current_pricelist)):
     from .pdf import build_po_pdf
     r = _po_or_404(pid)
     po = pricelist.po_out(r, with_lines=True)
     audit(staff["id"], staff["name"], "po_pdf_downloaded", f"po:{pid}", {"po": po["po_number"]}, client_ip(request), ua(request))
-    pdf = build_po_pdf(po, _vendor(po["vendor"]))
+    pdf = build_po_pdf(po, pricelist.po_vendor(po))
     return Response(pdf, media_type="application/pdf",
-                    headers={"Content-Disposition": f'inline; filename="SimplyDoors_PO_{pricelist.safe_name(po["po_number"])}.pdf"'})
+                    headers={"Content-Disposition": f'{"attachment" if download else "inline"}; filename="SimplyDoors_PO_{pricelist.safe_name(po["po_number"])}.pdf"'})
 
 
 # admin side: vendor order emails and price sheet uploads

@@ -117,7 +117,9 @@ SEED_VENDORS = [
     ("BC", "Boise Cascade", "", "", 2),
     ("SP", "Simpson", "", "", 3),
     ("NV", "Novo", "", "", 4),
+    ("XX", "One-off vendor", "", "", 999),       # hand-written POs to a vendor that isn't in the list (never shown)
 ]
+ONE_OFF = "XX"
 
 OUR_NAME = "SimplyDoors"
 OUR_ADDRESS = ["17750 Lookout Rd, Unit 150", "Schertz, TX 78154", "(210) 903-8450", "admin@simplydoors.com"]
@@ -137,6 +139,14 @@ def init(c) -> None:
         c.execute("ALTER TABLE pl_items ADD COLUMN edited_by TEXT")
     if "pack" not in cols:
         c.execute("ALTER TABLE pl_items ADD COLUMN pack TEXT NOT NULL DEFAULT ''")
+    pcols = [r[1] for r in c.execute("PRAGMA table_info(pl_pos)")]
+    if "status" not in pcols:
+        # hand-written POs (manual=1) and POs saved and downloaded without being emailed (status 'downloaded')
+        c.execute("ALTER TABLE pl_pos ADD COLUMN status TEXT NOT NULL DEFAULT 'sent'")
+        c.execute("ALTER TABLE pl_pos ADD COLUMN manual INTEGER NOT NULL DEFAULT 0")
+        c.execute("ALTER TABLE pl_pos ADD COLUMN vendor_name TEXT NOT NULL DEFAULT ''")      # one-off vendor only
+        c.execute("ALTER TABLE pl_pos ADD COLUMN vendor_address TEXT NOT NULL DEFAULT ''")
+        c.execute("ALTER TABLE pl_pos ADD COLUMN vendor_email TEXT NOT NULL DEFAULT ''")
 
 
 # ------------------------------------------------------------------ who can see it
@@ -183,7 +193,7 @@ def live_sheets(vendor: str) -> list[dict]:
 def vendors() -> list[dict]:
     c = conn()
     out = []
-    for v in c.execute("SELECT * FROM pl_vendors ORDER BY sort, code"):
+    for v in c.execute("SELECT * FROM pl_vendors WHERE code != ? ORDER BY sort, code", (ONE_OFF,)):
         sheets = live_sheets(v["code"])
         newest = sheets[-1] if sheets else None
         out.append({"code": v["code"], "name": v["name"], "address": v["address"].split("\n") if v["address"] else [],
@@ -601,13 +611,54 @@ def po_out(r, with_lines=False) -> dict:
          "job_customer": r["job_customer"], "order_date": r["order_date"], "ship_method": r["ship_method"],
          "ship_to": r["ship_to"], "ship_address": r["ship_address"], "notes": r["notes"], "total": r["total"],
          "sheet_label": r["sheet_label"], "sent_to": r["sent_to"], "created_at": r["created_at"],
-         "is_test": bool(r["is_test"]),
+         "is_test": bool(r["is_test"]), "status": r["status"], "manual": bool(r["manual"]),
+         "vendor_name": r["vendor_name"], "vendor_address": r["vendor_address"].split("\n") if r["vendor_address"] else [],
          "by": r["staff_name"] if "staff_name" in r.keys() else ""}
     lines = json.loads(r["lines"])
     d["line_count"] = len(lines)
     if with_lines:
         d["lines"] = lines
     return d
+
+
+def po_vendor(po: dict) -> dict:
+    """Name and address printed on a PO: the one-off vendor typed on it, or the listed vendor."""
+    if po.get("vendor_name"):
+        return {"code": po["vendor"], "name": po["vendor_name"], "address": po.get("vendor_address") or []}
+    return next((v for v in vendors() if v["code"] == po["vendor"]), {"code": po["vendor"], "name": po["vendor"], "address": []})
+
+
+def clean_manual_lines(raw) -> tuple[list[dict], float]:
+    """Lines typed on a hand-written PO: [{qty, sku, name, price, uom}]. Raises ValueError with a plain reason."""
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("Add at least one line.")
+    if len(raw) > MAX_LINES:
+        raise ValueError(f"A PO can have at most {MAX_LINES} lines.")
+    lines, total = [], 0.0
+    for i, ln in enumerate(raw, start=1):
+        ln = ln if isinstance(ln, dict) else {}
+        try:
+            qty = int(str(ln.get("qty", "")).strip() or 0)
+        except ValueError:
+            raise ValueError(f"Line {i}: the quantity isn't a whole number.") from None
+        if not 1 <= qty <= MAX_QTY:
+            raise ValueError(f"Line {i}: quantities must be 1 to {MAX_QTY}.")
+        name = " ".join(str(ln.get("name", "")).split())[:160]
+        if not name:
+            raise ValueError(f"Line {i}: the description is empty.")
+        p = str(ln.get("price", "")).strip().replace("$", "").replace(",", "")
+        try:
+            price = None if p == "" else round(float(p), 2)
+        except ValueError:
+            raise ValueError(f"Line {i}: the price isn't a number.") from None
+        if price is not None and not 0 <= price <= 1_000_000:
+            raise ValueError(f"Line {i}: the price is out of range.")
+        t = round(price * qty, 2) if price is not None else None
+        lines.append({"sku": " ".join(str(ln.get("sku", "")).split())[:60], "name": name, "size": "", "qty": qty,
+                      "price": price, "uom": " ".join(str(ln.get("uom", "")).split())[:30], "surcharge": 0.0,
+                      "total": t, "flag": ""})
+        total += t or 0
+    return lines, round(total, 2)
 
 
 def recent_pos(limit=50) -> list[dict]:

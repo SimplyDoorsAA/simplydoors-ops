@@ -54,6 +54,10 @@ GitHub Pages portal + Google Apps Script, one form at a time.
   style"), and the **Compare** tab lists every vendor's matches for a size, cheapest first. Editors tag styles per group
   (Price sheets → Tag match styles, or in the item editor); tags are kept by group name, so they carry over to a new
   version of the sheet.
+- **Hand-written POs:** Buy list → "Write a PO by hand" (or "Edit as a hand-written PO" on a vendor's buy list): a
+  listed or one-off vendor, any lines and prices (or pick from the price list), a Service Fusion job or "No job" with a
+  typed PO #. "Save & download PDF" keeps it in Purchase orders as "Downloaded, not sent" (nothing emailed; it can be
+  sent later); "Send to vendor" emails it like any PO. Every PO can be downloaded as a PDF.
 - **Editing items:** people with **Can edit Price List items** (Admin → Staff, e.g. the purchaser; it needs the Price List
   switch too) get **✎ Edit this item** on every item: any field, the ⚠ note and the comparison prices. They can also add an
   item to a sheet, delete one, and download a sheet (with its edits) as a CSV to change in Excel and load back. Every change
