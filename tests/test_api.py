@@ -1030,6 +1030,12 @@ def test_rma_vendor_and_customer(client):
     e = conn().execute("SELECT subject FROM emails ORDER BY id DESC LIMIT 1").fetchone()[0]
     assert e.startswith("RMA from customer: SD-10 - Lee")
     assert client.get(f"/ops/api/admin/reports/{rid['id']}/pdf", headers=H).status_code == 200
+    # switched to a vendor return after ticking a restocking fee: the leftover "Yes" doesn't make the fee amount required
+    r = client.post("/ops/api/reports/rma", data={**v, "restock": "Yes", "submission_id": "sub-rma-0006"},
+                    files=photos, headers=H)
+    assert r.status_code == 200, r.text
+    d = json.loads(conn().execute("SELECT data FROM reports WHERE submission_id='sub-rma-0006'").fetchone()[0])
+    assert "restock" not in d and "restock_amt" not in d
 
 
 def test_owner_test_mode_and_log_cleanup(client):
