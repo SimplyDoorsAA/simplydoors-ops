@@ -2222,3 +2222,68 @@ def test_saved_po_says_whether_a_one_off_vendor_can_be_emailed(client):
     b = client.post("/ops/api/pricelist/pos/manual", json={**body, "other_vendor": {"name": "Email Co", "email": "x@email.test"}}, headers=H).json()
     assert a["vendor_email_set"] is False and b["vendor_email_set"] is True
     assert "x@email.test" not in json.dumps(client.get("/ops/api/pricelist/pos", headers=H).json())       # the flag, not the address
+
+
+def test_one_customer_across_measure_studio_and_sf(client):
+    """A lead from the form is picked in Measure and in Studio's quote screen; both show on the lead."""
+    import base64 as b64, hashlib as hl, hmac as hm, time as tm, urllib.parse as up
+    from app import main as M
+    _intake(client, "flow-lead-0001", ip="192.0.2.150", name="Nina Flow", phone="(210) 555-0311", address="44 Pine St")
+    lead = _lead("flow-lead-0001")
+    lid = lead["id"]
+    # Measure: anyone who can measure finds it (name/address in the list, phone with the pick, which is logged)
+    login(client, "Paz Galambos", "112233")
+    res = client.get("/ops/api/measure/leads?q=nina", headers=H).json()["results"]
+    assert [x["id"] for x in res] == [lid] and "phone" not in res[0]
+    assert client.get("/ops/api/measure/leads?q=0311", headers=H).json()["results"][0]["id"] == lid   # by phone digits
+    d = client.get(f"/ops/api/measure/leads/{lid}", headers=H).json()
+    assert d["phone"] == "(210) 555-0311" and d["address"] == "44 Pine St"
+    assert conn().execute("SELECT 1 FROM audit WHERE action='lead_picked_for_measure' AND target=?", (f"lead:{lid}",)).fetchone()
+    r = _measure(client, "flow-msr-0001", [_door()], customer="Nina Flow", lead_id=str(lid))
+    assert r.status_code == 200, r.text
+    msr = r.json()["receipt"]
+    data = json.loads(conn().execute("SELECT data FROM reports WHERE receipt=?", (msr,)).fetchone()[0])
+    assert data["lead_id"] == lid and data["lead_receipt"] == lead["receipt"]
+    assert _measure(client, "flow-msr-0002", [_door()], lead_id="999999").status_code == 422
+    det = client.get(f"/ops/api/leads/{lid}", headers=H).json()
+    assert det["status"] == "measure_booked" and [m["receipt"] for m in det["measures"]] == [msr]
+    assert any(h["what"].startswith(f"Measured: {msr}") for h in det["history"])
+    # a revision keeps the lead and doesn't log it twice
+    mid = conn().execute("SELECT id FROM reports WHERE receipt=?", (msr,)).fetchone()[0]
+    r2 = _measure(client, "flow-msr-0003", [_door()], customer="Nina Flow", revision_of=msr)
+    assert r2.status_code == 200 and json.loads(conn().execute("SELECT data FROM reports WHERE receipt=?",
+                                                               (r2.json()["receipt"],)).fetchone()[0])["lead_id"] == lid
+    assert mid
+    # Studio: signed search and pick, and "quoted" comes back onto the lead
+    secret = "s" * 64
+    old, M.STUDIO_SSO_SECRET = M.STUDIO_SSO_SECRET, secret
+
+    def signed(method, path, params=None, who="Adem Atis"):
+        query = up.urlencode(params or {})
+        ts = str(int(tm.time()))
+        key = hm.new(secret.encode(), b"studio-sf-api", hl.sha256).digest()
+        sig = b64.urlsafe_b64encode(hm.new(key, f"{ts}|{path}|{query}|{who}".encode(), hl.sha256).digest()).decode().rstrip("=")
+        return getattr(client, method)(path + ("?" + query if query else ""),
+                                       headers={"X-Studio-Ts": ts, "X-Studio-Who": who, "X-Studio-Sig": sig})
+    try:
+        assert client.get("/api/studio/leads?q=nina").status_code == 401                       # unsigned
+        assert [x["id"] for x in signed("get", "/api/studio/leads", {"q": "pine"}).json()["results"]] == [lid]
+        assert signed("get", f"/api/studio/leads/{lid}").json()["email"] == "maria@example.com"
+        assert signed("post", f"/api/studio/leads/{lid}/quoted", {"ref": "Q-1042"}).json() == {"ok": True}
+        assert signed("post", "/api/studio/leads/999999/quoted", {"ref": "Q-1"}).status_code == 404
+    finally:
+        M.STUDIO_SSO_SECRET = old
+    det = client.get(f"/ops/api/leads/{lid}", headers=H).json()
+    assert det["status"] == "quoted" and det["quotes"][0]["ref"] == "Q-1042"
+    assert conn().execute("SELECT actor_name FROM audit WHERE action='lead_quoted' AND target=?",
+                          (f"lead:{lid}",)).fetchone()[0] == "Adem Atis (Studio)"
+    # a later step never moves a lead back (Won stays Won)
+    client.put(f"/ops/api/leads/{lid}/status", json={"status": "won"}, headers=H)
+    _measure(client, "flow-msr-0004", [_door()], customer="Nina Flow", lead_id=str(lid))
+    assert client.get(f"/ops/api/leads/{lid}", headers=H).json()["status"] == "won"
+    assert all(x["id"] != lid for x in client.get("/ops/api/measure/leads?q=nina", headers=H).json()["results"])
+    # Service Fusion: copy-ready text and the job number typed back in; nothing is sent there
+    assert "Nina Flow" in det["sf_copy"] and "(210) 555-0311" in det["sf_copy"] and lead["receipt"] in det["sf_copy"]
+    assert client.put(f"/ops/api/leads/{lid}/sf-job", json={"number": "abc"}, headers=H).status_code == 422
+    d = client.put(f"/ops/api/leads/{lid}/sf-job", json={"number": "10236499077"}, headers=H).json()
+    assert d["sf_job"] == "10236499077" and "Service Fusion job set: 10236499077" in [h["what"] for h in d["history"]]

@@ -998,6 +998,57 @@
       showPicked(null, f);
     } else run();
   }
+  // Measure: "Pick a lead" (the customer form or a phone call), so the customer's details aren't typed twice
+  function mountLeadPick(box) {
+    if (!box) return;
+    const locked = !!mJob.revision_of;        // a revision keeps the lead the measure already has
+    box.innerHTML = `<label class="jl-label">Or pick a lead</label>
+      <div class="jl-find"><input type="search" class="jl-q" placeholder="Name, phone or address" autocomplete="off" aria-label="Pick a lead">
+        <ul class="jl-results"></ul></div><div class="jl-picked hidden"></div>`;
+    const q = $(".jl-q", box), res = $(".jl-results", box), find = $(".jl-find", box), picked = $(".jl-picked", box);
+    let timer = null, seq = 0;
+    function showPicked(d) {
+      find.classList.add("hidden"); picked.classList.remove("hidden");
+      const lines = [];
+      if (d) {
+        if (d.address) lines.push(`<div><a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(d.address)}" target="_blank" rel="noopener">${esc(d.address)}</a></div>`);
+        if (d.phone) lines.push(`<div><a href="tel:${esc(d.phone.replace(/[^\d+]/g, ""))}">${esc(d.phone)}</a></div>`);
+        if (d.types && d.types.length) lines.push(`<div class="muted small">${esc(d.types.join(", "))}</div>`);
+        if (d.description) lines.push(`<div class="muted small">${esc(d.description)}</div>`);
+      }
+      picked.innerHTML = `<div class="jl-card"><div class="jl-head"><b>${esc(d ? d.name : mJob.lead_label)}</b>
+          <span class="jl-num">${esc(d ? d.receipt : "Lead")}</span></div>${lines.join("")}
+        ${locked ? "" : `<div class="jl-acts"><button type="button" class="link jl-unlink">Not this lead</button></div>`}</div>`;
+      const un = $(".jl-unlink", picked);
+      if (un) un.onclick = () => {
+        mJob.lead_id = ""; mJob.lead_label = ""; mSaveDraftSoon();
+        picked.classList.add("hidden"); picked.innerHTML = ""; find.classList.remove("hidden"); q.value = ""; run();
+      };
+    }
+    async function run() {
+      const my = ++seq;
+      try {
+        const r = await api(`api/measure/leads?q=${encodeURIComponent(q.value.trim())}`);
+        if (my !== seq) return;
+        res.innerHTML = r.results.map(l => `<li><button type="button" class="jl-item" data-lead="${l.id}">
+            <b>${esc(l.name)}</b>${l.is_test ? " <span class=\"jl-num\">TEST</span>" : ""} <span class="jl-num">${esc(l.receipt)}</span>
+            <span class="muted small">${esc([l.address, l.types.join(", "), l.status].filter(Boolean).join(" · "))}</span></button></li>`).join("")
+          || `<li class="muted small">${q.value.trim() ? "No open lead matches." : "No open leads right now."}</li>`;
+      } catch (e) { if (my === seq) res.innerHTML = `<li class="muted small">${e.status === 0 ? "No signal right now." : esc(e.message)}</li>`; }
+    }
+    async function pick(id) {
+      try {
+        const d = await api(`api/measure/leads/${id}`);
+        mJob.lead_id = String(d.id); mJob.lead_label = `${d.name} · ${d.receipt}`;
+        const c = $("#m_customer"); if (!c.value.trim() || confirm(`Put “${d.name}” in Customer name?`)) { c.value = d.name; c.classList.remove("invalid"); }
+        mSaveDraftSoon();
+        showPicked(d);
+      } catch (e) { res.innerHTML = `<li class="muted small">${e.status === 0 ? "No signal right now." : esc(e.message)}</li>`; }
+    }
+    q.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(run, 250); });
+    res.addEventListener("click", (e) => { const b = e.target.closest("[data-lead]"); if (b) pick(b.dataset.lead); });
+    if (mJob.lead_id) showPicked(null); else run();
+  }
   function lookupFill(d, fills, setVal) {
     const src = { last4: d.last4, customer: d.customer, email: d.email, number: d.number, address: d.address };
     const out = {};
@@ -1518,7 +1569,8 @@
   }
   function mState() {
     return { job: readJob(), cards: readCards(), photos: { ...photos }, photoMeta: { ...photoMeta }, startedAt,
-      revision_of: mJob.revision_of || "", measured_by: mJob.measured_by || "", sf_job: mJob.sf_job || "", sf_filled: mJob.sf_filled || "" };
+      revision_of: mJob.revision_of || "", measured_by: mJob.measured_by || "", sf_job: mJob.sf_job || "", sf_filled: mJob.sf_filled || "",
+      lead_id: mJob.lead_id || "", lead_label: mJob.lead_label || "" };
   }
   function mSaveDraftSoon(now) {
     clearTimeout(mDraftTimer);
@@ -1595,7 +1647,8 @@
       });
       await openMeasureEditor({ job: { customer: m.data.customer, po: m.data.po, date: m.data.date }, cards, photos: ph, photoMeta: {},
         startedAt: new Date().toISOString(), revision_of: m.receipt, measured_by: m.data.measured_by, fresh: true,
-        sf_job: m.data.sf_job || "", sf_filled: "" });
+        sf_job: m.data.sf_job || "", sf_filled: "", lead_id: m.data.lead_id ? String(m.data.lead_id) : "",
+        lead_label: m.data.lead_receipt ? `${m.data.customer} · ${m.data.lead_receipt}` : "" });
       mSaveDraftSoon(true);
     } catch (e) {
       btn.disabled = false; btn.textContent = "Reopen";
@@ -1611,7 +1664,8 @@
     photos = { ...((state && state.photos) || {}) }; photoMeta = { ...((state && state.photoMeta) || {}) }; previews = {};
     startedAt = (state && state.startedAt) || new Date().toISOString();
     mJob = { revision_of: (state && state.revision_of) || "", measured_by: (state && state.measured_by) || me.name,
-      sf_job: (state && state.sf_job) || "", sf_filled: (state && state.sf_filled) || "" };
+      sf_job: (state && state.sf_job) || "", sf_filled: (state && state.sf_filled) || "",
+      lead_id: (state && state.lead_id) || "", lead_label: (state && state.lead_label) || "" };
     const job = (state && state.job) || { customer: "", po: "", date: todayISO() };
     $("#m_customer").value = job.customer || ""; $("#m_po").value = job.po || ""; $("#m_date").value = job.date || todayISO();
     $("#m_by").value = mJob.measured_by;
@@ -1626,6 +1680,7 @@
     renderCards(((state && state.cards) || []).map(upgradeDoor));
     show("viewMeasure");
     const mf = { customer: $("#m_customer"), po: $("#m_po") };
+    mountLeadPick($("#mLead"));
     mountLookup($("#mLookup"), {
       form: "measure",
       get: () => ({ job: mJob.sf_job || "", filled: mJob.sf_filled || "" }),
@@ -1856,7 +1911,7 @@
     sentGen = formGen; mForm.inert = true;   // locked while it sends; edits now can't re-save the draft
     const entry = { id: newId(), slug: "measure", type: MS.type, userId: me.id, user: me.name, test: !!me.test_mode,
       fields: { ...job, items: JSON.stringify(items), keep: JSON.stringify(keep), revision_of: mJob.revision_of || "",
-        sf_job: mJob.sf_job || "", sf_filled: mJob.sf_filled || "" },
+        sf_job: mJob.sf_job || "", sf_filled: mJob.sf_filled || "", lead_id: mJob.lead_id || "", lead_label: mJob.lead_label || "" },
       photos: ph, photoMeta: meta, measured_by: mJob.measured_by, startedAt, createdAt: new Date().toISOString(), tries: 0 };
     try {
       await outboxPut(entry);
@@ -1890,7 +1945,8 @@
     });
     return { job: { customer: entry.fields.customer, po: entry.fields.po, date: entry.fields.date }, cards, photos: ph, photoMeta: meta,
       startedAt: entry.startedAt, revision_of: entry.fields.revision_of || "", measured_by: entry.measured_by || me.name,
-      sf_job: entry.fields.sf_job || "", sf_filled: entry.fields.sf_filled || "" };
+      sf_job: entry.fields.sf_job || "", sf_filled: entry.fields.sf_filled || "",
+      lead_id: entry.fields.lead_id || "", lead_label: entry.fields.lead_label || "" };
   }
   async function openAny(slug, back, message) {
     if (slug === "measure") {
