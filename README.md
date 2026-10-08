@@ -46,6 +46,8 @@ GitHub Pages portal + Google Apps Script, one form at a time.
   height_in, thickness, core, stocked, uom, hand, brand, page, flag`, and up to 6 `compare <name>` columns (e.g.
   `compare Pallet`): other price levels shown on the item for comparison only; a PO always uses `price`. A blank price
   shows as "Call for price"; a part number used twice is kept and flagged.
+- **Vendors:** Woodgrain, Boise Cascade, Simpson and Novo are built in; an admin can add more in Admin → Price List →
+  Add a vendor (name only; the PO email and address are set on the vendor's card).
 - **Editing items:** people with **Can edit Price List items** (Admin → Staff, e.g. the purchaser; it needs the Price List
   switch too) get **✎ Edit this item** on every item: any field, the ⚠ note and the comparison prices. They can also add an
   item to a sheet, delete one, and download a sheet (with its edits) as a CSV to change in Excel and load back. Every change

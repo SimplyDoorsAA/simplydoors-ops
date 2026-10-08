@@ -20,9 +20,10 @@
   }
 
   const CATS = ["Interior molded", "Interior flush", "Interior stile & rail", "Interior bifolds", "Exterior doors & sidelites",
-    "Exterior glass & lites", "Parts & hardware"];
+    "Exterior glass & lites", "Parts & hardware", "Moulding & trim", "Jambs & frames", "Boards", "Stair parts"];
   const CAT_ICON = { "Interior molded": "🚪", "Interior flush": "▭", "Interior stile & rail": "🪵", "Interior bifolds": "📂",
-    "Exterior doors & sidelites": "🏠", "Exterior glass & lites": "🪟", "Parts & hardware": "🔩" };
+    "Exterior doors & sidelites": "🏠", "Exterior glass & lites": "🪟", "Parts & hardware": "🔩", "Moulding & trim": "📏",
+    "Jambs & frames": "🖼️", "Boards": "🪚", "Stair parts": "🪜" };
   const NONSTOCK_CATS = ["Interior molded", "Interior flush", "Interior bifolds"];
   const OUR = { name: "SimplyDoors", addr: ["17750 Lookout Rd, Unit 150", "Schertz, TX 78154", "(210) 903-8450", "admin@simplydoors.com"] };
   const ADMIN_COPY = "admin@simplydoors.com";
@@ -107,7 +108,7 @@
       <div class="main"><div class="t">${esc(d.name)}</div><div class="s">${esc(sub || d.grp)}</div>
         <div class="s mono">${esc(d.sku)}${d.mfr ? " · " + esc(d.mfr) : ""}</div><div class="meta">${tags(d)}</div></div>
       <div class="price"><div class="p">${d.price == null ? "—" : money(d.price)}</div>
-        <div class="pl">${/Parts|glass/i.test(d.cat) ? "net" : "slab net"}</div></div></button>`;
+        <div class="pl">${d.w && d.h ? "slab net" : d.uom ? "net / " + esc(d.uom) : "net"}</div></div></button>`;
   }
   const resetFilters = () => { S.stocked = false; S.flagged = false; S.core = ""; S.height = 0; S.width = 0; };
   const filtersOn = () => S.stocked || S.flagged || S.core || S.height || S.width;

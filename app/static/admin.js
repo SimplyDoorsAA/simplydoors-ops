@@ -44,7 +44,7 @@
     price_list_viewed: "Opened the Price List", po_sent: "Sent a purchase order", po_pdf_downloaded: "Opened a PO PDF",
     vendor_changed: "Changed a vendor (Price List)", price_sheet_loaded: "Loaded a price sheet", price_sheet_removed: "Removed a price sheet",
     price_item_changed: "Changed a Price List item", price_item_added: "Added a Price List item", price_item_deleted: "Deleted a Price List item",
-    price_sheet_downloaded: "Downloaded a price sheet",
+    price_sheet_downloaded: "Downloaded a price sheet", vendor_added: "Added a vendor (Price List)",
   };
 
   // ------------------------------------------------------------ tabs
@@ -373,6 +373,14 @@
         : '<p class="muted">No sheets loaded yet.</p>';
     } catch (e) { fail(e); }
   }
+  $("#plAddVendor").onsubmit = async (ev) => {
+    ev.preventDefault();
+    const name = ev.target.elements.name.value.trim();
+    if (!name) return;
+    if (!confirm(`Add “${name}” as a vendor? Everyone with the Price List will see it once a sheet is loaded.`)) return;
+    try { await api("api/admin/pricelist/vendors", { method: "POST", json: { name } }); ev.target.reset(); toast("Vendor added"); loadPriceList(); }
+    catch (e) { fail(e); }
+  };
   $("#plUpload").onsubmit = async (ev) => {
     ev.preventDefault();
     const f = ev.target, btn = f.querySelector("button");

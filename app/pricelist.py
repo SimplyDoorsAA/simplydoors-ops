@@ -28,7 +28,8 @@ MAX_LINES = 200
 MAX_QTY = 999
 
 CATS = ("Interior molded", "Interior flush", "Interior stile & rail", "Interior bifolds",
-        "Exterior doors & sidelites", "Exterior glass & lites", "Parts & hardware")
+        "Exterior doors & sidelites", "Exterior glass & lites", "Parts & hardware",
+        "Moulding & trim", "Jambs & frames", "Boards", "Stair parts")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS pl_vendors (
@@ -103,6 +104,7 @@ SEED_VENDORS = [
      "", 1),
     ("BC", "Boise Cascade", "", "", 2),
     ("SP", "Simpson", "", "", 3),
+    ("NV", "Novo", "", "", 4),
 ]
 
 OUR_NAME = "SimplyDoors"
@@ -135,6 +137,28 @@ def can_edit(staff) -> bool:
 
 
 # ------------------------------------------------------------------ vendors + sheets
+def add_vendor(name: str) -> str:
+    """Add a vendor (Admin -> Price List). Returns its code, made from the name (e.g. "Masonite" -> "MA")."""
+    c = conn()
+    name = " ".join(name.split())[:60]
+    if len(name) < 2:
+        raise SheetError("Give the vendor a name.")
+    taken = {r["code"] for r in c.execute("SELECT code FROM pl_vendors")}
+    if any(r["name"].lower() == name.lower() for r in c.execute("SELECT name FROM pl_vendors")):
+        raise SheetError(f"There's already a vendor called {name}.")
+    if len(taken) >= 40:
+        raise SheetError("That's the most vendors the Price List holds.")
+    letters = re.sub(r"[^A-Z]", "", name.upper()) or "V"
+    code = next((x for x in [letters[:2], letters[0] + letters[-1], letters[:3]] if len(x) >= 2 and x not in taken), None)
+    n = 2
+    while not code:
+        code = f"{letters[0]}{n}" if f"{letters[0]}{n}" not in taken else None
+        n += 1
+    sort = (c.execute("SELECT MAX(sort) FROM pl_vendors").fetchone()[0] or 0) + 1
+    c.execute("INSERT INTO pl_vendors(code, name, sort) VALUES (?,?,?)", (code, name, sort))
+    return code
+
+
 def live_sheets(vendor: str) -> list[dict]:
     rows = conn().execute("SELECT s.id, s.label, s.filename, s.items, s.uploaded_at, s.uploaded_by,"
                           " (SELECT COUNT(*) FROM pl_items i WHERE i.sheet_id=s.id AND i.edited_at IS NOT NULL) AS edited"

@@ -1576,3 +1576,22 @@ def test_price_list_editors_can_change_add_delete_and_download(client, monkeypat
     assert client.get(f"/ops/api/pricelist/sheets/{sid}/csv", headers=H).status_code == 200          # admins can download
     login(client, "Jaime Mendoza", "135790")
     assert _upload(client, csv_bytes, vendor="BC", label="Nope", replace="new").status_code == 403
+
+
+def test_admins_can_add_a_vendor_and_novo_is_there(client, monkeypatch):
+    from app import alerts, pricelist
+    monkeypatch.setattr(alerts, "push", lambda *a, **k: None)
+    assert any(v["code"] == "NV" and v["name"] == "Novo" for v in pricelist.vendors())
+    login(client, "Jaime Mendoza", "135790")
+    assert client.post("/ops/api/admin/pricelist/vendors", json={"name": "Masonite"}, headers=H).status_code == 403
+    login(client, "Paz Galambos", "112233")
+    r = client.post("/ops/api/admin/pricelist/vendors", json={"name": "Masonite"}, headers=H)
+    assert r.status_code == 200 and r.json()["code"] == "MA"
+    assert client.post("/ops/api/admin/pricelist/vendors", json={"name": "masonite"}, headers=H).status_code == 422
+    assert client.post("/ops/api/admin/pricelist/vendors", json={"name": "Mason Arts"}, headers=H).json()["code"] == "MS"
+    assert client.post("/ops/api/admin/pricelist/vendors", json={"name": " "}, headers=H).status_code == 422
+    # the new categories load
+    r = _upload(client, b"sku,name,category,price,uom\n1030999,TEST CASING FJ RAW,Moulding & trim,0.41,LF\n"
+                        b"1030998,TEST JAMB PAIR,Jambs & frames,11.89,PR\n", vendor="MA", label="Masonite test")
+    assert r.status_code == 200 and r.json()["items"] == 2
+    assert conn().execute("SELECT COUNT(*) FROM audit WHERE action='vendor_added'").fetchone()[0] == 2

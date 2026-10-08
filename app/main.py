@@ -47,7 +47,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-35"
+APP_VERSION = "stage3-36"
 
 
 @asynccontextmanager
@@ -1548,6 +1548,19 @@ def admin_pricelist(admin=Depends(current_admin)):
             "people": [r["name"] for r in c.execute("SELECT name FROM staff WHERE active=1 AND (price_list=1 OR is_owner=1) ORDER BY name")],
             "editors": [r["name"] for r in c.execute("SELECT name FROM staff WHERE active=1 AND ((price_list=1 AND price_edit=1) OR is_owner=1)"
                                                      " ORDER BY name")]}
+
+
+@app.post("/api/admin/pricelist/vendors")
+async def admin_pricelist_add_vendor(request: Request, admin=Depends(current_admin)):
+    body = await request.json()
+    try:
+        code = pricelist.add_vendor(str((body or {}).get("name", "")))
+    except pricelist.SheetError as e:
+        raise HTTPException(422, str(e)) from None
+    v = _vendor(code)
+    audit(admin["id"], admin["name"], "vendor_added", v["name"], {"code": code}, client_ip(request), ua(request))
+    alerts.push("Ops app: vendor added", f"{admin['name']} added {v['name']} to the Price List.")
+    return {"ok": True, "code": code}
 
 
 @app.put("/api/admin/pricelist/vendors/{code}")
