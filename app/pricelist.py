@@ -314,6 +314,13 @@ def _num(v, field, line, allow_blank=True):
 def parse_sheet(raw: bytes) -> list[dict]:
     """Read an uploaded CSV into item rows. Raises SheetError with a plain-English reason."""
     try:
+        return _parse_sheet(raw)
+    except csv.Error as e:   # e.g. a giant cell: a message, not a server error
+        raise SheetError(f"The file couldn't be read as a CSV ({e}). Save it from Excel as “CSV UTF-8”.") from None
+
+
+def _parse_sheet(raw: bytes) -> list[dict]:
+    try:
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
         try:
@@ -464,6 +471,8 @@ def clean_fields(body: dict, partial: bool) -> dict:
         elif kind == "compare":
             rows = []
             for c in (v if isinstance(v, list) else [])[:MAX_COMPARE]:
+                if not isinstance(c, dict):
+                    continue
                 lbl = str((c or {}).get("label", "")).strip()[:30]
                 n = _num(str((c or {}).get("price", "") or ""), f"“{lbl or 'compare'}” price", 0)
                 if lbl and n:

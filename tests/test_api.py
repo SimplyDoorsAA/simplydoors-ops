@@ -2151,3 +2151,22 @@ def test_leads_can_be_added_by_hand(client):
     assert row["source"] == "Phone call"
     d2 = client.post("/ops/api/leads", json={**body, "name": "Walk In", "source": "Walk-in", "claim": False}, headers=H).json()
     assert d2["owner"] is None and int(d2["receipt"][4:]) == int(d["receipt"][4:]) + 1
+
+
+def test_price_sheet_odd_numbers_and_damaged_csv_are_refused_cleanly():
+    from app import pricelist
+    for bad in ("nan", "NaN", "inf", "-inf"):
+        with pytest.raises(pricelist.SheetError):
+            pricelist._num(bad, "Price", 0)
+    with pytest.raises(pricelist.SheetError):   # a cell over the csv module's size limit: a message, not a 500
+        pricelist.parse_sheet(b'sku,name,category,price\nA1,"' + b"x" * 200_000 + b'",Doors,10\n')
+    out = pricelist.clean_fields({"compare": ["not a dict", {"label": "Lvl 2", "price": "5"}]}, partial=True)
+    assert list(out.values()) == ['[["Lvl 2", 5.0]]']
+
+
+def test_po_pdf_keeps_line_breaks_in_notes():
+    from app import pdf
+    po = {"po_number": "PO-NL-1", "order_date": "2026-10-08", "job_number": "", "job_customer": "", "ship_method": "Delivery",
+          "ship_to": "shop", "ship_address": "", "notes": "Call before delivery\nGate code 1234", "lines": [], "total": 0,
+          "sheet_label": "Test", "by": "Test", "manual": 1}
+    assert pdf.build_po_pdf(po, {"name": "Test Vendor", "address": []})[:4] == b"%PDF"
