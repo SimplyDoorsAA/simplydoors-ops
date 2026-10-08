@@ -92,6 +92,26 @@
   }
   const vname = (code) => (VENDORS.find(v => v.code === code) || { name: code }).name;
 
+  // ------------------------------------------------------------ comparing the same door across vendors
+  const coreKey = (c) => { c = String(c || "").toUpperCase(); return /20/.test(c) ? "FIRE" : c.startsWith("HC") ? "HC" : c.startsWith("SC") ? "SC" : ""; };
+  const CORE_LABEL = { HC: "Hollow core", SC: "Solid core", FIRE: "20-min fire", "": "Not stated" };
+  const thKey = (t) => String(t || "").replace(/[^0-9/]/g, "");
+  const thLabel = (k) => k ? `${k[0]}-${k.slice(1)}"` : "Not stated";
+  const styleKey = (s) => String(s || "").trim().toLowerCase();
+  const STYLE_HINTS = ["1-panel shaker", "2-panel shaker", "3-panel shaker", "5-panel shaker", "1+2-panel craftsman",
+    "2-panel square top", "2-panel arch top", "4-panel", "6-panel", "flush", "1-lite", "louver"];
+  // same door: same size, thickness and core, and the same match style when both groups have one (else the same category)
+  function sameDoor(a, b) {
+    if (!a.w || !a.h || a.w !== b.w || a.h !== b.h || thKey(a.th) !== thKey(b.th) || coreKey(a.core) !== coreKey(b.core)) return false;
+    return a.style && b.style ? styleKey(a.style) === styleKey(b.style) : a.cat === b.cat;
+  }
+  const cheapest = (list) => list.slice().sort((a, b) => (a.price ?? 1e9) - (b.price ?? 1e9));
+  function refreshStyleList() {
+    const all = new Set(STYLE_HINTS);
+    Object.values(ITEMS).flat().forEach(d => { if (d.style) all.add(d.style); });
+    $("#styleList").innerHTML = [...all].sort().map(s => `<option value="${esc(s)}">`).join("");
+  }
+
   // ------------------------------------------------------------ shop: vendor -> category -> items
   function tags(d) {
     const t = [`<span class="tag v">${esc(vname(d.v))}${d.brand ? " · " + esc(d.brand) : ""}</span>`];
@@ -197,7 +217,20 @@
       <div class="box"><div class="vendorhead"><b>Compare vendors</b><span class="small muted">net cost</span></div>
         <div class="vrow"><div><div class="vn">${esc(vname(d.v))}</div><div class="small muted">${esc(d.sheet || "")}</div></div>
           <div class="vp">${d.price == null ? '<span class="small muted">call</span>' : money(d.price)}</div></div>
-        ${others.map(v => `<div class="vrow"><div><div class="vn">${esc(v.name)}</div><div class="small muted">${v.sheet ? "Matching across vendors comes in a later version" : "No price sheet yet"}</div></div><div class="vp"><span class="small muted">—</span></div></div>`).join("")}
+        ${others.map(v => {
+          if (!v.sheet) return `<div class="vrow"><div><div class="vn">${esc(v.name)}</div><div class="small muted">No price sheet yet</div></div><div class="vp"><span class="small muted">—</span></div></div>`;
+          if (!d.w || !d.h) return `<div class="vrow"><div><div class="vn">${esc(v.name)}</div><div class="small muted">Only doors are matched across vendors</div></div><div class="vp"><span class="small muted">—</span></div></div>`;
+          const all = (ITEMS[v.code] || []).filter(x => sameDoor(d, x));
+          const tagged = all.filter(x => d.style && x.style);       // same style: prefer those over category-only matches
+          const m = cheapest(tagged.length ? tagged : all);
+          if (!m.length) return `<div class="vrow"><div><div class="vn">${esc(v.name)}</div><div class="small muted">No matching door</div></div><div class="vp"><span class="small muted">—</span></div></div>`;
+          const b = m[0], exact = d.style && b.style;
+          return `<button type="button" class="vrow vbtn" data-open="${b.id}"><div><div class="vn">${esc(v.name)}</div>
+            <div class="small muted">${esc(b.name)}${m.length > 1 ? ` · ${m.length} matches` : ""}${exact ? "" : " · check the style"}</div></div>
+            <div class="vp">${b.price == null ? '<span class="small muted">call</span>' : money(b.price)}${d.price != null && b.price != null && b.price !== d.price ? `<div class="small ${b.price < d.price ? "cheaper" : "dearer"}">${b.price < d.price ? "−" : "+"}${money(Math.abs(b.price - d.price))}</div>` : ""}</div></button>`;
+        }).join("")}
+        ${d.w && d.h ? `<div class="small muted" style="margin-top:6px">${d.style ? `Matched on style “${esc(d.style)}” where the other vendor's group is tagged too; otherwise on size, thickness, core and category (marked “check the style”).` : "Matched on size, thickness, core and category. Tag this group's match style for exact matches."}</div>
+          <button type="button" class="link small" id="cmpThis">Compare all vendors for this door →</button>` : ""}
       </div>
       ${(d.compare || []).length ? `<div class="box"><div class="vendorhead"><b>Other price levels</b><span class="small muted">for comparison only</span></div>
         ${d.compare.map(c => `<div class="vrow"><div><div class="vn">${esc(c.label)}</div>${d.price ? `<div class="small muted">${c.price < d.price ? `${money(d.price - c.price)} less` : c.price > d.price ? `${money(c.price - d.price)} more` : "same"} than your price</div>` : ""}</div>
@@ -212,6 +245,7 @@
         ${d.uom ? `<div>Sold per</div><div>${esc(d.uom)}</div>` : ""}
         <div>Stock</div><div>${d.stock === true ? "Stocked" : d.stock === false ? "Non-stock: +30% if fewer than 10 of one size/style" : "Not marked on sheet"}</div>
         ${d.page ? `<div>Source</div><div>${esc(vname(d.v))} sheet p.${d.page}</div>` : ""}
+        ${d.w && d.h ? `<div>Match style</div><div>${d.style ? esc(d.style) : '<span class="muted">Not tagged yet</span>'}</div>` : ""}
         ${d.edited_at ? `<div>Edited</div><div>by ${esc(d.edited_by)} on ${esc(new Date(d.edited_at).toLocaleDateString())}, not as printed on the vendor's sheet</div>` : ""}
       </div></div>
       ${sib.length > 1 ? `<div class="box"><b>Other sizes</b><div class="sizes" style="margin-top:10px">${sib.map(x => `<button type="button" class="psz ${x.id === d.id ? "cur" : ""}" data-id="${x.id}"><b>${ftin(x.w)} ${x.h === 96 ? "8'0" : x.h === 80 ? "6'8" : ""}</b>${x.price == null ? "call" : money(x.price)}${x.stock ? " ✓" : ""}</button>`).join("")}</div></div>` : ""}
@@ -246,6 +280,8 @@
           <option value="N" ${d.stock === false ? "selected" : ""}>Non-stock</option></select></div>${fld("uom", "Sold per (EA, PR…)", d.uom, 'maxlength="30"')}</div>
       <div class="grid2">${fld("brand", "Brand", d.brand, 'maxlength="40"')}${fld("mfr", "Maker's #", d.mfr, 'maxlength="60"')}</div>
       ${fld("hand", "Hand (LH / RH)", d.hand, 'maxlength="4"')}
+      <div class="field"><label for="ed-style">Match style, for comparing vendors (applies to the whole group${isNew ? "" : `: ${(ITEMS[d.v] || []).filter(x => x.grp === d.grp).length} items`})</label>
+        <input id="ed-style" list="styleList" maxlength="40" value="${esc(d.style || "")}" placeholder="e.g. 2-panel shaker" data-orig="${esc(d.style || "")}"></div>
       <div class="field"><label for="ed-flag">⚠ Note for whoever orders it (blank = no warning)</label><textarea id="ed-flag" data-ed="flag" rows="3" maxlength="300">${esc(d.flag)}</textarea></div>
       <div class="field"><label>Other price levels (for comparison only)</label></div>
       <div id="cmpRows">${(d.compare.length ? d.compare : [{ label: "", price: "" }]).map(cmpRow).join("")}</div>
@@ -283,8 +319,37 @@
       const sheetId = btn.dataset.new;
       const d = sheetId ? await api("api/pricelist/items", { method: "POST", json: { ...body, sheet_id: +sheetId } })
         : await api(`api/pricelist/items/${$("#sheet").dataset.id}`, { method: "PATCH", json: body });
-      putItem(d); render(); openItem(d.id); toast(sheetId ? "Item added" : "Saved");
+      const st = $("#ed-style");
+      let newStyle = null;
+      if (st && st.value.trim() !== st.dataset.orig) newStyle = (await saveStyle(d.vendor, d.grp, st.value.trim())).style;
+      putItem(d);
+      if (newStyle !== null) d.style = newStyle;
+      render(); openItem(d.id); toast(sheetId ? "Item added" : "Saved");
     } catch (e) { toast(e.message); btn.disabled = false; }
+  }
+  async function saveStyle(vendor, grp, style) {
+    const r = await api("api/pricelist/styles", { method: "PUT", json: { vendor, grp, style } });
+    (ITEMS[vendor] || []).forEach(i => { if (i.grp === grp) i.style = r.style; });
+    refreshStyleList();
+    return r;
+  }
+  // tag a whole vendor's groups in one list (doors only: they're what gets compared)
+  function openStyleTagger(code) {
+    const groups = new Map();
+    (ITEMS[code] || []).filter(d => d.w && d.h).forEach(d => {
+      const g = groups.get(d.grp) || { grp: d.grp, n: 0, style: d.style, sample: d.name, cat: d.cat };
+      g.n++; groups.set(d.grp, g);
+    });
+    const list = [...groups.values()];
+    $("#sheet").innerHTML = `<div class="grab"></div><button type="button" class="close" id="close" aria-label="Close">×</button>
+      <h1 style="margin-top:4px">Match styles · ${esc(vname(code))}</h1>
+      <p class="small muted">Give each group the style its doors are, using the same words for every vendor (pick from the list or type a new one). Saved as you go. ${list.filter(g => g.style).length} of ${list.length} groups tagged.</p>
+      ${list.map((g, i) => `<div class="field"><label for="tg-${i}">${esc(g.grp || "(no group)")} <span class="muted small">· ${g.n} items · ${esc(g.cat)}</span></label>
+        <div class="small muted" style="margin:-2px 0 6px">e.g. ${esc(g.sample)}</div>
+        <input id="tg-${i}" list="styleList" maxlength="40" value="${esc(g.style || "")}" placeholder="Not tagged" data-tagv="${esc(code)}" data-taggrp="${esc(g.grp)}" data-orig="${esc(g.style || "")}"></div>`).join("")}
+      <button type="button" class="btn secondary" id="close2">Done</button>`;
+    $("#sheet").dataset.id = "";
+    $("#sheet").classList.remove("hidden"); $("#sheetbg").classList.remove("hidden"); $("#sheet").scrollTop = 0;
   }
   async function deleteEdited() {
     const d = BYID.get(+$("#sheet").dataset.id); if (!d) return;
@@ -496,6 +561,43 @@
     toast(missing ? `Copied. ${missing} item${missing > 1 ? "s aren't" : " isn't"} on the current sheet.` : "Copied into the buy list");
   }
 
+  // ------------------------------------------------------------ compare tab
+  function renderCompare() {
+    const doors = Object.values(ITEMS).flat().filter(d => d.w && d.h);
+    const c = S.cmp || (S.cmp = { w: 0, h: 0, th: "", core: "any", style: "", cat: "" });
+    const uniq = (arr) => [...new Set(arr)];
+    const pool0 = doors.filter(d => (!c.cat || d.cat === c.cat));
+    const ws = uniq(pool0.map(d => d.w)).sort((a, b) => a - b), hs = uniq(pool0.map(d => d.h)).sort((a, b) => a - b);
+    const ths = uniq(pool0.map(d => thKey(d.th))).sort(), styles = uniq(doors.map(d => d.style).filter(Boolean)).sort();
+    const cats = CATS.filter(x => doors.some(d => d.cat === x));
+    const opt = (v, label, cur) => `<option value="${esc(v)}" ${String(v) === String(cur) ? "selected" : ""}>${esc(label)}</option>`;
+    $("#cmpForm").innerHTML = `<div class="grid2">
+        <div class="field"><label for="cf-w">Width</label><select id="cf-w" data-cf="w">${opt(0, "Pick…", c.w)}${ws.map(w => opt(w, `${ftin(w)} (${w}")`, c.w)).join("")}</select></div>
+        <div class="field"><label for="cf-h">Height</label><select id="cf-h" data-cf="h">${opt(0, "Pick…", c.h)}${hs.map(h => opt(h, h === 80 ? "6'8\"" : h === 96 ? "8'0\"" : h === 84 ? "7'0\"" : `${h}"`, c.h)).join("")}</select></div></div>
+      <div class="grid2">
+        <div class="field"><label for="cf-th">Thickness</label><select id="cf-th" data-cf="th">${opt("", "Any", c.th)}${ths.map(t => opt(t, thLabel(t), c.th)).join("")}</select></div>
+        <div class="field"><label for="cf-core">Core</label><select id="cf-core" data-cf="core">${opt("any", "Any", c.core)}${["HC", "SC", "FIRE", ""].map(k => opt(k, CORE_LABEL[k], c.core)).join("")}</select></div></div>
+      <div class="grid2">
+        <div class="field"><label for="cf-style">Match style</label><select id="cf-style" data-cf="style">${opt("", "Any style", c.style)}${styles.map(s => opt(s, s, c.style)).join("")}</select></div>
+        <div class="field"><label for="cf-cat">Category</label><select id="cf-cat" data-cf="cat">${opt("", "Any door", c.cat)}${cats.map(x => opt(x, x, c.cat)).join("")}</select></div></div>`;
+    if (!c.w || !c.h) { $("#cmpResults").innerHTML = '<p class="muted">Pick a width and height to compare.</p>'; return; }
+    const hits = doors.filter(d => d.w === +c.w && d.h === +c.h && (!c.th || thKey(d.th) === c.th) && (c.core === "any" || coreKey(d.core) === c.core)
+      && (!c.style || styleKey(d.style) === styleKey(c.style)) && (!c.cat || d.cat === c.cat));
+    if (!hits.length) { $("#cmpResults").innerHTML = '<p class="muted">No vendor has a door like that. Try “Any” on thickness, core or style.</p>'; return; }
+    const byV = VENDORS.map(v => ({ v, list: cheapest(hits.filter(d => d.v === v.code)) })).filter(x => x.list.length)
+      .sort((a, b) => (a.list[0].price ?? 1e9) - (b.list[0].price ?? 1e9));
+    S.cmpOpen = S.cmpOpen || {};
+    $("#cmpResults").innerHTML = `<div class="muted small" style="margin:8px 0">${hits.length} matching door${hits.length > 1 ? "s" : ""} from ${byV.length} vendor${byV.length > 1 ? "s" : ""}, cheapest vendor first${c.style ? "" : ". No style picked, so these may not look alike"}.</div>` +
+      byV.map(({ v, list }, i) => `<div class="box"><div class="vendorhead"><b>${i === 0 ? "🏆 " : ""}${esc(v.name)}</b><span class="small muted">${list.length} door${list.length > 1 ? "s" : ""} · from ${list[0].price == null ? "call" : money(list[0].price)}</span></div>
+        ${(S.cmpOpen[v.code] ? list : list.slice(0, 3)).map(card).join("")}
+        ${list.length > 3 && !S.cmpOpen[v.code] ? `<button type="button" class="link small" data-cmpmore="${esc(v.code)}">Show all ${list.length}</button>` : ""}</div>`).join("");
+  }
+  function compareFrom(d) {
+    S.cmp = { w: d.w, h: d.h, th: thKey(d.th), core: coreKey(d.core), style: d.style || "", cat: d.style ? "" : d.cat };
+    S.cmpOpen = {};
+    closeSheet(); tab("compare");
+  }
+
   // ------------------------------------------------------------ sheets tab
   function renderSheets() {
     $("#sheetCards").innerHTML = VENDORS.map(v => `<div class="vcard ${v.sheet ? "live" : ""}"><div class="vt">${esc(v.name)} ${v.sheet ? '<span class="tag stock">Live</span>' : '<span class="tag ns">No sheet yet</span>'}</div>
@@ -505,6 +607,8 @@
           <div class="stat"><b>${(ITEMS[v.code] || []).filter(d => d.flag).length}</b><span>flagged to check</span></div>
           <div class="stat"><b>${(ITEMS[v.code] || []).filter(d => d.price == null).length}</b><span>call for price</span></div></div>`
         : `<div class="muted small">${me.price_edit ? "No sheet loaded yet. Use “Load a price sheet” below." : "No sheet loaded yet."}</div>`}
+      ${me.price_edit && (ITEMS[v.code] || []).some(d => d.w && d.h) ? (() => { const gs = new Map(); (ITEMS[v.code] || []).filter(d => d.w && d.h).forEach(d => gs.set(d.grp, d.style)); const t = [...gs.values()].filter(Boolean).length;
+        return `<div style="margin-top:8px"><button type="button" class="link" data-tagstyles="${esc(v.code)}">Tag match styles (${t} of ${gs.size} door groups done)</button></div>`; })() : ""}
       <div class="small" style="margin-top:8px">${v.can_order ? "✓ Order email set" : "No order email set yet, so POs can't be sent."}</div></div>`).join("");
     $("#sheetUpload").innerHTML = !me.price_edit ? "" : `<div class="box"><h2 style="margin-top:0">Load a price sheet</h2>
       <p class="small muted">A CSV in the upload format (the Download links above give you one). Changes are live for everyone.</p>
@@ -530,7 +634,7 @@
     const v = VENDORS.find(x => x.code === code);
     ITEMS[code] = [];
     if (v && v.sheet) { const r = await api(`api/pricelist/items?vendor=${encodeURIComponent(code)}`); ITEMS[code] = r.items; r.items.forEach(d => prep(d, code)); }
-    renderSheets(); render();
+    refreshStyleList(); renderSheets(); render();
   }
   async function uploadSheet(f) {
     const v = VENDORS.find(x => x.code === f.vendor.value), rep = f.replace.value;
@@ -559,7 +663,8 @@
   // ------------------------------------------------------------ events
   function tab(name) {
     $$("#nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
-    ["search", "list", "sheets"].forEach(n => $("#tab-" + n).classList.toggle("hidden", n !== name));
+    ["search", "list", "compare", "sheets"].forEach(n => $("#tab-" + n).classList.toggle("hidden", n !== name));
+    if (name === "compare") renderCompare();
     if (name === "list") { renderList(); loadPos(); }
     if (name === "sheets") renderSheets();
     window.scrollTo(0, 0);
@@ -594,6 +699,11 @@
     if (t.id === "close" || t.id === "sheetbg") { closeSheet(); return; }
     const st = t.closest("[data-step]"); if (st) { const i = $("#qty"); i.value = Math.max(1, (parseInt(i.value, 10) || 1) + +st.dataset.step); return; }
     if (t.id === "add") { const d = BYID.get(+$("#sheet").dataset.id); setQty(d.v, d.id, $("#qty").value); closeSheet(); toast("Added to buy list"); return; }
+    const op = t.closest("[data-open]"); if (op) { openItem(+op.dataset.open); return; }
+    if (t.id === "cmpThis") { compareFrom(BYID.get(+$("#sheet").dataset.id)); return; }
+    const cm = t.closest("[data-cmpmore]"); if (cm) { S.cmpOpen[cm.dataset.cmpmore] = true; renderCompare(); return; }
+    const tg = t.closest("[data-tagstyles]"); if (tg) { openStyleTagger(tg.dataset.tagstyles); return; }
+    if (t.id === "close2") { closeSheet(); renderSheets(); return; }
     if (t.id === "edit") { openEditor(BYID.get(+$("#sheet").dataset.id)); return; }
     if (t.id === "edSave") { saveEditor(t); return; }
     if (t.id === "edDelete") { deleteEdited(); return; }
@@ -625,6 +735,14 @@
   document.addEventListener("submit", (e) => { if (e.target.id === "upForm") { e.preventDefault(); uploadSheet(e.target); } });
   document.addEventListener("change", (e) => {
     if (e.target.id === "up-vendor") { S.upVendor = e.target.value; upReplaceOptions(); return; }
+    if (e.target.dataset.cf) { const k = e.target.dataset.cf; S.cmp[k] = (k === "w" || k === "h") ? +e.target.value : e.target.value; S.cmpOpen = {}; renderCompare(); return; }
+    if (e.target.dataset.taggrp !== undefined) {
+      const el = e.target, val = el.value.trim();
+      if (val === el.dataset.orig) return;
+      saveStyle(el.dataset.tagv, el.dataset.taggrp, val).then(r => { el.dataset.orig = r.style; toast(r.style ? `Tagged ${r.items} items “${r.style}”` : `Removed the tag from ${r.items} items`); })
+        .catch(err => toast(err.message));
+      return;
+    }
     if (e.target.dataset.lid) { setQty(e.target.dataset.lv, +e.target.dataset.lid, e.target.value); return; }
     if (e.target.dataset.d) { const f = draft(S.poVendor); f[e.target.dataset.d] = e.target.value; saveDraft(S.poVendor, f); }
   });
@@ -644,6 +762,7 @@
         ITEMS[v.code] = r.items; r.items.forEach(d => prep(d, v.code));
       }
     } catch (e) { return gate(esc(e.message)); }
+    refreshStyleList();
     S.list = store.get("list", {});
     // drop lines whose item isn't on the current sheet any more (a newer sheet was loaded)
     let dropped = 0;

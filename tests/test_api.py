@@ -1595,3 +1595,39 @@ def test_admins_can_add_a_vendor_and_novo_is_there(client, monkeypatch):
                         b"1030998,TEST JAMB PAIR,Jambs & frames,11.89,PR\n", vendor="MA", label="Masonite test")
     assert r.status_code == 200 and r.json()["items"] == 2
     assert conn().execute("SELECT COUNT(*) FROM audit WHERE action='vendor_added'").fetchone()[0] == 2
+
+
+def test_match_styles_are_set_per_group_and_survive_a_new_sheet(client, monkeypatch):
+    from app import alerts
+    monkeypatch.setattr(alerts, "push", lambda *a, **k: None)
+    monkeypatch.setattr(alerts, "push_throttled", lambda *a, **k: None)
+    login(client, "Adem Atis", "246810")
+    sheet = (b"sku,name,category,price,group,width_in,height_in,thickness,core\n"
+             b"TST-ST-1,Style test 2868,Interior molded,50,Style test group,32,80,1-3/8\",HC\n"
+             b"TST-ST-2,Style test 3068,Interior molded,55,Style test group,36,80,1-3/8\",HC\n")
+    sid = _upload(client, sheet, vendor="NV", label="Style test").json()["sheet_id"]
+    jid = conn().execute("SELECT id FROM staff WHERE name='Jaime Mendoza'").fetchone()[0]
+    login(client, "Paz Galambos", "112233")
+    client.patch(f"/ops/api/admin/staff/{jid}", json={"price_list": True, "price_edit": False}, headers=H)
+    login(client, "Jaime Mendoza", "135790")
+    body = {"vendor": "NV", "grp": "Style test group", "style": "  2-panel   shaker "}
+    assert client.put("/ops/api/pricelist/styles", json=body, headers=H).status_code == 403
+    login(client, "Paz Galambos", "112233")
+    client.patch(f"/ops/api/admin/staff/{jid}", json={"price_edit": True}, headers=H)
+    login(client, "Jaime Mendoza", "135790")
+    r = client.put("/ops/api/pricelist/styles", json=body, headers=H)
+    assert r.status_code == 200 and r.json() == {"ok": True, "style": "2-panel shaker", "items": 2}
+    styles = {i["sku"]: i["style"] for i in client.get("/ops/api/pricelist/items?vendor=NV", headers=H).json()["items"]}
+    assert styles["TST-ST-1"] == styles["TST-ST-2"] == "2-panel shaker"
+    assert client.put("/ops/api/pricelist/styles", json={**body, "grp": "Nope"}, headers=H).status_code == 404
+    a = json.loads(conn().execute("SELECT details FROM audit WHERE action='price_style_set'").fetchone()[0])
+    assert a == {"style": {"from": "", "to": "2-panel shaker"}, "items": 2}
+    # a new version of the sheet with the same group keeps the tag
+    login(client, "Adem Atis", "246810")
+    assert _upload(client, sheet.replace(b"50,", b"52,"), vendor="NV", label="Style test v2", replace=sid).status_code == 200
+    items = {i["sku"]: i for i in client.get("/ops/api/pricelist/items?vendor=NV", headers=H).json()["items"]}
+    assert items["TST-ST-1"]["style"] == "2-panel shaker" and items["TST-ST-1"]["price"] == 52.0
+    # blank removes it
+    login(client, "Jaime Mendoza", "135790")
+    assert client.put("/ops/api/pricelist/styles", json={**body, "style": ""}, headers=H).json()["style"] == ""
+    assert all(i["style"] == "" for i in client.get("/ops/api/pricelist/items?vendor=NV", headers=H).json()["items"])

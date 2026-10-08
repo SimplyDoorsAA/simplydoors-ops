@@ -47,7 +47,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-36"
+APP_VERSION = "stage3-37"
 
 
 @asynccontextmanager
@@ -1420,6 +1420,23 @@ def pl_delete_item(iid: int, request: Request, staff=Depends(current_pricelist_e
           {"item": r["name"], "sheet": r["sheet_label"], "price": r["price"]}, client_ip(request), ua(request))
     _edit_alert(staff, f"deleted {r['sku']}")
     return {"ok": True}
+
+
+@app.put("/api/pricelist/styles")
+async def pl_set_style(request: Request, staff=Depends(current_pricelist_editor)):
+    body = await request.json()
+    body = body if isinstance(body, dict) else {}
+    v = _vendor(str(body.get("vendor", "")))
+    grp = str(body.get("grp", ""))[:120]
+    try:
+        old, n = pricelist.set_style(v["code"], grp, str(body.get("style", "")), staff["name"])
+    except LookupError as e:
+        raise HTTPException(404, str(e)) from None
+    new = " ".join(str(body.get("style", "")).split())[:40]
+    if old != new:
+        audit(staff["id"], staff["name"], "price_style_set", f"{v['name']}: {grp or '(no group)'}",
+              {"style": {"from": old, "to": new}, "items": n}, client_ip(request), ua(request))
+    return {"ok": True, "style": new, "items": n}
 
 
 @app.get("/api/pricelist/sheets/{sid}/csv")

@@ -77,6 +77,17 @@ CREATE TABLE IF NOT EXISTS pl_items (
 );
 CREATE INDEX IF NOT EXISTS pl_items_sheet ON pl_items(sheet_id);
 
+-- "Match style": one tag per vendor group (e.g. Steves Carrara = "2-panel shaker"), so the same door can be compared
+-- across vendors. Kept by group name, so it carries over when a sheet is replaced with the same groups.
+CREATE TABLE IF NOT EXISTS pl_styles (
+    vendor TEXT NOT NULL,
+    grp TEXT NOT NULL,
+    style TEXT NOT NULL,
+    set_by TEXT NOT NULL,
+    set_at TEXT NOT NULL,
+    PRIMARY KEY (vendor, grp)
+);
+
 CREATE TABLE IF NOT EXISTS pl_pos (
     id INTEGER PRIMARY KEY,
     po_number TEXT NOT NULL,
@@ -194,8 +205,9 @@ def _compare(raw: str) -> list[dict]:
 
 def items(vendor: str) -> list[dict]:
     rows = conn().execute(f"SELECT {', '.join('i.' + k for k in ITEM_COLS)}, i.compare, i.edited_at, i.edited_by,"
-                          " i.sheet_id, s.label AS sheet"
+                          " i.sheet_id, s.label AS sheet, st.style"
                           " FROM pl_items i JOIN pl_sheets s ON s.id=i.sheet_id"
+                          " LEFT JOIN pl_styles st ON st.vendor=s.vendor AND st.grp=i.grp"
                           " WHERE s.vendor=? AND s.active=1 ORDER BY s.id, i.id", (vendor,))
     out = []
     for r in rows:
@@ -204,8 +216,28 @@ def items(vendor: str) -> list[dict]:
         d["sheet"], d["sheet_id"] = r["sheet"], r["sheet_id"]
         d["compare"] = _compare(r["compare"])
         d["edited_at"], d["edited_by"] = r["edited_at"], r["edited_by"]
+        d["style"] = r["style"] or ""
         out.append(d)
     return out
+
+
+def set_style(vendor: str, grp: str, style: str, who: str):
+    """Tag every item in one of a vendor's groups with a match style ("" removes it).
+    Returns (old style, items in the group). Raises LookupError if the vendor has no live items in that group."""
+    c = conn()
+    style = " ".join(str(style or "").split())[:40]
+    n = c.execute("SELECT COUNT(*) FROM pl_items i JOIN pl_sheets s ON s.id=i.sheet_id"
+                  " WHERE s.vendor=? AND s.active=1 AND i.grp=?", (vendor, grp)).fetchone()[0]
+    if not n:
+        raise LookupError("That group isn't on a live sheet any more. Reload the Price List.")
+    old = c.execute("SELECT style FROM pl_styles WHERE vendor=? AND grp=?", (vendor, grp)).fetchone()
+    if style:
+        c.execute("INSERT INTO pl_styles(vendor, grp, style, set_by, set_at) VALUES (?,?,?,?,?)"
+                  " ON CONFLICT(vendor, grp) DO UPDATE SET style=excluded.style, set_by=excluded.set_by, set_at=excluded.set_at",
+                  (vendor, grp, style, who, now_iso()))
+    else:
+        c.execute("DELETE FROM pl_styles WHERE vendor=? AND grp=?", (vendor, grp))
+    return (old["style"] if old else ""), n
 
 
 def get_item(item_id: int):

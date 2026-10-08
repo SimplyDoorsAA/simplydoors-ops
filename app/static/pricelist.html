@@ -60,6 +60,13 @@
     <div id="pastpos"></div>
   </section>
 
+  <section id="tab-compare" class="hidden">
+    <h1>Compare vendors</h1>
+    <p class="muted small">Pick a door and see every vendor's matching slabs, cheapest first. Doors whose group has a <b>match style</b> are compared by style too; without one, by category, so check the style.</p>
+    <div id="cmpForm"></div>
+    <div id="cmpResults"></div>
+  </section>
+
   <section id="tab-sheets" class="hidden">
     <h1>Price sheets</h1>
     <div id="sheetCards"></div>
@@ -75,6 +82,7 @@
 <nav class="nav hidden" id="nav">
   <button type="button" data-tab="search" class="on"><span class="ic">🏷️</span>Shop</button>
   <button type="button" data-tab="list"><span class="ic">🧾</span>Buy list / PO<span class="badge hidden" id="listcount"></span></button>
+  <button type="button" data-tab="compare"><span class="ic">⚖️</span>Compare</button>
   <button type="button" data-tab="sheets"><span class="ic">📄</span>Price sheets</button>
 </nav>
 
@@ -82,6 +90,7 @@
 <div class="sheet hidden" id="sheet" role="dialog" aria-modal="true"></div>
 <div class="toast hidden" id="toast"></div>
 <div id="podoc" class="hidden"></div>
+<datalist id="styleList"></datalist>
 <script src="static/pricelist.js?v={{VERSION}}"></script>
 </body>
 </html>
