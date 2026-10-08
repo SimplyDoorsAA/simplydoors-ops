@@ -422,7 +422,8 @@
       return `<div class="box"><div class="vendorhead"><b>${esc(vname(v))}</b><span class="small muted">${lines.length} line${lines.length > 1 ? "s" : ""}</span></div>${rows}
         <div class="total"><span>Subtotal</span><span>${money(sub)}</span></div>
         ${tbd ? `<div class="small" style="color:var(--blue);margin-top:6px">${tbd} line${tbd > 1 ? "s need" : " needs"} a price from the vendor (shows as TBD on the PO).</div>` : ""}
-        ${vs.length > 1 ? `<button type="button" class="btn ${S.poVendor === v ? "" : "secondary"}" data-povendor="${esc(v)}">${S.poVendor === v ? "Making this PO ↓" : "Make the PO for " + esc(vname(v))}</button>` : ""}</div>`;
+        ${vs.length > 1 ? `<button type="button" class="btn ${S.poVendor === v ? "" : "secondary"}" data-povendor="${esc(v)}">${S.poVendor === v ? "Making this PO ↓" : "Make the PO for " + esc(vname(v))}</button>` : ""}
+        <button type="button" class="link small" data-manfrom="${esc(v)}">✍️ Edit as a hand-written PO (change lines or prices, no job, download)</button></div>`;
     }).join("");
     renderPoForm(S.poVendor);
   }
@@ -544,14 +545,14 @@
     try {
       const rows = await api("api/pricelist/pos");
       $("#pastpos").innerHTML = rows.map(p => `<button type="button" class="po-row" data-po="${p.id}">
-        <div><b>${esc(p.po_number)}</b>${p.is_test ? ' <span class="tag flag">TEST</span>' : ""}<div class="small muted">${esc(vname(p.vendor))} · ${esc(p.order_date)} · ${p.line_count} line${p.line_count > 1 ? "s" : ""} · ${esc(p.job_customer || p.job_number)} · by ${esc(p.by)}</div></div>
-        <div style="text-align:right"><b>${money(p.total)}</b><div><span class="st sent">Sent</span></div></div></button>`).join("") || '<div class="muted small">No purchase orders yet.</div>';
+        <div><b>${esc(p.po_number)}</b>${p.is_test ? ' <span class="tag flag">TEST</span>' : ""}${p.manual ? ' <span class="tag v">by hand</span>' : ""}<div class="small muted">${esc(p.vendor_name || vname(p.vendor))} · ${esc(p.order_date)} · ${p.line_count} line${p.line_count > 1 ? "s" : ""} · ${esc(p.job_customer || p.job_number || "no job")} · by ${esc(p.by)}</div></div>
+        <div style="text-align:right"><b>${money(p.total)}</b><div>${p.status === "downloaded" ? '<span class="st dl">Downloaded</span>' : '<span class="st sent">Sent</span>'}</div></div></button>`).join("") || '<div class="muted small">No purchase orders yet.</div>';
     } catch (e) { $("#pastpos").innerHTML = `<div class="muted small">${esc(e.message)}</div>`; }
   }
   async function openPo(id) {
     try {
       const p = await api(`api/pricelist/pos/${id}`);
-      const vend = VENDORS.find(x => x.code === p.vendor) || { name: p.vendor };
+      const vend = p.vendor_name ? { name: p.vendor_name, address: p.vendor_address } : (VENDORS.find(x => x.code === p.vendor) || { name: p.vendor });
       const full = Object.assign({ address: [] }, vend);
       const paper = poPaper(p, full);
       const e = p.email;
@@ -560,8 +561,11 @@
         : `Waiting to email to <b>${esc(e.recipients)}</b>${e.cc ? `, copy to <b>${esc(e.cc)}</b>` : ""}.`;
       $("#podoc").innerHTML = `<div class="po-actions"><button type="button" class="btn secondary" id="po-close">← Close</button>
           <a class="btn secondary" style="text-align:center;line-height:54px;text-decoration:none" href="api/pricelist/pos/${p.id}/pdf" target="_blank" rel="noopener">Open PDF</a>
-          <button type="button" class="btn secondary" id="po-reorder" data-po="${p.id}">Copy into buy list</button></div>
-        <div class="po-actions po-warn"><div class="box small" style="flex:1;margin:0">${p.is_test ? "<b>TEST PO</b> (emailed only to you). " : ""}Sent by ${esc(p.by)} · ${st}</div></div>${paper.html}`;
+          <a class="btn secondary" style="text-align:center;line-height:54px;text-decoration:none" href="api/pricelist/pos/${p.id}/pdf?download=1">⬇︎ Download PDF</a>
+          ${p.status === "downloaded" ? `<button type="button" class="btn" id="po-sendnow" data-po="${p.id}">Send to vendor now</button>` : ""}
+          ${p.manual ? `<button type="button" class="btn secondary" id="po-asnew">Write a new PO from this</button>` : `<button type="button" class="btn secondary" id="po-reorder" data-po="${p.id}">Copy into buy list</button>`}</div>
+        <div class="po-actions po-warn"><div class="box small" style="flex:1;margin:0">${p.is_test ? "<b>TEST PO</b> (emailed only to you). " : ""}${p.manual ? "Written by hand. " : ""}${p.status === "downloaded" ? `Saved and downloaded by ${esc(p.by)}. <b>Not emailed to the vendor.</b>` : `Sent by ${esc(p.by)} · ${st}`}</div></div>${paper.html}`;
+      S.lastPo = p;
       $("#podoc").dataset.po = JSON.stringify({ vendor: p.vendor, lines: p.lines.map(l => ({ sku: l.sku, qty: l.qty })) });
       $("#podoc").classList.remove("hidden"); $("#podoc").scrollTop = 0;
     } catch (e) { toast(e.message); }
@@ -574,6 +578,154 @@
     d.lines.forEach(l => { const it = bySku.get(l.sku); if (it) S.list[d.vendor][it.id] = l.qty; else missing++; });
     saveList(); $("#podoc").classList.add("hidden"); renderList();
     toast(missing ? `Copied. ${missing} item${missing > 1 ? "s aren't" : " isn't"} on the current sheet.` : "Copied into the buy list");
+  }
+
+  // ------------------------------------------------------------ hand-written PO (fill it in yourself, download and/or send)
+  const SHIP = ["Delivery", "Will Call – Dallas"];
+  const blankLine = () => ({ qty: "1", sku: "", name: "", price: "", uom: "" });
+  function manDraft() {
+    return Object.assign({ vendor: (VENDORS[0] || {}).code || "__other", other: { name: "", address: "", email: "" }, noJob: false, job: null,
+      po_number: "", ship_address: "", date: localDay(), method: SHIP[0], shipto: "shop", notes: "", lines: [blankLine()] }, store.get("manual", {}));
+  }
+  const manSave = () => store.set("manual", S.man);
+  function manTotal() { return S.man.lines.reduce((a, l) => a + ((parseFloat(String(l.price).replace(/[$,]/g, "")) || 0) * (parseInt(l.qty, 10) || 0)), 0); }
+  function openManual(prefill) {
+    S.man = prefill ? Object.assign(manDraft(), prefill) : manDraft();
+    if (!S.man.lines.length) S.man.lines.push(blankLine());
+    manSave(); renderManual();
+    $("#podoc").classList.remove("hidden"); $("#podoc").scrollTop = 0;
+  }
+  function renderManual() {
+    const m = S.man, other = m.vendor === "__other";
+    const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(label)}</option>`;
+    let jobHtml;
+    if (m.noJob) {
+      jobHtml = `<div class="grid2"><div class="field"><label for="man-po">PO #</label><input id="man-po" data-m="po_number" maxlength="40" value="${esc(m.po_number)}" placeholder="e.g. SHOP-1042"></div>
+        <div class="field"><label for="man-addr">Job site address (if shipping to a site)</label><input id="man-addr" data-m="ship_address" maxlength="300" value="${esc(m.ship_address)}"></div></div>
+        <div id="manDup"></div><button type="button" class="link small" id="man-usejob">Use a Service Fusion job instead</button>`;
+    } else if (m.job) {
+      jobHtml = `<div class="po-row" style="cursor:default;border-color:var(--green);background:var(--green-bg)"><div><b>${esc(m.job.customer || "Job")}</b>
+          <div class="small">Job ${esc(m.job.number)}${m.job.status ? " · " + esc(m.job.status) : ""}</div>${m.job.address ? `<div class="small muted">${esc(m.job.address)}</div>` : ""}</div>
+          <button type="button" class="link" id="man-jobchange">Change</button></div>
+        ${m.job.po_number ? `<div class="small"><b>PO # ${esc(m.job.po_number)}</b> <span class="muted">(from Service Fusion)</span></div><div id="manDup"></div>`
+          : '<div class="warnbox">This job has no PO number in Service Fusion. Add it there and pick the job again, or use “No job”.</div>'}`;
+    } else {
+      jobHtml = `<div class="jl-row" style="display:flex;gap:8px"><input id="manJobq" type="search" placeholder="Last 4 of job # or customer name" autocomplete="off"><button type="button" class="mini" id="jobRefresh">Refresh</button></div>
+        <div id="manJobRes"></div><button type="button" class="link small" id="man-nojob">No job (shop or stock order): type the PO # instead</button>`;
+    }
+    const vend = VENDORS.find(v => v.code === m.vendor);
+    const canSend = me.test_mode || (other ? !!m.other.email.trim() : !!(vend && vend.can_order));
+    $("#podoc").innerHTML = `<div class="po-actions"><button type="button" class="btn secondary" id="man-close">← Close (keeps your draft)</button></div>
+      <div class="box"><h1 style="margin-top:0">Write a PO</h1>
+        <div class="field"><label for="man-vendor">Vendor</label><select id="man-vendor" data-m="vendor">${VENDORS.map(v => opt(v.code, v.name, m.vendor)).join("")}${opt("__other", "Other vendor (one-off)…", m.vendor)}</select></div>
+        ${other ? `<div class="field"><label for="man-on">Vendor name</label><input id="man-on" data-mo="name" maxlength="80" value="${esc(m.other.name)}"></div>
+          <div class="field"><label for="man-oa">Vendor address (printed on the PO)</label><textarea id="man-oa" data-mo="address" rows="3">${esc(m.other.address)}</textarea></div>
+          <div class="field"><label for="man-oe">Vendor email (only needed to send it from here)</label><input id="man-oe" data-mo="email" type="email" maxlength="120" value="${esc(m.other.email)}"></div>` : ""}
+        <div class="field"><label>Job / PO #</label>${jobHtml}</div>
+        <div class="grid2"><div class="field"><label for="man-date">Order date</label><input id="man-date" type="date" data-m="date" value="${esc(m.date)}"></div>
+          <div class="field"><label for="man-method">Shipping method</label><select id="man-method" data-m="method">${SHIP.map(x => opt(x, x, m.method)).join("")}</select></div></div>
+        <div class="field"><label for="man-ship">Ship to</label><select id="man-ship" data-m="shipto">${opt("shop", "Our shop (Schertz)", m.shipto)}${opt("site", "Job site", m.shipto)}</select></div>
+        <div class="field"><label>Lines</label></div>
+        ${m.lines.map((l, i) => `<div class="mline">
+          <div class="r1"><input data-ml="${i}:qty" inputmode="numeric" placeholder="Qty" value="${esc(l.qty)}" aria-label="Quantity">
+            <input data-ml="${i}:sku" placeholder="Part #" maxlength="60" value="${esc(l.sku)}" aria-label="Part number">
+            <input data-ml="${i}:price" inputmode="decimal" placeholder="Unit $ (blank = TBD)" value="${esc(l.price)}" aria-label="Unit price">
+            <input data-ml="${i}:uom" placeholder="Per" maxlength="30" value="${esc(l.uom)}" aria-label="Per"></div>
+          <div class="r2"><input data-ml="${i}:name" placeholder="Description" maxlength="160" value="${esc(l.name)}" aria-label="Description">
+            <button type="button" class="rm" data-mrm="${i}" aria-label="Remove line">×</button></div>
+          <div class="lt" id="mlt-${i}"></div></div>`).join("")}
+        <button type="button" class="link" id="man-addline">+ Add a line</button>
+        <div class="field"><label for="manFind">Add from the price list${other ? "" : ` (${esc(vend ? vend.name : "")})`}</label><input id="manFind" type="search" placeholder="Search part # or description" autocomplete="off"><div class="mfind" id="manFindRes"></div></div>
+        <div class="total"><span>Total${m.lines.some(l => String(l.price).trim() === "") ? " (excl. TBD)" : ""}</span><span id="manTot">${money(manTotal())}</span></div>
+        <div class="field"><label for="man-notes">Notes for the vendor</label><textarea id="man-notes" data-m="notes" rows="2" maxlength="1000">${esc(m.notes)}</textarea></div>
+        <button type="button" class="btn" id="man-download">⬇︎ Save &amp; download PDF</button>
+        <button type="button" class="btn secondary" id="man-send" ${canSend ? "" : "disabled"}>${me.test_mode ? "Send (test mode: to you)" : canSend ? "Send to vendor" : "Send to vendor (no email set: download instead)"}</button>
+        <p class="small muted">Download saves the PO in Purchase orders as “Downloaded, not sent”; you can send it from there later. Every PO is copied to ${ADMIN_COPY} when it's emailed.</p></div>`;
+    manLineTotals();
+    if (!m.noJob && !m.job && $("#manJobq")) manJobSearch();
+    manDupCheck();
+  }
+  function manLineTotals() {
+    S.man.lines.forEach((l, i) => { const el = $("#mlt-" + i); if (!el) return; const p = parseFloat(String(l.price).replace(/[$,]/g, "")), q = parseInt(l.qty, 10);
+      el.textContent = isNaN(p) ? "TBD" : q ? money(p * q) : ""; });
+    if ($("#manTot")) $("#manTot").textContent = money(manTotal());
+  }
+  let manSeq = 0, manDupT;
+  async function manJobSearch() {
+    const my = ++manSeq, q = $("#manJobq") ? $("#manJobq").value.trim() : "";
+    if (!me.job_lookup) { $("#manJobRes").innerHTML = '<div class="small muted">The job lookup isn\'t connected to Service Fusion. Use “No job”.</div>'; return; }
+    try {
+      const r = await api(`api/jobs?form=po&q=${encodeURIComponent(q)}`);
+      if (my !== manSeq || !$("#manJobRes")) return;
+      $("#manJobRes").innerHTML = r.results.map(j => `<button type="button" class="po-row" data-manjob="${esc(j.number)}"><div><b>${esc(j.customer || "(no name)")}</b>
+        <div class="small">Job …${esc(j.last4)}</div></div><div class="small muted" style="text-align:right">${esc(j.status || "")}</div></button>`).join("")
+        || `<div class="small muted" style="margin-top:8px">${q ? "No open job matches." : "Type the last 4 of the job # or the customer's name."}</div>`;
+    } catch (e) { if ($("#manJobRes")) $("#manJobRes").innerHTML = `<div class="small muted">${esc(e.message)}</div>`; }
+  }
+  async function manPickJob(num) {
+    try {
+      const d = await api(`api/jobs/${encodeURIComponent(num)}?form=po`);
+      S.man.job = { number: d.number, customer: d.customer, status: d.status, address: d.address, po_number: d.po_number || "" };
+      manSave(); renderManual();
+    } catch (e) { toast(e.message); }
+  }
+  function manDupCheck() {
+    clearTimeout(manDupT);
+    manDupT = setTimeout(async () => {
+      const po = S.man.noJob ? S.man.po_number.trim() : (S.man.job && S.man.job.po_number) || "";
+      if (!po || !$("#manDup")) return;
+      try { const r = await api(`api/pricelist/po-check?po=${encodeURIComponent(po)}`);
+        $("#manDup").innerHTML = r.sent_before.length ? `<div class="warnbox">PO # ${esc(po)} is already on ${r.sent_before.length} saved PO${r.sent_before.length > 1 ? "s" : ""}. Make sure this isn't a duplicate.</div>` : "";
+      } catch (e) { /* not important */ }
+    }, 400);
+  }
+  function manFind(q) {
+    const box = $("#manFindRes"); if (!box) return;
+    if (q.trim().length < 2) { box.innerHTML = ""; return; }
+    const ts = norm(q).split(/\s+/).filter(Boolean);
+    const pool = S.man.vendor === "__other" ? Object.values(ITEMS).flat() : (ITEMS[S.man.vendor] || []);
+    const hits = pool.filter(d => ts.every(t => tokOk(d, t))).slice(0, 8);
+    box.innerHTML = hits.map(d => `<button type="button" data-manadd="${d.id}"><b>${esc(d.sku)}</b> · ${esc(d.name)} <span class="muted">${d.price == null ? "call" : money(d.price)}${d.uom ? " / " + esc(d.uom) : ""}</span></button>`).join("")
+      || '<div class="small muted">No match on this vendor\'s sheet. Type the line in by hand.</div>';
+  }
+  function manBody(action) {
+    const m = S.man;
+    const lines = m.lines.filter(l => l.name.trim() || l.sku.trim() || String(l.price).trim());
+    const b = { action, order_date: m.date, ship_method: m.method, ship_to: m.shipto, notes: m.notes, lines };
+    if (m.vendor === "__other") b.other_vendor = m.other; else b.vendor = m.vendor;
+    if (m.noJob) { b.po_number = m.po_number; b.ship_address = m.ship_address; }
+    else if (m.job) b.job_number = m.job.number;
+    else throw new Error("Pick the job, or choose “No job” and type the PO #.");
+    return b;
+  }
+  async function manSubmit(action, btn) {
+    let body; try { body = manBody(action); } catch (e) { toast(e.message); return; }
+    if (action === "send" && !confirm(`Email this PO${me.test_mode ? " to you (test mode)" : " to the vendor now"}?`)) return;
+    btn.disabled = true;
+    try {
+      const po = await api("api/pricelist/pos/manual", { method: "POST", json: body });
+      store.del("manual"); S.man = null;
+      if (action === "download") window.location.href = `api/pricelist/pos/${po.id}/pdf?download=1`;
+      toast(action === "download" ? `PO ${po.po_number} saved. Downloading the PDF…` : po.is_test ? `Test PO ${po.po_number} emailed to you` : `PO ${po.po_number} sent · copy to ${ADMIN_COPY}`);
+      loadPos(); setTimeout(() => openPo(po.id), action === "download" ? 600 : 0);
+    } catch (e) { alert(e.message); btn.disabled = false; }
+  }
+  async function sendSaved(id, btn) {
+    if (!confirm(me.test_mode ? "Email this PO to you (test mode)?" : "Email this PO to the vendor now?")) return;
+    btn.disabled = true;
+    try { const po = await api(`api/pricelist/pos/${id}/send`, { method: "POST" });
+      toast(po.is_test ? `Test PO ${po.po_number} emailed to you` : `PO ${po.po_number} sent · copy to ${ADMIN_COPY}`); loadPos(); openPo(id); }
+    catch (e) { alert(e.message); btn.disabled = false; }
+  }
+  function manFromList(v) {
+    const lines = listLines(v).map(l => ({ qty: String(l.qty), sku: l.d.sku, name: l.d.name + (sizeLabel(l.d) ? ` (${sizeLabel(l.d)})` : ""),
+      price: l.d.price == null ? "" : ((l.total) / l.qty).toFixed(2), uom: l.d.uom || "" }));
+    openManual({ vendor: v, lines: lines.length ? lines : [blankLine()] });
+  }
+  function manFromPo(p) {
+    openManual({ vendor: p.vendor_name ? "__other" : p.vendor, other: { name: p.vendor_name || "", address: (p.vendor_address || []).join("\n"), email: "" },
+      noJob: !p.job_number, job: null, po_number: "", ship_address: p.ship_address || "", method: p.ship_method, shipto: p.ship_to, notes: p.notes,
+      lines: p.lines.map(l => ({ qty: String(l.qty), sku: l.sku, name: l.name, price: l.price == null ? "" : String(l.price), uom: l.uom || "" })) });
   }
 
   // ------------------------------------------------------------ compare tab
@@ -726,6 +878,24 @@
     const ad = t.closest("[data-additem]"); if (ad) { openEditor(null, +ad.dataset.additem); return; }
     const rs = t.closest("[data-rmsheet]"); if (rs) { removeSheet(+rs.dataset.rmsheet); return; }
     if (t.id === "copy") { const d = BYID.get(+$("#sheet").dataset.id); if (navigator.clipboard) navigator.clipboard.writeText(d.sku).catch(() => {}); toast("Copied " + d.sku); return; }
+    if (t.id === "manNew") { openManual(); return; }
+    if (t.id === "man-close") { $("#podoc").classList.add("hidden"); return; }
+    if (t.id === "man-addline") { S.man.lines.push(blankLine()); manSave(); renderManual(); return; }
+    const mr = t.closest("[data-mrm]"); if (mr) { S.man.lines.splice(+mr.dataset.mrm, 1); if (!S.man.lines.length) S.man.lines.push(blankLine()); manSave(); renderManual(); return; }
+    if (t.id === "man-nojob") { S.man.noJob = true; manSave(); renderManual(); return; }
+    if (t.id === "man-usejob") { S.man.noJob = false; manSave(); renderManual(); return; }
+    if (t.id === "man-jobchange") { S.man.job = null; manSave(); renderManual(); return; }
+    const mj = t.closest("[data-manjob]"); if (mj) { manPickJob(mj.dataset.manjob); return; }
+    const ma = t.closest("[data-manadd]"); if (ma) { const d = BYID.get(+ma.dataset.manadd);
+      const ln = { qty: String(packSizes(d).length ? Math.min(...packSizes(d)) : 1), sku: d.sku, name: d.name + (sizeLabel(d) ? ` (${sizeLabel(d)})` : ""), price: d.price == null ? "" : d.price.toFixed(2), uom: d.uom || "" };
+      const last = S.man.lines[S.man.lines.length - 1];
+      if (last && !last.name && !last.sku && !String(last.price).trim()) S.man.lines[S.man.lines.length - 1] = ln; else S.man.lines.push(ln);
+      manSave(); renderManual(); toast("Line added"); return; }
+    if (t.id === "man-download") { manSubmit("download", t); return; }
+    if (t.id === "man-send") { manSubmit("send", t); return; }
+    if (t.id === "po-sendnow") { sendSaved(+t.dataset.po, t); return; }
+    if (t.id === "po-asnew") { manFromPo(S.lastPo); return; }
+    const mf = t.closest("[data-manfrom]"); if (mf) { manFromList(mf.dataset.manfrom); return; }
     const pu = t.closest("[data-packup]"); if (pu) { const d = BYID.get(+pu.dataset.packup); setQty(pu.dataset.v, d.id, packUp((S.list[pu.dataset.v] || {})[d.id] || 1, d)); return; }
     const lq = t.closest("[data-lq]"); if (lq) { const v = lq.dataset.v, id = +lq.dataset.id; setQty(v, id, ((S.list[v] || {})[id] || 0) + +lq.dataset.lq); return; }
     const pv = t.closest("[data-povendor]"); if (pv) { S.poVendor = pv.dataset.povendor; renderList(); return; }
@@ -733,7 +903,7 @@
     if (t.id === "jobChange") { const f2 = draft(S.poVendor); f2.job = null; saveDraft(S.poVendor, f2); renderPoForm(S.poVendor); return; }
     if (t.id === "jobRefresh") {
       t.disabled = true; t.textContent = "Refreshing…";
-      api("api/jobs/refresh", { method: "POST" }).catch(e => toast(e.message)).finally(() => { t.disabled = false; t.textContent = "Refresh"; runJobSearch(); });
+      api("api/jobs/refresh", { method: "POST" }).catch(e => toast(e.message)).finally(() => { t.disabled = false; t.textContent = "Refresh"; if ($("#manJobq")) manJobSearch(); else runJobSearch(); });
       return;
     }
     if (t.id === "clearlist") { if (!confirm(`Clear the ${vname(S.poVendor)} buy list?`)) return; delete S.list[S.poVendor]; saveList(); store.del("draft_" + S.poVendor); renderList(); return; }
@@ -746,6 +916,11 @@
   });
   document.addEventListener("input", (e) => {
     if (e.target.id === "jobq") { clearTimeout(jobTimer); jobTimer = setTimeout(runJobSearch, 250); return; }
+    if (e.target.id === "manJobq") { clearTimeout(jobTimer); jobTimer = setTimeout(manJobSearch, 250); return; }
+    if (e.target.id === "manFind") { manFind(e.target.value); return; }
+    if (S.man && e.target.dataset.ml) { const [i, k] = e.target.dataset.ml.split(":"); S.man.lines[+i][k] = e.target.value; manSave(); manLineTotals(); return; }
+    if (S.man && e.target.dataset.mo) { S.man.other[e.target.dataset.mo] = e.target.value; manSave(); return; }
+    if (S.man && e.target.dataset.m && e.target.tagName !== "SELECT") { S.man[e.target.dataset.m] = e.target.value; manSave(); if (e.target.dataset.m === "po_number") manDupCheck(); return; }
     if (e.target.dataset.d && e.target.tagName === "TEXTAREA") { const f = draft(S.poVendor); f[e.target.dataset.d] = e.target.value; saveDraft(S.poVendor, f); }
   });
   document.addEventListener("submit", (e) => { if (e.target.id === "upForm") { e.preventDefault(); uploadSheet(e.target); } });
@@ -760,6 +935,8 @@
       return;
     }
     if (e.target.dataset.lid) { setQty(e.target.dataset.lv, +e.target.dataset.lid, e.target.value); return; }
+    if (S.man && e.target.dataset.m && e.target.tagName === "SELECT") { S.man[e.target.dataset.m] = e.target.value; manSave(); if (e.target.dataset.m === "vendor" || e.target.id === "man-ship") renderManual(); return; }
+    if (S.man && e.target.dataset.mo === "email") { renderManual(); return; }
     if (e.target.dataset.d) { const f = draft(S.poVendor); f[e.target.dataset.d] = e.target.value; saveDraft(S.poVendor, f); }
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeSheet(); $("#podoc").classList.add("hidden"); } });

@@ -512,7 +512,7 @@ def build_po_pdf(po: dict, vendor: dict) -> bytes:
     ours = Paragraph(f"<b>{escape(OUR_NAME)}</b><br/>" + "<br/>".join(escape(x) for x in OUR_ADDRESS), cell)
     meta = Table([[Paragraph("PO #", bold), Paragraph(escape(po["po_number"]), cell)],
                   [Paragraph("Date", bold), Paragraph(escape(po["order_date"]), cell)],
-                  [Paragraph("Job", bold), Paragraph(escape(f"{po['job_number']} · {po['job_customer']}".strip(" ·")), cell)]],
+                  [Paragraph("Job", bold), Paragraph(escape(f"{po['job_number']} · {po['job_customer']}".strip(" ·") or "—"), cell)]],
                  colWidths=[0.7 * inch, 2.3 * inch])
     meta.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#bbbbbb")),
                               ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#f3f5f4")),
@@ -552,7 +552,7 @@ def build_po_pdf(po: dict, vendor: dict) -> bytes:
                               ("LINEABOVE", (0, -1), (-1, -1), 1.2, colors.black)]))
     story = [head, Spacer(1, 16), blocks, Spacer(1, 14), lines, Spacer(1, 8), tots, Spacer(1, 14),
              Paragraph(f"<b>Notes:</b> {escape(po['notes']) or '—'}", cell), Spacer(1, 30),
-             Paragraph(f"Prices per {escape(vendor['name'])} {escape(po.get('sheet_label') or '')}. "
-                       f"Please reference PO # {escape(po['po_number'])} on all invoices and packing slips.", small)]
+             Paragraph(("" if po.get("manual") else f"Prices per {escape(vendor['name'])} {escape(po.get('sheet_label') or '')}. ")
+                       + f"Please reference PO # {escape(po['po_number'])} on all invoices and packing slips.", small)]
     doc.build(story)
     return buf.getvalue()

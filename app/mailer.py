@@ -80,10 +80,10 @@ PO # <b>{escape(po['po_number'])}</b> on the invoice and packing slip.</p>
 
 def _send_po(email_row) -> EmailMessage:
     from .pdf import build_po_pdf
-    from .pricelist import get_po, po_out, safe_name, vendors
+    from .pricelist import get_po, po_out, po_vendor, safe_name
     r = get_po(email_row["po_id"])
     po = po_out(r, with_lines=True)
-    vendor = next((v for v in vendors() if v["code"] == po["vendor"]), {"name": po["vendor"], "address": []})
+    vendor = po_vendor(po)
     msg = EmailMessage()
     msg["From"] = formataddr((CUSTOMER_FROM_NAME, SMTP_USER))
     msg["To"] = email_row["recipients"]

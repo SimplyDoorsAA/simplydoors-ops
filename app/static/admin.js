@@ -41,7 +41,7 @@
     owner_copies_set_up: "Owner's address moved to private copies", test_data_reset: "Test data cleared (server console)", list_changed: "Changed a pick list", forms_switched: "Changed which forms staff see", measure_reopened: "Reopened a measure",
     test_mode_on: "Turned test mode on", test_mode_off: "Turned test mode off",
     log_lines_deleted: "Deleted own log lines", studio_opened: "Opened Simply Studio", test_report_deleted: "Deleted a test report",
-    price_list_viewed: "Opened the Price List", po_sent: "Sent a purchase order", po_pdf_downloaded: "Opened a PO PDF",
+    price_list_viewed: "Opened the Price List", po_sent: "Sent a purchase order", po_downloaded: "Saved & downloaded a PO (not sent)", po_pdf_downloaded: "Opened a PO PDF",
     vendor_changed: "Changed a vendor (Price List)", price_sheet_loaded: "Loaded a price sheet", price_sheet_removed: "Removed a price sheet",
     price_item_changed: "Changed a Price List item", price_item_added: "Added a Price List item", price_item_deleted: "Deleted a Price List item",
     price_sheet_downloaded: "Downloaded a price sheet", vendor_added: "Added a vendor (Price List)",
