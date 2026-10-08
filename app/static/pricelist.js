@@ -211,13 +211,89 @@
         ${d.uom ? `<div>Sold per</div><div>${esc(d.uom)}</div>` : ""}
         <div>Stock</div><div>${d.stock === true ? "Stocked" : d.stock === false ? "Non-stock: +30% if fewer than 10 of one size/style" : "Not marked on sheet"}</div>
         ${d.page ? `<div>Source</div><div>${esc(vname(d.v))} sheet p.${d.page}</div>` : ""}
+        ${d.edited_at ? `<div>Edited</div><div>by ${esc(d.edited_by)} on ${esc(new Date(d.edited_at).toLocaleDateString())}, not as printed on the vendor's sheet</div>` : ""}
       </div></div>
       ${sib.length > 1 ? `<div class="box"><b>Other sizes</b><div class="sizes" style="margin-top:10px">${sib.map(x => `<button type="button" class="psz ${x.id === d.id ? "cur" : ""}" data-id="${x.id}"><b>${ftin(x.w)} ${x.h === 96 ? "8'0" : x.h === 80 ? "6'8" : ""}</b>${x.price == null ? "call" : money(x.price)}${x.stock ? " ✓" : ""}</button>`).join("")}</div></div>` : ""}
       <div class="addrow"><div class="qty"><button type="button" data-step="-1" aria-label="Less">−</button><input id="qty" inputmode="numeric" value="${inList || 1}" aria-label="Quantity"><button type="button" data-step="1" aria-label="More">+</button></div>
         <button type="button" class="btn" id="add">${inList ? "Update buy list" : "Add to buy list"}</button></div>
-      <button type="button" class="btn secondary" id="copy">Copy part #</button>`;
+      <button type="button" class="btn secondary" id="copy">Copy part #</button>
+      ${me.price_edit ? '<button type="button" class="btn secondary" id="edit">✎ Edit this item</button>' : ""}`;
     $("#sheet").dataset.id = d.id;
     $("#sheet").classList.remove("hidden"); $("#sheetbg").classList.remove("hidden"); $("#sheet").scrollTop = 0;
+  }
+  // ------------------------------------------------------------ editing items (people with "can edit prices" only)
+  function openEditor(d, sheetId) {
+    const isNew = !d;
+    d = d || { sku: "", name: "", cat: CATS[0], grp: "", mfr: "", w: 0, h: 0, th: "", core: "", price: null, stock: null,
+      uom: "", hand: "", brand: "", flag: "", compare: [] };
+    const sheetLabel = isNew ? ((VENDORS.flatMap(v => (v.sheets || []).map(s => ({ ...s, v: v.code }))).find(s => s.id === sheetId)) || {}).label : d.sheet;
+    const fld = (k, label, val, attrs = "") => `<div class="field"><label for="ed-${k}">${label}</label><input id="ed-${k}" data-ed="${k}" value="${esc(val ?? "")}" ${attrs}></div>`;
+    const cmpRow = (c) => `<div class="grid2 cmprow"><div class="field"><input data-cl placeholder="Level, e.g. Pallet" value="${esc(c.label)}" maxlength="30"></div>
+      <div class="field"><input data-cp inputmode="decimal" placeholder="0.00" value="${c.price ?? ""}"></div></div>`;
+    $("#sheet").innerHTML = `<div class="grab"></div><button type="button" class="close" id="close" aria-label="Close">×</button>
+      <div class="muted small">${isNew ? "New item on" : "Editing"} · ${esc(sheetLabel || "")}</div>
+      <h1 style="margin-top:4px">${isNew ? "Add an item" : esc(d.name)}</h1>
+      <p class="small muted">Changes are live for everyone as soon as you save, and they're kept in the activity log. Uploading a new version of this sheet replaces them.</p>
+      ${fld("name", "Name", d.name, 'maxlength="160"')}
+      <div class="grid2">${fld("sku", "Part #", d.sku, 'maxlength="60" autocapitalize="characters"')}${fld("price", "Price (blank = call for price)", d.price == null ? "" : d.price.toFixed(2), 'inputmode="decimal"')}</div>
+      <div class="field"><label for="ed-cat">Category</label><select id="ed-cat" data-ed="cat">${CATS.map(c => `<option ${c === d.cat ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></div>
+      ${fld("grp", "Group (section it's listed under)", d.grp, 'maxlength="120"')}
+      <div class="grid2">${fld("w", "Width (inches)", d.w || "", 'inputmode="decimal"')}${fld("h", "Height (inches)", d.h || "", 'inputmode="decimal"')}</div>
+      <div class="grid2">${fld("th", "Thickness", d.th, 'maxlength="20"')}${fld("core", "Core / material", d.core, 'maxlength="40"')}</div>
+      <div class="grid2"><div class="field"><label for="ed-stock">Stocked</label><select id="ed-stock" data-ed="stock">
+          <option value="" ${d.stock == null ? "selected" : ""}>Not marked</option><option value="Y" ${d.stock === true ? "selected" : ""}>Stocked</option>
+          <option value="N" ${d.stock === false ? "selected" : ""}>Non-stock</option></select></div>${fld("uom", "Sold per (EA, PR…)", d.uom, 'maxlength="30"')}</div>
+      <div class="grid2">${fld("brand", "Brand", d.brand, 'maxlength="40"')}${fld("mfr", "Maker's #", d.mfr, 'maxlength="60"')}</div>
+      ${fld("hand", "Hand (LH / RH)", d.hand, 'maxlength="4"')}
+      <div class="field"><label for="ed-flag">⚠ Note for whoever orders it (blank = no warning)</label><textarea id="ed-flag" data-ed="flag" rows="3" maxlength="300">${esc(d.flag)}</textarea></div>
+      <div class="field"><label>Other price levels (for comparison only)</label></div>
+      <div id="cmpRows">${(d.compare.length ? d.compare : [{ label: "", price: "" }]).map(cmpRow).join("")}</div>
+      <button type="button" class="link small" id="cmpAdd">+ Add a price level</button>
+      <button type="button" class="btn" id="edSave" data-new="${isNew ? sheetId : ""}">${isNew ? "Add item" : "Save changes"}</button>
+      ${isNew ? "" : '<button type="button" class="btn secondary danger-text" id="edDelete">Delete this item</button>'}
+      <button type="button" class="btn secondary" id="edCancel">Cancel</button>`;
+    $("#sheet").dataset.id = isNew ? "" : d.id;
+    $("#sheet").classList.remove("hidden"); $("#sheetbg").classList.remove("hidden"); $("#sheet").scrollTop = 0;
+    $("#cmpAdd").onclick = () => { if ($$("#cmpRows .cmprow").length < 6) $("#cmpRows").insertAdjacentHTML("beforeend", cmpRow({ label: "", price: "" })); };
+  }
+  function editorBody() {
+    const b = {};
+    $$("[data-ed]").forEach(el => { b[el.dataset.ed] = el.value; });
+    b.stock = b.stock === "" ? null : b.stock;
+    b.compare = $$("#cmpRows .cmprow").map(r => ({ label: $("[data-cl]", r).value.trim(), price: $("[data-cp]", r).value.trim() }))
+      .filter(c => c.label || c.price);
+    if (b.compare.some(c => !c.label || !c.price)) throw new Error("Each price level needs a name and a price.");
+    return b;
+  }
+  function putItem(d) {
+    // put the saved item into this page's copy of the list, so search and the item sheet show it at once
+    const list = ITEMS[d.vendor] || (ITEMS[d.vendor] = []);
+    const i = list.findIndex(x => x.id === d.id);
+    if (i >= 0) list[i] = d; else list.push(d);
+    prep(d, d.vendor);
+    const v = VENDORS.find(x => x.code === d.vendor);
+    if (v && !v.sheet) v.sheet = { label: d.sheet, items: list.length };
+  }
+  async function saveEditor(btn) {
+    let body;
+    try { body = editorBody(); } catch (e) { toast(e.message); return; }
+    btn.disabled = true;
+    try {
+      const sheetId = btn.dataset.new;
+      const d = sheetId ? await api("api/pricelist/items", { method: "POST", json: { ...body, sheet_id: +sheetId } })
+        : await api(`api/pricelist/items/${$("#sheet").dataset.id}`, { method: "PATCH", json: body });
+      putItem(d); render(); openItem(d.id); toast(sheetId ? "Item added" : "Saved");
+    } catch (e) { toast(e.message); btn.disabled = false; }
+  }
+  async function deleteEdited() {
+    const d = BYID.get(+$("#sheet").dataset.id); if (!d) return;
+    if (!confirm(`Delete “${d.name}” (${d.sku}) from the Price List for everyone? It comes back only if the sheet is uploaded again.`)) return;
+    try {
+      await api(`api/pricelist/items/${d.id}`, { method: "DELETE" });
+      ITEMS[d.v] = (ITEMS[d.v] || []).filter(x => x.id !== d.id); BYID.delete(d.id);
+      if (S.list[d.v] && S.list[d.v][d.id]) { delete S.list[d.v][d.id]; saveList(); }
+      closeSheet(); render(); toast("Item deleted");
+    } catch (e) { toast(e.message); }
   }
   const closeSheet = () => { $("#sheet").classList.add("hidden"); $("#sheetbg").classList.add("hidden"); };
   function toast(t) { const el = $("#toast"); el.textContent = t; el.classList.remove("hidden"); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.add("hidden"), 2400); }
@@ -422,7 +498,8 @@
   // ------------------------------------------------------------ sheets tab
   function renderSheets() {
     $("#sheetCards").innerHTML = VENDORS.map(v => `<div class="vcard ${v.sheet ? "live" : ""}"><div class="vt">${esc(v.name)} ${v.sheet ? '<span class="tag stock">Live</span>' : '<span class="tag ns">No sheet yet</span>'}</div>
-      ${v.sheet ? `${(v.sheets || []).map(s => `<div class="muted small">${esc(s.label)} · ${s.items.toLocaleString()} items · loaded ${esc(new Date(s.uploaded_at).toLocaleDateString())} by ${esc(s.uploaded_by)}</div>`).join("")}
+      ${v.sheet ? `${(v.sheets || []).map(s => `<div class="muted small">${esc(s.label)} · ${s.items.toLocaleString()} items · loaded ${esc(new Date(s.uploaded_at).toLocaleDateString())} by ${esc(s.uploaded_by)}${s.edited ? ` · ${s.edited} edited in the app` : ""}
+        ${me.price_edit ? `<div style="margin:6px 0 4px"><a class="link" href="api/pricelist/sheets/${s.id}/csv" download>Download (Excel / CSV)</a> · <button type="button" class="link" data-additem="${s.id}">+ Add an item</button></div>` : ""}</div>`).join("")}
         <div class="stats"><div class="stat"><b>${(ITEMS[v.code] || []).length.toLocaleString()}</b><span>items</span></div>
           <div class="stat"><b>${(ITEMS[v.code] || []).filter(d => d.flag).length}</b><span>flagged to check</span></div>
           <div class="stat"><b>${(ITEMS[v.code] || []).filter(d => d.price == null).length}</b><span>call for price</span></div></div>`
@@ -468,6 +545,11 @@
     if (t.id === "close" || t.id === "sheetbg") { closeSheet(); return; }
     const st = t.closest("[data-step]"); if (st) { const i = $("#qty"); i.value = Math.max(1, (parseInt(i.value, 10) || 1) + +st.dataset.step); return; }
     if (t.id === "add") { const d = BYID.get(+$("#sheet").dataset.id); setQty(d.v, d.id, $("#qty").value); closeSheet(); toast("Added to buy list"); return; }
+    if (t.id === "edit") { openEditor(BYID.get(+$("#sheet").dataset.id)); return; }
+    if (t.id === "edSave") { saveEditor(t); return; }
+    if (t.id === "edDelete") { deleteEdited(); return; }
+    if (t.id === "edCancel") { const id = +$("#sheet").dataset.id; if (id && BYID.has(id)) openItem(id); else closeSheet(); return; }
+    const ad = t.closest("[data-additem]"); if (ad) { openEditor(null, +ad.dataset.additem); return; }
     if (t.id === "copy") { const d = BYID.get(+$("#sheet").dataset.id); if (navigator.clipboard) navigator.clipboard.writeText(d.sku).catch(() => {}); toast("Copied " + d.sku); return; }
     const lq = t.closest("[data-lq]"); if (lq) { const v = lq.dataset.v, id = +lq.dataset.id; setQty(v, id, ((S.list[v] || {})[id] || 0) + +lq.dataset.lq); return; }
     const pv = t.closest("[data-povendor]"); if (pv) { S.poVendor = pv.dataset.povendor; renderList(); return; }

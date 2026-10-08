@@ -1495,3 +1495,75 @@ def test_vendor_can_have_several_sheets_with_compare_prices(client, monkeypatch)
     assert left == ["TST-OAK-1"]
     assert conn().execute("SELECT COUNT(*) FROM pl_items WHERE sheet_id=?", (a,)).fetchone()[0] == 0
     assert conn().execute("SELECT COUNT(*) FROM audit WHERE action='price_sheet_removed'").fetchone()[0] == 1
+
+
+def test_price_list_editors_can_change_add_delete_and_download(client, monkeypatch):
+    from app import alerts, pricelist
+    pushed = []
+    monkeypatch.setattr(alerts, "push", lambda *a, **k: None)
+    monkeypatch.setattr(alerts, "push_throttled", lambda key, title, msg, *a, **k: pushed.append(title))
+    login(client, "Adem Atis", "246810")
+    csv_bytes = (b"sku,name,category,price,width_in,height_in,compare Pallet\n"
+                 b"TST-ED-1,Edit test 2868,Interior stile & rail,80.00,32,80,70.00\n"
+                 b"TST-ED-2,Edit test 3068,Interior stile & rail,90.00,36,80,\n")
+    sid = _upload(client, csv_bytes, vendor="BC", label="Edit test", replace="new").json()["sheet_id"]
+    jid = conn().execute("SELECT id FROM staff WHERE name='Jaime Mendoza'").fetchone()[0]
+    login(client, "Paz Galambos", "112233")
+    assert client.patch(f"/ops/api/admin/staff/{jid}", json={"price_list": True, "price_edit": False}, headers=H).json()["ok"]
+    login(client, "Jaime Mendoza", "135790")
+    by = {i["sku"]: i for i in client.get("/ops/api/pricelist/items?vendor=BC", headers=H).json()["items"]}
+    item = by["TST-ED-1"]
+    assert client.get("/ops/api/me", headers=H).json()["price_edit"] is False
+    assert client.patch(f"/ops/api/pricelist/items/{item['id']}", json={"price": 1}, headers=H).status_code == 403
+    assert client.get(f"/ops/api/pricelist/sheets/{sid}/csv", headers=H).status_code == 403
+    # switched on for the purchaser
+    login(client, "Paz Galambos", "112233")
+    assert client.patch(f"/ops/api/admin/staff/{jid}", json={"price_edit": True}, headers=H).json()["ok"]
+    login(client, "Jaime Mendoza", "135790")
+    assert client.get("/ops/api/me", headers=H).json()["price_edit"] is True
+    url = f"/ops/api/pricelist/items/{item['id']}"
+    r = client.patch(url, json={"price": "abc"}, headers=H)
+    assert r.status_code == 422 and r.json()["detail"] == "Price “abc” isn't a number."
+    assert client.patch(url, json={"cat": "Doors"}, headers=H).status_code == 422
+    r = client.patch(url, json={"price": "82.5", "flag": "Confirm with Boise", "name": "Edit test 2868 (renamed)",
+                                "compare": [{"label": "Pallet", "price": "71"}, {"label": "Container", "price": "64.4"}]}, headers=H)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["price"] == 82.5 and d["flag"] == "Confirm with Boise" and d["edited_by"] == "Jaime Mendoza"
+    assert d["compare"] == [{"label": "Pallet", "price": 71.0}, {"label": "Container", "price": 64.4}] and d["w"] == 32
+    a = conn().execute("SELECT target, details FROM audit WHERE action='price_item_changed' ORDER BY id DESC").fetchone()
+    det = json.loads(a["details"])
+    assert a["target"] == "Boise Cascade: TST-ED-1" and det["price"] == {"from": 80.0, "to": 82.5}
+    assert det["compare"] == {"from": "Pallet 70.00", "to": "Pallet 71.00, Container 64.40"} and "sku" not in det
+    assert pushed == ["Ops app: Price List edited"]
+    # a PO uses the edited price
+    lines, total, _ = pricelist.build_lines("BC", [{"item_id": item["id"], "qty": 2}])
+    assert total == 165.0
+    # add and delete
+    r = client.post("/ops/api/pricelist/items", json={"sheet_id": sid, "sku": "TST-ED-3", "name": "Added by hand",
+                                                      "cat": "Parts & hardware", "price": "12.98", "uom": "EA"}, headers=H)
+    assert r.status_code == 200, r.text
+    added = r.json()
+    assert added["sheet"] == "Edit test" and added["price"] == 12.98 and added["edited_by"] == "Jaime Mendoza"
+    assert client.post("/ops/api/pricelist/items", json={"sheet_id": 999999, "sku": "X", "name": "X", "cat": "Parts & hardware"},
+                       headers=H).status_code == 404
+    assert client.post("/ops/api/pricelist/items", json={"sheet_id": sid, "sku": "", "name": "X", "cat": "Parts & hardware"},
+                       headers=H).status_code == 422
+    assert client.delete(f"/ops/api/pricelist/items/{by['TST-ED-2']['id']}", headers=H).json()["ok"]
+    assert client.delete(f"/ops/api/pricelist/items/{by['TST-ED-2']['id']}", headers=H).status_code == 404
+    v = next(x for x in pricelist.vendors() if x["code"] == "BC")
+    s = next(x for x in v["sheets"] if x["id"] == sid)
+    assert s["items"] == 2 and s["edited"] == 2                       # TST-ED-1 changed, TST-ED-3 added
+    # download: the same upload format, with the edits, loads back as it was
+    r = client.get(f"/ops/api/pricelist/sheets/{sid}/csv", headers=H)
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/csv")
+    rows = {x["sku"]: x for x in pricelist.parse_sheet(r.content)}
+    assert set(rows) == {"TST-ED-1", "TST-ED-3"} and rows["TST-ED-1"]["price"] == 82.5 and rows["TST-ED-1"]["w"] == 32
+    assert json.loads(rows["TST-ED-1"]["compare"]) == [["Pallet", 71.0], ["Container", 64.4]]
+    acts = {r[0] for r in conn().execute("SELECT action FROM audit WHERE action LIKE 'price_item_%' OR action='price_sheet_downloaded'")}
+    assert acts == {"price_item_changed", "price_item_added", "price_item_deleted", "price_sheet_downloaded"}
+    # taking the Price List away takes editing away too
+    login(client, "Paz Galambos", "112233")
+    assert client.patch(f"/ops/api/admin/staff/{jid}", json={"price_list": False}, headers=H).json()["ok"]
+    assert tuple(conn().execute("SELECT price_list, price_edit FROM staff WHERE id=?", (jid,)).fetchone()) == (0, 0)
+    assert client.get(f"/ops/api/pricelist/sheets/{sid}/csv", headers=H).status_code == 200          # admins can download

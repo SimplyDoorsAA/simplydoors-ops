@@ -11,6 +11,7 @@
   font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }
 .mini.primary { background: var(--green); border-color: var(--green); color: #fff; }
 .mini.danger { color: var(--red); border-color: #f0b4b4; }
+a.mini { display: inline-flex; align-items: center; text-decoration: none; color: var(--ink); }
 .rows { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; font-size: 15px; }
 .rows th, .rows td { text-align: left; padding: 10px; border-bottom: 1px solid #eef0f2; vertical-align: top; }
 .rows th { background: #f7f9fa; font-size: 13px; color: var(--muted); }

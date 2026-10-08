@@ -46,6 +46,11 @@ GitHub Pages portal + Google Apps Script, one form at a time.
   height_in, thickness, core, stocked, uom, hand, brand, page, flag`, and up to 6 `compare <name>` columns (e.g.
   `compare Pallet`): other price levels shown on the item for comparison only; a PO always uses `price`. A blank price
   shows as "Call for price"; a part number used twice is kept and flagged.
+- **Editing items:** people with **Can edit Price List items** (Admin → Staff, e.g. the purchaser; it needs the Price List
+  switch too) get **✎ Edit this item** on every item: any field, the ⚠ note and the comparison prices. They can also add an
+  item to a sheet, delete one, and download a sheet (with its edits) as a CSV to change in Excel and load back. Every change
+  is in the activity log with the old and new value, the owner gets one phone alert per editor per 10 minutes, and an edited
+  item shows who changed it. Uploading a new version of a sheet replaces its edits; Admin warns first and offers the download.
 - **Shop:** pick a vendor, then a category, then items (or search). Flagged lines (wrong part number, odd price on the
   vendor's sheet) show **⚠ Check** with the reason. Non-stock interior slabs add 30% under 10 of one size/style.
 - **Purchase orders:** the buy list (kept on that phone) becomes a PO for one vendor. The PO number is the **PO number already
