@@ -92,6 +92,16 @@
   }
   const vname = (code) => (VENDORS.find(v => v.code === code) || { name: code }).name;
 
+  // ------------------------------------------------------------ pack sizes ("25" or "6, 12": sold only in whole packs)
+  const packSizes = (d) => String(d.pack || "").split(/[^0-9]+/).map(Number).filter(n => n >= 2);
+  function packOk(q, d) {
+    const s = packSizes(d); if (!s.length) return true;
+    const can = [true]; for (let i = 1; i <= q; i++) can[i] = s.some(x => i >= x && can[i - x]);
+    return !!can[q];
+  }
+  const packUp = (q, d) => { let n = Math.max(q, 1); while (n < 999 && !packOk(n, d)) n++; return n; };
+  const packText = (d) => { const s = packSizes(d); return s.length > 1 ? s.slice(0, -1).join(", ") + " or " + s[s.length - 1] : String(s[0]); };
+
   // ------------------------------------------------------------ comparing the same door across vendors
   const coreKey = (c) => { c = String(c || "").toUpperCase(); return /20/.test(c) ? "FIRE" : c.startsWith("HC") ? "HC" : c.startsWith("SC") ? "SC" : ""; };
   const CORE_LABEL = { HC: "Hollow core", SC: "Solid core", FIRE: "20-min fire", "": "Not stated" };
@@ -120,6 +130,7 @@
     if (d.stock === false && NONSTOCK_CATS.includes(d.cat)) t.push('<span class="tag ns">Non-stock · +30% under 10</span>');
     if (d.flag) t.push('<span class="tag flag">⚠ Check</span>');
     if (d.uom) t.push(`<span class="tag v">per ${esc(d.uom)}</span>`);
+    if (packSizes(d).length) t.push(`<span class="tag v">pack of ${esc(packText(d))}</span>`);
     return t.join("");
   }
   function card(d) {
@@ -243,13 +254,14 @@
         ${d.th ? `<div>Thickness</div><div>${esc(d.th)}</div>` : ""}
         ${d.core ? `<div>Core / material</div><div>${esc(d.core)}</div>` : ""}
         ${d.uom ? `<div>Sold per</div><div>${esc(d.uom)}</div>` : ""}
-        <div>Stock</div><div>${d.stock === true ? "Stocked" : d.stock === false ? "Non-stock: +30% if fewer than 10 of one size/style" : "Not marked on sheet"}</div>
+        <div>Stock</div><div>${d.stock === true ? "Stocked" : d.stock === false ? (NONSTOCK_CATS.includes(d.cat) ? "Non-stock: +30% if fewer than 10 of one size/style" : "Order item (not stocked)") : "Not marked on sheet"}</div>
+        ${packSizes(d).length ? `<div>Pack</div><div>Sold in packs of ${esc(packText(d))}</div>` : ""}
         ${d.page ? `<div>Source</div><div>${esc(vname(d.v))} sheet p.${d.page}</div>` : ""}
         ${d.w && d.h ? `<div>Match style</div><div>${d.style ? esc(d.style) : '<span class="muted">Not tagged yet</span>'}</div>` : ""}
         ${d.edited_at ? `<div>Edited</div><div>by ${esc(d.edited_by)} on ${esc(new Date(d.edited_at).toLocaleDateString())}, not as printed on the vendor's sheet</div>` : ""}
       </div></div>
       ${sib.length > 1 ? `<div class="box"><b>Other sizes</b><div class="sizes" style="margin-top:10px">${sib.map(x => `<button type="button" class="psz ${x.id === d.id ? "cur" : ""}" data-id="${x.id}"><b>${ftin(x.w)} ${x.h === 96 ? "8'0" : x.h === 80 ? "6'8" : ""}</b>${x.price == null ? "call" : money(x.price)}${x.stock ? " ✓" : ""}</button>`).join("")}</div></div>` : ""}
-      <div class="addrow"><div class="qty"><button type="button" data-step="-1" aria-label="Less">−</button><input id="qty" inputmode="numeric" value="${inList || 1}" aria-label="Quantity"><button type="button" data-step="1" aria-label="More">+</button></div>
+      <div class="addrow"><div class="qty"><button type="button" data-step="-1" aria-label="Less">−</button><input id="qty" inputmode="numeric" value="${inList || (packSizes(d).length ? Math.min(...packSizes(d)) : 1)}" aria-label="Quantity"><button type="button" data-step="1" aria-label="More">+</button></div>
         <button type="button" class="btn" id="add">${inList ? "Update buy list" : "Add to buy list"}</button></div>
       <button type="button" class="btn secondary" id="copy">Copy part #</button>
       ${me.price_edit ? '<button type="button" class="btn secondary" id="edit">✎ Edit this item</button>' : ""}`;
@@ -279,7 +291,7 @@
           <option value="" ${d.stock == null ? "selected" : ""}>Not marked</option><option value="Y" ${d.stock === true ? "selected" : ""}>Stocked</option>
           <option value="N" ${d.stock === false ? "selected" : ""}>Non-stock</option></select></div>${fld("uom", "Sold per (EA, PR…)", d.uom, 'maxlength="30"')}</div>
       <div class="grid2">${fld("brand", "Brand", d.brand, 'maxlength="40"')}${fld("mfr", "Maker's #", d.mfr, 'maxlength="60"')}</div>
-      ${fld("hand", "Hand (LH / RH)", d.hand, 'maxlength="4"')}
+      <div class="grid2">${fld("hand", "Hand (LH / RH)", d.hand, 'maxlength="4"')}${fld("pack", "Sold in packs of (blank = any qty)", d.pack || "", 'maxlength="30" placeholder="e.g. 25 or 6, 12"')}</div>
       <div class="field"><label for="ed-style">Match style, for comparing vendors (applies to the whole group${isNew ? "" : `: ${(ITEMS[d.v] || []).filter(x => x.grp === d.grp).length} items`})</label>
         <input id="ed-style" list="styleList" maxlength="40" value="${esc(d.style || "")}" placeholder="e.g. 2-panel shaker" data-orig="${esc(d.style || "")}"></div>
       <div class="field"><label for="ed-flag">⚠ Note for whoever orders it (blank = no warning)</label><textarea id="ed-flag" data-ed="flag" rows="3" maxlength="300">${esc(d.flag)}</textarea></div>
@@ -403,6 +415,7 @@
         return `<div class="line"><div class="d"><div class="t">${esc(l.d.name)}</div><div class="s mono">${esc(l.d.sku)}</div>
           <div class="s">${esc(sizeLabel(l.d))} ${l.d.price == null ? "· <b>call for price</b>" : "· " + money(l.d.price) + (l.d.uom ? " per " + esc(l.d.uom) : " each")}</div>
           ${l.sur ? `<div class="sur">+30% non-stock (under 10): ${money(l.sur)}</div>` : ""}
+          ${packOk(l.qty, l.d) ? "" : `<div class="sur">⚠ Sold in packs of ${esc(packText(l.d))}: ${l.qty} isn't whole packs. <button type="button" class="link small" data-packup="${l.id}" data-v="${esc(v)}">Make it ${packUp(l.qty, l.d)}</button></div>`}
           ${l.d.flag ? `<div class="sur">⚠ ${esc(l.d.flag)}</div>` : ""}</div>
           <div class="qty"><button type="button" data-lq="-1" data-v="${esc(v)}" data-id="${l.id}" aria-label="Less">−</button><input value="${l.qty}" data-lv="${esc(v)}" data-lid="${l.id}" inputmode="numeric" aria-label="Quantity"><button type="button" data-lq="1" data-v="${esc(v)}" data-id="${l.id}" aria-label="More">+</button></div>
           <div class="amt">${l.d.price == null ? "TBD" : money(l.total)}</div></div>`; }).join("");
@@ -498,7 +511,8 @@
   function previewPo() {
     const v = S.poVendor, f = draft(v), vend = VENDORS.find(x => x.code === v);
     const lines = listLines(v).map(l => ({ sku: l.d.sku, name: l.d.name, size: sizeLabel(l.d), qty: l.qty, price: l.d.price, uom: l.d.uom,
-      surcharge: l.sur, total: l.d.price == null ? null : l.total, flag: l.d.flag }));
+      surcharge: l.sur, total: l.d.price == null ? null : l.total, flag: l.d.flag, packBad: !packOk(l.qty, l.d), pack: packText(l.d) }));
+    const badPacks = lines.filter(l => l.packBad);
     const p = { po_number: f.job.po_number, order_date: f.date, job_number: f.job.number, job_customer: f.job.customer, ship_method: f.method,
       ship_to: f.shipto, ship_address: f.job.address, notes: f.notes, lines, total: lines.reduce((a, l) => a + (l.total || 0), 0),
       sheet_label: (vend.sheet || {}).label, by: me.name };
@@ -507,6 +521,7 @@
         <button type="button" class="btn" id="po-send">Send to ${esc(vend.name.split(" ")[0])}</button></div>
       <div class="po-actions po-warn"><div class="box small" style="flex:1;margin:0">${me.test_mode ? "<b>Test mode is on:</b> this PO is emailed only to you, not to the vendor." :
         `Sending emails this PO as a PDF to the ${esc(vend.name)} order email, with a copy to <b>${ADMIN_COPY}</b>. Prices are checked again against the loaded sheet when it's sent.`}</div></div>
+      ${badPacks.length ? `<div class="po-actions po-warn"><div class="warnbox" style="flex:1;margin:0">⚠ ${badPacks.map(l => `${esc(l.sku)}: ${l.qty} isn't whole packs of ${esc(l.pack)}`).join("; ")}. The vendor may round up or refuse the line. Go back and fix the quantity, or send it anyway.</div></div>` : ""}
       ${paper.flagged.length || paper.tbd.length ? `<div class="po-actions po-warn"><div class="warnbox" style="flex:1;margin:0">
         ${paper.flagged.length ? `⚠ ${paper.flagged.length} line${paper.flagged.length > 1 ? "s are" : " is"} flagged on the vendor's sheet (${paper.flagged.map(l => esc(l.sku)).join(", ")}). Confirm the part number with the vendor before sending.` : ""}
         ${paper.tbd.length ? `<div>${paper.tbd.length} line${paper.tbd.length > 1 ? "s have" : " has"} no price on the sheet. They show as TBD.</div>` : ""}</div></div>` : ""}
@@ -711,6 +726,7 @@
     const ad = t.closest("[data-additem]"); if (ad) { openEditor(null, +ad.dataset.additem); return; }
     const rs = t.closest("[data-rmsheet]"); if (rs) { removeSheet(+rs.dataset.rmsheet); return; }
     if (t.id === "copy") { const d = BYID.get(+$("#sheet").dataset.id); if (navigator.clipboard) navigator.clipboard.writeText(d.sku).catch(() => {}); toast("Copied " + d.sku); return; }
+    const pu = t.closest("[data-packup]"); if (pu) { const d = BYID.get(+pu.dataset.packup); setQty(pu.dataset.v, d.id, packUp((S.list[pu.dataset.v] || {})[d.id] || 1, d)); return; }
     const lq = t.closest("[data-lq]"); if (lq) { const v = lq.dataset.v, id = +lq.dataset.id; setQty(v, id, ((S.list[v] || {})[id] || 0) + +lq.dataset.lq); return; }
     const pv = t.closest("[data-povendor]"); if (pv) { S.poVendor = pv.dataset.povendor; renderList(); return; }
     const jb = t.closest("[data-job]"); if (jb) { pickJob(jb.dataset.job); return; }

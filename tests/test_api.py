@@ -1631,3 +1631,28 @@ def test_match_styles_are_set_per_group_and_survive_a_new_sheet(client, monkeypa
     login(client, "Jaime Mendoza", "135790")
     assert client.put("/ops/api/pricelist/styles", json={**body, "style": ""}, headers=H).json()["style"] == ""
     assert all(i["style"] == "" for i in client.get("/ops/api/pricelist/items?vendor=NV", headers=H).json()["items"])
+
+
+def test_pack_sizes_are_checked_on_the_po(client, monkeypatch):
+    from app import alerts, pricelist
+    monkeypatch.setattr(alerts, "push", lambda *a, **k: None)
+    assert pricelist.clean_pack("6, 12") == "6, 12" and pricelist.clean_pack("25") == "25"
+    assert pricelist.clean_pack("1") == "" and pricelist.clean_pack("") == "" and pricelist.clean_pack("12/6") == "6, 12"
+    assert pricelist.pack_ok(25, "25") and pricelist.pack_ok(50, "25") and not pricelist.pack_ok(18, "25")
+    assert pricelist.pack_ok(31, "6, 25") and not pricelist.pack_ok(7, "6, 12") and pricelist.pack_ok(5, "")
+    login(client, "Adem Atis", "246810")
+    r = _upload(client, b"sku,name,category,price,stocked,pack\nTST-PK-1,Pack test door,Exterior doors & sidelites,100,N,25\n"
+                        b"TST-PK-2,Pack test sill,Parts & hardware,10,Y,\n", vendor="NV", label="Pack test", replace="new")
+    assert r.status_code == 200, r.text
+    by = {i["sku"]: i for i in client.get("/ops/api/pricelist/items?vendor=NV", headers=H).json()["items"]}
+    assert by["TST-PK-1"]["pack"] == "25" and by["TST-PK-1"]["stock"] is False and by["TST-PK-2"]["pack"] == ""
+    lines, total, _ = pricelist.build_lines("NV", [{"item_id": by["TST-PK-1"]["id"], "qty": 18},
+                                                   {"item_id": by["TST-PK-2"]["id"], "qty": 3}])
+    door = next(ln for ln in lines if ln["sku"] == "TST-PK-1")
+    assert door["not_full_packs"] and door["pack"] == "25" and door["surcharge"] == 0     # exterior: no +30% rule
+    assert "not_full_packs" not in next(ln for ln in lines if ln["sku"] == "TST-PK-2") and total == 1830.0
+    # the item editor and the download carry it too
+    r = client.patch(f"/ops/api/pricelist/items/{by['TST-PK-2']['id']}", json={"pack": "250"}, headers=H)
+    assert r.status_code == 200 and r.json()["pack"] == "250"
+    csv_text = client.get(f"/ops/api/pricelist/sheets/{by['TST-PK-1']['sheet_id']}/csv", headers=H).content
+    assert {x["sku"]: x["pack"] for x in pricelist.parse_sheet(csv_text)} == {"TST-PK-1": "25", "TST-PK-2": "250"}
