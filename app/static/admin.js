@@ -45,7 +45,7 @@
     vendor_changed: "Changed a vendor (Price List)", price_sheet_loaded: "Loaded a price sheet", price_sheet_removed: "Removed a price sheet",
     price_item_changed: "Changed a Price List item", price_item_added: "Added a Price List item", price_item_deleted: "Deleted a Price List item",
     price_sheet_downloaded: "Downloaded a price sheet", vendor_added: "Added a vendor (Price List)",
-    lead_received: "New lead from the customer form", lead_details_added: "Customer answered “Tell us more”",
+    lead_received: "New lead from the customer form", lead_added: "Added a lead by hand (phone call, walk-in…)", lead_details_added: "Customer answered “Tell us more”",
     leads_list_viewed: "Opened the Leads list", lead_viewed: "Opened a lead", lead_file_viewed: "Opened a lead's photo or file",
     lead_claimed: "Claimed a lead", lead_reassigned: "Gave a lead to someone", lead_status_changed: "Changed a lead's status",
     lead_note_added: "Added a note to a lead", lead_moved_to_leads: "Moved a lead out of Suspected spam",

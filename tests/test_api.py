@@ -2031,6 +2031,12 @@ def test_intake_test_mode_sends_everything_to_the_owner(client, monkeypatch):
     assert link.startswith("https://optiplex-ai.tailf0af63.ts.net/start?t=")
     code = link.split("t=", 1)[1]
     assert 'data-test="on"' in client.get(f"/start?t={code}").text
+    # the same code through the staff app's address works before the server step is done
+    staff_link = client.post("/ops/api/leads/test-link", headers=H).json()["staff_url"]
+    assert staff_link.startswith("https://optiplex-ai.tailf0af63.ts.net:10000/ops/start?t=")
+    code = staff_link.split("t=", 1)[1]                      # making a new link ended the first one
+    assert 'data-test="on"' in client.get(f"/ops/start?t={code}").text
+    assert 'data-test="ended"' in client.get(f"/start?t={link.split('t=', 1)[1]}").text
     r = _intake(client, "test-lead-0001", ip="192.0.2.200", t=code, email="real.customer@example.com", name="Tess Tester")
     assert r.status_code == 200 and r.json()["receipt"] == "TEST-INT-00001"
     lead = _lead("test-lead-0001")
@@ -2121,3 +2127,27 @@ def test_price_list_review_fixes(client, smtp, monkeypatch):
                                                            "lines": lines}, headers=H)
     assert r.status_code == 200, r.text
     assert any("typed-in vendor" in a[0] for a in sent_alerts)
+
+
+def test_leads_can_be_added_by_hand(client):
+    login(client, "Jaime Mendoza", "135790")
+    body = {"name": "Phil Caller", "phone": "210-555-0177", "source": "Phone call", "types": ["Windows"],
+            "description": "Wants 6 windows replaced", "heard": "Friend or family"}
+    assert client.post("/ops/api/leads", json=body, headers=H).status_code == 403          # needs Leads
+    login(client, "Paz Galambos", "112233")
+    r = client.post("/ops/api/leads", json={**body, "phone": "", "email": ""}, headers=H)
+    assert r.status_code == 422 and "phone number or an email" in r.json()["detail"]
+    assert client.post("/ops/api/leads", json={**body, "source": "Carrier pigeon"}, headers=H).status_code == 422
+    emails_before = conn().execute("SELECT COUNT(*) FROM emails").fetchone()[0]
+    d = client.post("/ops/api/leads", json=body, headers=H).json()
+    assert d["receipt"].startswith("INT-") and d["name"] == "Phil Caller" and d["types"] == ["Windows"]
+    assert d["owner"] == "Paz Galambos" and d["source"] == "Phone call" and d["added_by"] == "Paz Galambos"
+    assert d["status"] == "new" and not d["is_test"] and d["spam"] == ""
+    assert d["history"][0]["what"] == "Added it by hand (Phone call) and claimed it"
+    assert conn().execute("SELECT COUNT(*) FROM emails").fetchone()[0] == emails_before     # nobody emailed
+    assert conn().execute("SELECT 1 FROM audit WHERE action='lead_added' AND actor_name='Paz Galambos' AND target=?",
+                          (f"lead:{d['id']}",)).fetchone()
+    row = next(x for x in client.get("/ops/api/leads", headers=H).json()["leads"] if x["id"] == d["id"])
+    assert row["source"] == "Phone call"
+    d2 = client.post("/ops/api/leads", json={**body, "name": "Walk In", "source": "Walk-in", "claim": False}, headers=H).json()
+    assert d2["owner"] is None and int(d2["receipt"][4:]) == int(d["receipt"][4:]) + 1

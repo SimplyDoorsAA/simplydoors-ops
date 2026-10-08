@@ -38,6 +38,7 @@ BEST_TIMES = ["Morning", "Afternoon", "Evening"]
 STATUSES = {"new": "New", "called": "Called", "measure_booked": "Measure booked", "quoted": "Quoted",
             "won": "Won", "lost": "Lost"}
 CLOSED = ("won", "lost")
+SOURCES = ["Phone call", "Walk-in", "Email", "Text message", "Other"]   # how a lead added by hand came in
 
 MAX_FILES = 5
 MAX_PHOTO_BYTES = 15 * 1024 * 1024     # as sent; the phone shrinks photos first, and the server saves them smaller again
@@ -184,7 +185,33 @@ def make_test_link(owner) -> tuple[str, str]:
     expires = _iso(datetime.now(timezone.utc) + timedelta(hours=TEST_LINK_HOURS))
     set_setting("intake_test_link", json.dumps({"hash": hashlib.sha256(code.encode()).hexdigest(),
                                                 "expires": expires, "by": owner["id"]}))
-    return INTAKE_URL + "?t=" + code, expires
+    return code, expires
+
+
+def add_by_staff(d: dict, source: str, staff, claim: bool, is_test: bool, ip: str, agent: str) -> int:
+    """A lead someone typed in themselves (a phone call, a walk-in). Same numbering as the form. Nobody is emailed:
+    the person adding it already has it, and it's claimed for them unless they untick that."""
+    c = conn()
+    now = now_iso()
+    data = {"types": d["types"], "description": d["description"], "heard": d["heard"], "source": source,
+            "added_by": staff["name"]}
+    c.execute("BEGIN IMMEDIATE")
+    try:
+        lid = c.execute(
+            "INSERT INTO leads(submission_id, submitted_at, is_test, name, phone, email, address, data, owner_id, claimed_at,"
+            " touched_at, ip, user_agent) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("staff-" + secrets.token_hex(12), now, 1 if is_test else 0, d["name"], d["phone"], d["email"], d["address"],
+             json.dumps(data, ensure_ascii=False), staff["id"] if claim else None, now if claim else None,
+             now if claim else None, ip, (agent or "")[:300])).lastrowid
+        receipt = next_receipt(c, is_test)
+        c.execute("UPDATE leads SET receipt=? WHERE id=?", (receipt, lid))
+        audit(staff["id"], staff["name"], "lead_added", f"lead:{lid}",
+              {"receipt": receipt, "source": source, "claimed": claim, **({"test": True} if is_test else {})}, ip, agent)
+        c.execute("COMMIT")
+    except Exception:
+        c.execute("ROLLBACK")
+        raise
+    return lid
 
 
 def test_link_ok(code: str) -> bool:
@@ -533,7 +560,7 @@ def list_rows(staff, spam: bool) -> list[dict]:
                     "address": r["address"], "types": d.get("types") or [], "status": r["status"],
                     "owner": r["owner_name"], "owner_id": r["owner_id"], "claimed_at": r["claimed_at"],
                     "stale": _stale(r, cutoff), "is_test": bool(r["is_test"]), "spam": r["spam"],
-                    "files": r["nfiles"], "more": bool(d.get("more"))})
+                    "files": r["nfiles"], "more": bool(d.get("more")), "source": d.get("source") or ""})
     return out
 
 
@@ -555,11 +582,13 @@ def blocked_recent(staff) -> dict:
     return {"count": n, "rows": [dict(r) | {"is_test": bool(r["is_test"])} for r in rows]}
 
 
-HISTORY = ("lead_received", "lead_details_added", "lead_claimed", "lead_reassigned", "lead_status_changed",
+HISTORY = ("lead_added", "lead_received", "lead_details_added", "lead_claimed", "lead_reassigned", "lead_status_changed",
            "lead_note_added", "lead_moved_to_leads")
 
 
 def _history_text(action: str, d: dict) -> str:
+    if action == "lead_added":
+        return f"Added it by hand ({d.get('source', 'phone call')})" + (" and claimed it" if d.get("claimed") else "")
     if action == "lead_received":
         return "Sent the form" + (" (went to Suspected spam)" if d.get("suspected_spam") else "")
     if action == "lead_details_added":
@@ -595,6 +624,7 @@ def detail(r) -> dict:
     return {"id": r["id"], "receipt": r["receipt"], "submitted_at": r["submitted_at"], "is_test": bool(r["is_test"]),
             "spam": r["spam"], "name": r["name"], "phone": r["phone"], "email": r["email"], "address": r["address"],
             "types": d.get("types") or [], "description": d.get("description") or "", "heard": d.get("heard") or "",
+            "source": d.get("source") or "Customer form", "added_by": d.get("added_by"),
             "more": more_rows(d), "files_not_saved": d.get("files_not_saved", 0),
             "status": r["status"], "owner": owner["name"] if owner else None, "owner_id": r["owner_id"],
             "claimed_at": r["claimed_at"], "stale": _stale(r, _ago(hours=STALE_HOURS)),

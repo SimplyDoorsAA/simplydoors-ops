@@ -32,7 +32,7 @@
   }
   const fail = (e) => toast(e.message || "Something went wrong");
 
-  let me = null, tab = "leads", PEOPLE = [], STATUSES = [], staleHours = 24;
+  let me = null, tab = "leads", PEOPLE = [], STATUSES = [], CHOICES = null, staleHours = 24;
 
   function gate(msg) {
     $("#gateMsg").textContent = msg;
@@ -57,13 +57,16 @@
     $("#makeTest").onclick = async () => {
       let d;
       try { d = await api("api/leads/test-link", { method: "POST" }); } catch (e) { return fail(e); }
-      $("#testOut").innerHTML = `<div class="linkbox">${esc(d.url)}</div>
-        <div class="lbtns"><a class="mini primary" href="${esc(d.url)}" target="_blank" rel="noopener">Open it</a>
-        <a class="mini" href="sms:?&body=${encodeURIComponent(d.url)}">Text it to myself</a>
+      $("#testOut").innerHTML = `<div class="linkbox">${esc(d.staff_url)}</div>
+        <div class="lbtns"><a class="mini primary" href="${esc(d.staff_url)}" target="_blank" rel="noopener">Open it</a>
+        <a class="mini" href="sms:?&body=${encodeURIComponent(d.staff_url)}">Text it to myself</a>
         <button type="button" class="mini" id="copyTest">Copy</button></div>
-        <p class="muted small">Works until ${esc(when(d.expires_at))}, or until you make a new one or turn Test mode off.</p>`;
+        <p class="muted small">Works until ${esc(when(d.expires_at))}, or until you make a new one or turn Test mode off.</p>
+        <p class="muted small">This opens the form through the staff app's address, so it works now. The customers' address,
+        <a href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.url.split("?")[0])}</a> with the same code, works once the
+        server step (intake-setup.sh) has been run.</p>`;
       $("#copyTest").onclick = async () => {
-        try { await navigator.clipboard.writeText(d.url); toast("Copied"); } catch (e) { toast("Press and hold the link to copy it"); }
+        try { await navigator.clipboard.writeText(d.staff_url); toast("Copied"); } catch (e) { toast("Press and hold the link to copy it"); }
       };
     };
   }
@@ -79,7 +82,7 @@
   async function loadList() {
     let d;
     try { d = await api(`api/leads?tab=${tab}`); } catch (e) { $("#list").innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
-    PEOPLE = d.people; STATUSES = d.statuses; staleHours = d.stale_hours;
+    PEOPLE = d.people; STATUSES = d.statuses; CHOICES = d.choices; staleHours = d.stale_hours;
     const cn = $("#cNew"), cs = $("#cSpam");
     cn.textContent = d.counts.new; cn.classList.toggle("hidden", !d.counts.new);
     cs.textContent = d.counts.spam; cs.classList.toggle("hidden", !d.counts.spam);
@@ -97,7 +100,7 @@
       <span class="l1"><b class="lname">${esc(l.name)}</b>${l.is_test ? ' <span class="tag test">TEST</span>' : ""}
         ${l.spam ? "" : `<span class="st st-${esc(l.status)}">${esc(statusLabel(l.status))}</span>`}</span>
       <span class="l2">${esc([l.types.join(", "), l.address].filter(Boolean).join(" · ") || "No details")}</span>
-      <span class="l3">${esc(ago(l.submitted_at))} · ${l.spam ? esc(l.receipt) : who}${l.files ? ` · 📷 ${l.files}` : ""}</span>
+      <span class="l3">${l.source ? `${esc(l.source)} · ` : ""}${esc(ago(l.submitted_at))} · ${l.spam ? esc(l.receipt) : who}${l.files ? ` · 📷 ${l.files}` : ""}</span>
       ${l.stale ? `<span class="flag">⚠ Claimed, but no update in ${staleHours} hours</span>` : ""}
       ${l.spam ? `<span class="why">${esc(l.spam)}</span>` : ""}</button>`;
   }
@@ -112,8 +115,54 @@
         ${r.text ? `<div class="small muted">${esc(r.text)}</div>` : ""}</div>`).join("")}</details>`;
   }
 
+  // ------------------------------------------------------------ add a lead by hand (a phone call, a walk-in)
+  async function addForm() {
+    if (!CHOICES) { try { CHOICES = (await api("api/leads?tab=leads")).choices; } catch (e) { fail(e); location.hash = ""; return; } }
+    $("#listView").classList.add("hidden");
+    const v = $("#detailView");
+    v.classList.remove("hidden");
+    const chip = (name, val, type) => `<label><input type="${type}" name="${name}" value="${esc(val)}"><span>${esc(val)}</span></label>`;
+    v.innerHTML = `<div class="topline"><button class="back" type="button" id="backBtn">‹ All leads</button></div>
+      <h1>Add a lead</h1>
+      ${me.test_mode ? '<p class="flag">Test mode is on: this will be a TEST lead.</p>' : ""}
+      <form id="addLead" class="sec" novalidate>
+        <label>How did it come in?</label><div class="lchips">${CHOICES.sources.map((s, i) => chip("source", s, "radio").replace("<input", i ? "<input" : "<input checked")).join("")}</div>
+        <label for="aName">Name *</label><input id="aName" name="name" type="text" maxlength="80" autocomplete="off">
+        <label for="aPhone">Phone</label><input id="aPhone" name="phone" type="tel" inputmode="tel" maxlength="30" autocomplete="off">
+        <label for="aEmail">Email</label><input id="aEmail" name="email" type="email" maxlength="120" autocomplete="off">
+        <p class="muted small">A phone number or an email: at least one.</p>
+        <label for="aAddress">Project address</label><input id="aAddress" name="address" type="text" maxlength="200" autocomplete="off">
+        <label>What's the project?</label><div class="lchips">${CHOICES.types.map(t => chip("types", t, "checkbox")).join("")}</div>
+        <label for="aDesc">What they need</label><textarea id="aDesc" name="description" rows="4" maxlength="4000"></textarea>
+        <label>How did they hear about us?</label><div class="lchips">${CHOICES.heard.map(h => chip("heard", h, "radio")).join("")}</div>
+        <label class="check"><input type="checkbox" name="claim" checked> Claim it for me</label>
+        <p class="error hidden" id="addErr"></p>
+        <button type="submit" class="btn">Save lead</button>
+        <p class="muted small">Nobody is emailed: you already have it. It goes in the activity log like any lead.</p>
+      </form>`;
+    window.scrollTo(0, 0);
+    $("#backBtn").onclick = () => { location.hash = ""; };
+    $("#addLead").onsubmit = async (ev) => {
+      ev.preventDefault();
+      const f = ev.target, val = (n) => f.elements[n].value.trim();
+      const body = { name: val("name"), phone: val("phone"), email: val("email"), address: val("address"), description: val("description"),
+        source: ($("input[name=source]:checked", f) || {}).value || "", heard: ($("input[name=heard]:checked", f) || {}).value || "",
+        types: $$("input[name=types]:checked", f).map(i => i.value), claim: f.elements.claim.checked };
+      const err = $("#addErr");
+      if (body.name.length < 2 || (!body.phone && !body.email)) {
+        err.textContent = "Type their name, and a phone number or an email."; err.classList.remove("hidden"); return;
+      }
+      try {
+        const d = await api("api/leads", { method: "POST", json: body });
+        toast(`Saved as ${d.receipt}`);
+        location.hash = "lead=" + d.id;
+      } catch (e) { err.textContent = e.message; err.classList.remove("hidden"); }
+    };
+  }
+
   // ------------------------------------------------------------ one lead
   function route() {
+    if (location.hash === "#add") return addForm();
     const m = /lead=(\d+)/.exec(location.hash);
     if (m) return openLead(Number(m[1]));
     $("#detailView").classList.add("hidden");
@@ -146,11 +195,12 @@
     const others = PEOPLE.filter(p => p.id !== d.owner_id);
     const rows = [["Phone", d.phone], ["Email", d.email],
       ["Project address", d.address ? `${esc(d.address)} <a class="maplink" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(d.address)}">Map</a>` : "", true],
-      ["Project", d.types.join(", ")], ["About the project", d.description], ["How they heard about us", d.heard]];
+      ["Project", d.types.join(", ")], ["About the project", d.description], ["How they heard about us", d.heard],
+      ["Came in", d.source + (d.added_by ? ` · added by ${d.added_by}` : "")]];
     v.innerHTML = `<div class="topline"><button class="back" type="button" id="backBtn">‹ All leads</button>
         <span class="muted small">${esc(d.receipt)}</span></div>
       <h1>${esc(d.name)}${d.is_test ? ' <span class="tag test">TEST</span>' : ""}</h1>
-      <p class="muted small sub">Sent ${esc(when(d.submitted_at))} (${esc(ago(d.submitted_at))})</p>
+      <p class="muted small sub">${d.added_by ? "Added" : "Sent"} ${esc(when(d.submitted_at))} (${esc(ago(d.submitted_at))})</p>
       ${d.spam ? `<div class="spambox"><b>In Suspected spam</b>, so nobody was emailed or alerted.<div class="why">${esc(d.spam)}</div>
         <button type="button" class="btn" id="notSpam">Not spam: move to Leads</button>
         <p class="muted small">This emails the office and the customer's receipt, like any new lead.</p></div>` : ""}
@@ -169,7 +219,7 @@
         <div class="stbtns">${STATUSES.map(s => `<button type="button" class="stb${s.key === d.status ? " on" : ""}" data-st="${esc(s.key)}">${esc(s.label)}</button>`).join("")}</div>
       </section>`}
 
-      <section class="sec"><h2>What they sent</h2>
+      <section class="sec"><h2>${d.added_by ? "Details" : "What they sent"}</h2>
         <dl class="kv">${rows.map(([k, val, raw]) => `<dt>${esc(k)}</dt><dd>${val ? (raw ? val : esc(val)) : '<span class="muted">—</span>'}</dd>`).join("")}</dl>
         <h3>Tell us more</h3>
         ${d.more.length ? `<dl class="kv">${d.more.map(([k, val]) => `<dt>${esc(k)}</dt><dd>${esc(val)}</dd>`).join("")}</dl>`
