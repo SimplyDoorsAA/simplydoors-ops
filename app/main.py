@@ -33,7 +33,7 @@ Image.MAX_IMAGE_PIXELS = 40_000_000           # phone photos are ~12-50 MP; refu
 warnings.simplefilter("error", Image.DecompressionBombWarning)
 PHOTO_FORMATS = ["JPEG", "PNG", "WEBP"]
 
-from . import alerts, auth, geo, mailer, pricelist, sfjobs
+from . import alerts, auth, geo, leads, mailer, pricelist, sfjobs
 from .db import DATA_DIR, DB_PATH, audit, conn, delete_audit_rows, get_setting, init_db, now_iso, set_setting
 from . import forms as forms_mod
 from .forms import (FORM_BY_SLUG, FORMS, EXTRA_RULES, LIST_LABELS, DEFAULT_LISTS, clean, get_list, photo_minimums,
@@ -47,7 +47,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-40"
+APP_VERSION = "stage3-41"
 
 
 @asynccontextmanager
@@ -71,6 +71,13 @@ async def base_path_and_headers(request: Request, call_next):
         return JSONResponse({"detail": "Bad request"}, status_code=400)
     if BASE_PATH and (path == BASE_PATH or path.startswith(BASE_PATH + "/")):
         request.scope["path"] = path[len(BASE_PATH):] or "/"
+    if request.scope["path"].startswith(leads.INTAKE_PATH + "/api/") and request.method == "POST":
+        # the customer form is the one upload anyone can send without signing in: its size is known up front
+        if "content-length" not in request.headers:
+            return JSONResponse({"detail": "Please send that again."}, status_code=411)
+        if int(request.headers["content-length"]) > leads.MAX_REQUEST_BYTES:
+            return JSONResponse({"detail": "Those files are too big together. Send fewer or smaller ones."},
+                                status_code=413)
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "same-origin"
@@ -144,6 +151,11 @@ def admin_page():
 @app.get("/pricelist", include_in_schema=False)
 def pricelist_page():
     return page("pricelist.html")
+
+
+@app.get("/leads", include_in_schema=False)
+def leads_page():
+    return page("leads.html")
 
 
 @app.get("/sw.js", include_in_schema=False)
@@ -347,6 +359,7 @@ def me(staff=Depends(current_staff)):
         "job_lookup": sfjobs.configured(),
         "price_list": pricelist.allowed(staff),
         "price_edit": pricelist.can_edit(staff),
+        "leads": leads.allowed(staff),
     }
 
 
@@ -853,7 +866,8 @@ def admin_audit(request: Request, admin=Depends(current_admin)):
 # The owner may remove their OWN routine lines (views, downloads, submissions). Never: sign-ins, PINs, staff,
 # email lists, settings, test-mode switches, or the receipts these deletes leave behind.
 OWN_DELETABLE = {"audit_viewed", "audit_exported", "report_viewed", "report_pdf_downloaded", "photo_viewed",
-                 "report_submitted", "measure_reopened", "email_resend_requested", "email_retry_requested"}
+                 "report_submitted", "measure_reopened", "email_resend_requested", "email_retry_requested",
+                 "leads_list_viewed", "lead_viewed", "lead_file_viewed"}
 
 
 def _own_deletable(r, owner_id) -> bool:
@@ -1052,6 +1066,7 @@ def _staff_out(r, viewer=None):
             "is_admin": bool(r["is_admin"]), "is_owner": bool(r["is_owner"]),
             "sales_notify": bool(r["sales_notify"]), "active": bool(r["active"]), "has_pin": bool(r["pin_hash"]),
             "studio": shows_studio(r), "price_list": bool(r["price_list"]), "price_edit": bool(r["price_edit"]),
+            "leads": bool(r["leads"]),
             "pin_set_at": r["pin_set_at"], "pin_source": r["pin_source"], "locked": locked, "invite": invite,
             "invite_expires": inv["expires_at"] if inv else None}
 
@@ -1090,6 +1105,8 @@ def _validate_staff(body: dict, partial: bool):
         out["price_list"] = 1 if body["price_list"] else 0
     if "price_edit" in body:
         out["price_edit"] = 1 if body["price_edit"] else 0
+    if "leads" in body:
+        out["leads"] = 1 if body["leads"] else 0
     # editing prices needs the Price List itself; taking the Price List away takes editing away too
     if out.get("price_edit") == 1:
         out["price_list"] = 1
@@ -1243,6 +1260,8 @@ def admin_rules(admin=Depends(current_admin)):
         "Vehicle Inspection: when something is Defective": "Added to the Vehicle Inspection email only when an item is Defective.",
         "Disciplinary Action": "Plus the employee being written up.",
         "Measure Report": "Plus the person who measured (and whoever revised it).",
+        leads.RULE: "New leads from the customer form, with an “Open this lead” button. Suspected spam isn't emailed. "
+                    "Test leads go only to the app owner.",
     }
     live = set(FORMS) | set(EXTRA_RULES)
     return [{"form_type": r["form_type"], "recipients": r["recipients"], "extra": extra.get(r["form_type"], ""),
@@ -1820,6 +1839,314 @@ def admin_pricelist_remove(sid: int, request: Request, admin=Depends(current_she
     return {"ok": True}
 
 
+# ---------------------------------------------------------------- customer intake: the public form (no sign-in)
+# Customers reach it at Studio's public address + /start (deploy/intake-setup.sh). Everything it calls lives under
+# /start too. These routes only ever add a lead; they never read anything back but that lead's receipt number.
+INTAKE = leads.INTAKE_PATH
+INTAKE_STATIC = {"intake.js", "intake.css", "logo.png", "favicon-32.png", "apple-touch-icon.png", "og-intake.png"}
+SUBMISSION_RE = re.compile(r"[a-zA-Z0-9-]{8,64}")
+
+
+@app.get(INTAKE, include_in_schema=False)
+@app.get(INTAKE + "/", include_in_schema=False)
+def intake_page(request: Request, t: str = ""):
+    from html import escape
+    test = "on" if leads.test_link_ok(t) else "ended" if t else ""
+    # "start/" from /start and "./" from /start/: the page's own folder either way, whatever is in front of it
+    base = "./" if request.scope["path"].endswith("/") else INTAKE.rsplit("/", 1)[-1] + "/"
+    vals = {"BASE": base, "VERSION": APP_VERSION, "TOKEN": leads.form_token(), "URL": leads.INTAKE_URL,
+            "OG_IMAGE": leads.INTAKE_URL + "/static/og-intake.png", "TEST": test, "PHONE": leads.OFFICE_PHONE,
+            "PHONE_TEL": "+1" + re.sub(r"\D", "", leads.OFFICE_PHONE)[-10:], "STREET": leads.OFFICE_STREET,
+            "CITY": leads.OFFICE_CITY}
+    with open(os.path.join(STATIC, "intake.html"), encoding="utf-8") as f:
+        html = f.read()
+    for k, v in vals.items():
+        html = html.replace("{{" + k + "}}", escape(str(v), quote=True))
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
+
+@app.get(INTAKE + "/static/{name}", include_in_schema=False)
+def intake_static(name: str):
+    if name not in INTAKE_STATIC:          # only the form's own files, never anything else in static/
+        raise HTTPException(404)
+    return FileResponse(os.path.join(STATIC, name), headers={"Cache-Control": "no-cache"})
+
+
+def _save_lead_photo(b: bytes, dest: str) -> int:
+    return _save_photo(b, dest)            # no stamp and no location: hidden camera data is dropped too
+
+
+def _file_name(f, i: int) -> str:
+    name = re.sub(r"[^\w .()-]", "", os.path.basename(str(getattr(f, "filename", "") or "")))
+    return " ".join(name.split())[:80] or f"File {i}"
+
+
+@app.post(INTAKE + "/api/submit")
+async def intake_submit(request: Request):
+    """Step 1. Saved the moment it arrives. A retry with the same submission id gets the same receipt back."""
+    require_app_header(request)
+    ip, agent = client_ip(request), ua(request)
+    async with request.form(max_files=leads.MAX_FILES, max_fields=40) as form:
+        sid = str(form.get("submission_id", ""))
+        if not SUBMISSION_RE.fullmatch(sid):
+            raise HTTPException(400, "Something went wrong. Reload the page and try again.")
+        done = leads.received(sid)
+        if done:
+            return {"ok": True, "receipt": done}
+        raw = {k: v[:5000] for k, v in form.items() if isinstance(v, str)}
+        code = raw.get("t", "").strip()
+        is_test = leads.test_link_ok(code) if code else False
+        if code and not is_test:
+            raise HTTPException(410, "This test link has ended. Make a new one on the Leads screen (Test mode must be on).")
+        age = leads.token_age(raw.get("token", ""))
+        reason = leads.bot_reason(raw, age, ip)
+        if reason:                        # a bot: a normal-looking "Got it", recorded, nobody emailed or alerted
+            if not is_test:
+                leads.count_hit(ip)
+            return {"ok": True, "receipt": leads.record_blocked(sid, reason, is_test, ip, raw)}
+        d, errors = leads.clean(raw, [v for v in form.getlist("types") if isinstance(v, str)])
+        files = []
+        for i, f in enumerate([v for v in form.getlist("files") if not isinstance(v, str)], 1):
+            name = _file_name(f, i)
+            b = await f.read(leads.MAX_PHOTO_BYTES + 1)
+            if not b:
+                continue
+            if b[:5] == b"%PDF-":
+                if len(b) > leads.MAX_PDF_BYTES:
+                    errors.append(f"{name} is too big (PDFs can be up to 10 MB).")
+                elif b"%%EOF" not in b[-4096:]:
+                    errors.append(f"{name} didn't arrive whole. Try adding it again.")
+                else:
+                    files.append(("pdf", name, b))
+            elif len(b) > leads.MAX_PHOTO_BYTES:
+                errors.append(f"{name} is too big (photos can be up to 15 MB).")
+            elif await run_in_threadpool(_check_photo, b):
+                files.append(("photo", name, b))
+            else:
+                errors.append(f"{name} can't be sent. Send photos (JPG or PNG) or PDF files only.")
+        if errors:
+            raise HTTPException(422, " ".join(errors))
+        hits = 0 if is_test else leads.count_hit(ip)
+        if hits > leads.HARD_PER_HOUR:
+            return {"ok": True, "receipt": leads.record_blocked(sid, f"{hits} forms from one connection in an hour",
+                                                                 is_test, ip, raw)}
+        spam = leads.suspect_reasons(d, age, hits)
+        if files and shutil.disk_usage(DATA_DIR).free < leads.LOW_DISK_BYTES:
+            d["files_not_saved"], files = len(files), []
+            alerts.push_throttled("intake-disk", "Ops app: server disk is low",
+                                  "A customer's photos weren't saved because the server is nearly full. The lead was saved.",
+                                  "high", every_seconds=6 * 3600)
+        r = await run_in_threadpool(leads.store, sid, d, spam, is_test, files, ip, agent, _save_lead_photo)
+        return {"ok": True, "receipt": r["receipt"]}
+
+
+@app.post(INTAKE + "/api/more")
+async def intake_more(request: Request):
+    """Step 2, "Tell us more", saved onto the lead this phone just sent (its submission id is the key)."""
+    require_app_header(request)
+    if int(request.headers.get("content-length") or 0) > 8192:
+        raise HTTPException(413, "Too much to save.")
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(400, "Something went wrong. Reload the page and try again.") from None
+    if not isinstance(body, dict) or not SUBMISSION_RE.fullmatch(str(body.get("submission_id", ""))):
+        raise HTTPException(400, "Something went wrong. Reload the page and try again.")
+    more, errors = leads.clean_more(body)
+    if errors:
+        raise HTTPException(422, " ".join(errors))
+    leads.save_more(str(body["submission_id"]), more, client_ip(request), ua(request))
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- Leads (staff with "Can see Leads", and admins)
+def current_leads(request: Request):
+    row = current_staff(request)
+    if not leads.allowed(row):
+        audit(row["id"], row["name"], "leads_denied", request.url.path, None, client_ip(request), ua(request))
+        raise HTTPException(403, "Leads isn't switched on for you. Ask Adem or Paz.")
+    return row
+
+
+def _lead(lid: int, staff):
+    r = conn().execute("SELECT * FROM leads WHERE id=?", (lid,)).fetchone()
+    if not r or not leads.visible(staff, r):
+        raise HTTPException(404, "That lead couldn't be found.")
+    return r
+
+
+def _lead_log(staff, request, action, r, details=None):
+    audit(staff["id"], staff["name"], action, f"lead:{r['id']}", {"receipt": r["receipt"], **(details or {})},
+          client_ip(request), ua(request))
+
+
+@app.get("/api/leads")
+def leads_list(request: Request, tab: str = "leads", staff=Depends(current_leads)):
+    spam = tab == "spam"
+    audit(staff["id"], staff["name"], "leads_list_viewed", None, {"tab": "Suspected spam" if spam else "Leads"},
+          client_ip(request), ua(request))
+    out = {"leads": leads.list_rows(staff, spam), "counts": leads.counts(staff), "people": leads.people(),
+           "statuses": [{"key": k, "label": v} for k, v in leads.STATUSES.items()], "stale_hours": leads.STALE_HOURS}
+    if spam:
+        out["blocked"] = leads.blocked_recent(staff)
+    return out
+
+
+@app.get("/api/leads/{lid}")
+def lead_detail(lid: int, request: Request, staff=Depends(current_leads)):
+    r = _lead(lid, staff)
+    _lead_log(staff, request, "lead_viewed", r)
+    return leads.detail(r)
+
+
+@app.post("/api/leads/{lid}/claim")
+def lead_claim(lid: int, request: Request, staff=Depends(current_leads)):
+    r = _lead(lid, staff)
+    if r["spam"]:
+        raise HTTPException(409, "Move it to Leads first.")
+    if r["owner_id"] == staff["id"]:
+        return leads.detail(r)
+    now = now_iso()
+    c = conn()
+    # only if nobody claimed it meanwhile: two people tapping Claim at once can't both get it
+    if c.execute("UPDATE leads SET owner_id=?, claimed_at=?, touched_at=? WHERE id=? AND owner_id IS NULL",
+                 (staff["id"], now, now, lid)).rowcount != 1:
+        who = c.execute("SELECT s.name FROM leads l JOIN staff s ON s.id=l.owner_id WHERE l.id=?", (lid,)).fetchone()
+        raise HTTPException(409, f"{who['name'] if who else 'Someone'} already claimed it. Use “Give it to” to change that.")
+    _lead_log(staff, request, "lead_claimed", r)
+    return leads.detail(_lead(lid, staff))
+
+
+@app.post("/api/leads/{lid}/assign")
+async def lead_assign(lid: int, request: Request, staff=Depends(current_leads)):
+    body = await request.json()
+    r = _lead(lid, staff)
+    if r["spam"]:
+        raise HTTPException(409, "Move it to Leads first.")
+    try:
+        to = int((body or {}).get("staff_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(422, "Pick a person.") from None
+    c = conn()
+    who = c.execute("SELECT * FROM staff WHERE id=? AND active=1", (to,)).fetchone()
+    if not who or not leads.allowed(who):
+        raise HTTPException(422, "That person can't see Leads. An admin can switch it on in Admin → Staff.")
+    if r["owner_id"] == to:
+        return leads.detail(r)
+    old = c.execute("SELECT name FROM staff WHERE id=?", (r["owner_id"],)).fetchone() if r["owner_id"] else None
+    now = now_iso()
+    c.execute("UPDATE leads SET owner_id=?, claimed_at=?, touched_at=? WHERE id=?", (to, now, now, lid))
+    _lead_log(staff, request, "lead_reassigned", r, {"from": old["name"] if old else None, "to": who["name"]})
+    return leads.detail(_lead(lid, staff))
+
+
+@app.put("/api/leads/{lid}/status")
+async def lead_status(lid: int, request: Request, staff=Depends(current_leads)):
+    body = await request.json()
+    st = str((body or {}).get("status", ""))
+    if st not in leads.STATUSES:
+        raise HTTPException(422, "Pick a status.")
+    r = _lead(lid, staff)
+    if r["spam"]:
+        raise HTTPException(409, "Move it to Leads first.")
+    if r["status"] != st:
+        conn().execute("UPDATE leads SET status=?, touched_at=? WHERE id=?", (st, now_iso(), lid))
+        _lead_log(staff, request, "lead_status_changed", r, {"from": r["status"], "to": st})
+    return leads.detail(_lead(lid, staff))
+
+
+@app.post("/api/leads/{lid}/notes")
+async def lead_note(lid: int, request: Request, staff=Depends(current_leads)):
+    body = await request.json()
+    text = str((body or {}).get("text", "")).strip()
+    if not text:
+        raise HTTPException(422, "Type the note first.")
+    if len(text) > 2000:
+        raise HTTPException(422, "Notes can be up to 2000 characters.")
+    r = _lead(lid, staff)
+    now = now_iso()
+    c = conn()
+    c.execute("INSERT INTO lead_notes(lead_id, staff_id, at, text) VALUES (?,?,?,?)", (lid, staff["id"], now, text))
+    c.execute("UPDATE leads SET touched_at=? WHERE id=?", (now, lid))
+    _lead_log(staff, request, "lead_note_added", r, {"note": text[:500]})
+    return leads.detail(_lead(lid, staff))
+
+
+@app.post("/api/leads/{lid}/not-spam")
+def lead_not_spam(lid: int, request: Request, staff=Depends(current_leads)):
+    """One tap: Suspected spam becomes a lead, and is emailed and alerted like any new lead."""
+    r = _lead(lid, staff)
+    c = conn()
+    c.execute("BEGIN IMMEDIATE")
+    try:
+        if c.execute("UPDATE leads SET spam='' WHERE id=? AND spam!=''", (lid,)).rowcount != 1:
+            c.execute("ROLLBACK")
+            return leads.detail(_lead(lid, staff))
+        _lead_log(staff, request, "lead_moved_to_leads", r, {"was": r["spam"]})
+        leads.queue_emails(lid, moved=True)
+        c.execute("COMMIT")
+    except Exception:
+        c.execute("ROLLBACK")
+        raise
+    leads.alert(lid, moved=True)
+    mailer._wake.set()
+    return leads.detail(_lead(lid, staff))
+
+
+@app.get("/api/leads/files/{fid}")
+def lead_file(fid: int, request: Request, staff=Depends(current_leads)):
+    f = conn().execute("SELECT f.*, l.is_test, l.receipt FROM lead_files f JOIN leads l ON l.id=f.lead_id WHERE f.id=?",
+                       (fid,)).fetchone()
+    if not f or not leads.visible(staff, f) or not os.path.isfile(f["path"]):
+        raise HTTPException(404)
+    audit(staff["id"], staff["name"], "lead_file_viewed", f"lead:{f['lead_id']}", {"receipt": f["receipt"], "file": f["name"]},
+          client_ip(request), ua(request))
+    if f["kind"] == "pdf":   # a customer's PDF is downloaded, never opened inside the app
+        return FileResponse(f["path"], media_type="application/pdf", filename=f"{f['receipt']}-{fid}.pdf",
+                            content_disposition_type="attachment", headers={"Cache-Control": "private, no-store"})
+    return FileResponse(f["path"], media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+
+
+@app.post("/api/leads/test-link")
+def lead_test_link(request: Request, staff=Depends(current_leads)):
+    """Test mode: the owner's own link to the form. What's sent through it is a TEST lead that only the owner sees,
+    and every email about it (the customer's receipt too) goes only to the owner."""
+    if not staff["is_owner"]:
+        raise HTTPException(403, "Only the app owner can make a test link.")
+    if get_setting("owner_test_mode") != "1":
+        raise HTTPException(409, "Turn on Test mode first (on the home screen).")
+    url, expires = leads.make_test_link(staff)
+    audit(staff["id"], staff["name"], "lead_test_link_made", None, {"expires": expires}, client_ip(request), ua(request))
+    return {"url": url, "expires_at": expires}
+
+
+@app.delete("/api/leads/{lid}")
+def delete_test_lead(lid: int, request: Request, staff=Depends(current_leads)):
+    if not staff["is_owner"]:
+        raise HTTPException(403, "Only the app owner can delete a test lead.")
+    r = _lead(lid, staff)
+    if not r["is_test"]:
+        raise HTTPException(403, "Only TEST leads can be deleted.")
+    c = conn()
+    c.execute("BEGIN IMMEDIATE")
+    try:
+        eids = [e[0] for e in c.execute("SELECT id FROM emails WHERE lead_id=?", (lid,))]
+        targets = [f"lead:{lid}"] + [f"email:{e}" for e in eids]
+        lines = [a[0] for a in c.execute(f"SELECT id FROM audit WHERE target IN ({','.join('?' * len(targets))})", targets)]
+        n = delete_audit_rows(c, lines)
+        for t in ("emails", "lead_notes", "lead_files"):
+            c.execute(f"DELETE FROM {t} WHERE lead_id=?", (lid,))
+        c.execute("DELETE FROM leads WHERE id=?", (lid,))
+        audit(staff["id"], staff["name"], "test_lead_deleted", r["receipt"], {"log_lines_removed": n},
+              client_ip(request), ua(request))
+        c.execute("COMMIT")
+    except Exception:
+        c.execute("ROLLBACK")
+        raise
+    shutil.rmtree(leads.folder(lid), ignore_errors=True)
+    return {"deleted": r["receipt"]}
+
+
 # ---------------------------------------------------------------- housekeeping
 BACKUP_DIR = os.path.join(DATA_DIR, "backups")
 
@@ -1898,6 +2225,7 @@ def _nightly_work():
     c = conn()
     c.execute("DELETE FROM ip_failures WHERE at < ?", (cutoff,))
     c.execute("DELETE FROM sessions WHERE expires_at < ?", (now_iso(),))
+    leads.tidy(c)
     for f in os.listdir(PHOTO_DIR) if os.path.isdir(PHOTO_DIR) else []:   # photos of an upload cut off mid-save
         p = os.path.join(PHOTO_DIR, f)
         if f.startswith("tmp-") and time.time() - os.path.getmtime(p) > 86400:

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<base href="{{BASE}}">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#76c043">
+<meta name="robots" content="noindex">
+<link rel="icon" href="static/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="stylesheet" href="static/style.css?v={{VERSION}}">
+<link rel="stylesheet" href="static/leads.css?v={{VERSION}}">
+<title>Leads · SimplyDoors</title>
+</head>
+<body>
+<header class="bar">
+  <div class="bar-left"><a href="./" title="Back to the staff app"><img src="static/logo.png" alt="SimplyDoors" class="bar-logo"></a>
+    <span class="bar-title">Leads</span></div>
+  <div class="bar-right"><span id="who"></span></div>
+</header>
+
+<main class="wrap">
+  <div id="gate" class="hidden"><h1>Leads</h1><p id="gateMsg"></p><p><a class="link" href="./">Go to the staff app</a></p></div>
+
+  <div id="ui" class="hidden">
+    <div class="testlink hidden" id="testBox"></div>
+
+    <section id="listView">
+      <nav class="ltabs" role="tablist">
+        <button type="button" data-tab="leads" class="on" role="tab">Leads <span class="count hidden" id="cNew"></span></button>
+        <button type="button" data-tab="spam" role="tab">Suspected spam <span class="count grey hidden" id="cSpam"></span></button>
+      </nav>
+      <p class="muted small" id="tabNote"></p>
+      <div id="list"><p class="muted">Loading…</p></div>
+      <div id="blocked"></div>
+    </section>
+
+    <section id="detailView" class="hidden"></section>
+  </div>
+</main>
+<div class="ltoast hidden" id="toast" role="status"></div>
+<script src="static/leads.js?v={{VERSION}}"></script>
+</body>
+</html>

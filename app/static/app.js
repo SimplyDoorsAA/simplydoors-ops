@@ -118,12 +118,22 @@
     try {
       await api("api/login", { method: "POST", json: { name, pin } });
       $("#loginPin").value = "";
+      if (goBack()) return;
       await loadMe();
     } catch (e) {
       err.textContent = e.status === 0 ? "No connection. Check your signal and try again." : e.message;
       err.classList.remove("hidden");
     } finally { btn.disabled = false; btn.textContent = "Sign in"; }
   });
+
+  // a page that needed a sign-in (e.g. a lead opened from an email) asked to be brought back to afterwards
+  function goBack() {
+    let next = null;
+    try { next = JSON.parse(localStorage.getItem("sdops_next") || "null"); localStorage.removeItem("sdops_next"); } catch (e) { return false; }
+    if (!next || Date.now() - next.at > 15 * 60000 || !/^leads(#lead=\d+)?$/.test(String(next.to))) return false;
+    location.href = next.to;
+    return true;
+  }
 
   $("#logoutBtn").addEventListener("click", async () => {
     const mine = (await outboxAll()).filter(e => me && e.userId === me.id);
@@ -361,6 +371,7 @@
     disciplinary: ic('<path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h7M9 17h5"/>'),
     studio: ic('<rect x="3" y="4" width="18" height="14" rx="2"/><path d="M7 15l3-4 2 3 2-2 3 3M3 21h18"/>'),
     pricelist: ic('<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.5"/>'),
+    leads: ic('<path d="M4 5h16v11H8l-4 4z"/><path d="M8 9h8M8 12h5"/>'),
     measure: ic('<path d="M3 17L17 3l4 4L7 21z"/><path d="M7 13l2 2M10 10l2 2M13 7l2 2"/>'),
     install: ic('<path d="M6 21V3h12v18"/><path d="M3 21h18M14 12h1"/>'),
     rma: ic('<path d="M4 12a8 8 0 1 0 2.3-5.7"/><path d="M4 4v4h4"/><path d="M9 10l3-2 3 2v5H9z"/>'),
@@ -438,6 +449,11 @@
         <span class="card-title">${esc(f.type)}</span>
         <span class="card-sub">${esc(f.blurb)}</span>
         ${me.is_admin && !f.staff_can_see ? '<span class="pillnote">hidden from staff</span>' : ""}</button>`).join("") || `<p class="muted">No forms are switched on yet.</p>`;
+    if (me.leads) cards.insertAdjacentHTML("afterbegin", `<a class="card tilecard leadstile" href="leads" id="leadsTile" title="Customers who sent the project form">
+        <span class="card-icon" aria-hidden="true">${FORM_ICONS.leads}</span>
+        <span class="studio-txt"><span class="card-title">Leads</span>
+        <span class="studio-tag">Customers who sent the project form</span></span>
+        <span class="studio-go" aria-hidden="true">›</span></a>`);
     if (me.price_list) cards.insertAdjacentHTML("afterbegin", `<a class="card tilecard pricelist" href="pricelist" id="priceTile" title="Vendor prices and purchase orders (beta)">
         <span class="card-icon" aria-hidden="true">${FORM_ICONS.pricelist}</span>
         <span class="studio-txt"><span class="card-title">Price List <span class="beta">BETA</span></span>

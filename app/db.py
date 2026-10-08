@@ -184,6 +184,8 @@ SEED_RULES = {
     "Installation Completion": "admin@simplydoors.com",
     "RMA": "admin@simplydoors.com",
     "Vehicle Inspection: when something is Defective": "admin@simplydoors.com",
+    # new leads from the customer form; the owner gets it as a private copy too (leads.seed_owner_copy)
+    "Customer Intake": "admin@simplydoors.com",
 }
 
 
@@ -215,6 +217,9 @@ def init_db() -> None:
     if "price_edit" not in cols:
         # 1 = can also change Price List items (names, prices, notes), add and delete them. E.g. the purchaser.
         c.execute("ALTER TABLE staff ADD COLUMN price_edit INTEGER NOT NULL DEFAULT 0")
+    if "leads" not in cols:
+        # 1 = can see Leads (customer names, phones, addresses from the customer form). Admins always can.
+        c.execute("ALTER TABLE staff ADD COLUMN leads INTEGER NOT NULL DEFAULT 0")
     if "lock_level" not in cols:
         c.execute("ALTER TABLE staff ADD COLUMN lock_level INTEGER NOT NULL DEFAULT 0")
         c.execute("ALTER TABLE staff ADD COLUMN last_lock_at TEXT")
@@ -244,9 +249,14 @@ def init_db() -> None:
         # a purchase order to a vendor (audience 'vendor'); report_id is NULL for these
         c.execute("ALTER TABLE emails ADD COLUMN po_id INTEGER")
         c.execute("ALTER TABLE emails ADD COLUMN cc TEXT NOT NULL DEFAULT ''")
-    from . import pricelist
+    if "lead_id" not in ecols:
+        # about a lead from the customer form (audience 'staff' or 'customer'); report_id is NULL for these
+        c.execute("ALTER TABLE emails ADD COLUMN lead_id INTEGER")
+    from . import leads, pricelist
     pricelist.init(c)
+    leads.init(c)
     _move_owner_off_lists(c)
+    leads.seed_owner_copy()
 
 
 def _move_owner_off_lists(c) -> None:

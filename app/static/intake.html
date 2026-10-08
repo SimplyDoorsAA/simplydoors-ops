@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<base href="{{BASE}}">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#76c043">
+<meta name="robots" content="noindex">
+<meta name="description" content="Tell us about your door, window or millwork project and add a few photos. We'll call you within 1 business day.">
+<!-- link preview when the address is texted or posted -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="SimplyDoors">
+<meta property="og:title" content="Start your project with SimplyDoors">
+<meta property="og:description" content="Tell us about your doors, windows or millwork, add a few photos, and we'll call you within 1 business day.">
+<meta property="og:url" content="{{URL}}">
+<meta property="og:image" content="{{OG_IMAGE}}">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="SimplyDoors">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="static/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="static/apple-touch-icon.png">
+<link rel="stylesheet" href="static/intake.css?v={{VERSION}}">
+<title>Start your project with SimplyDoors</title>
+</head>
+<body data-token="{{TOKEN}}" data-test="{{TEST}}">
+<header class="top">
+  <img src="static/logo.png" alt="SimplyDoors" class="logo" width="150" height="47">
+  <a class="call" href="tel:{{PHONE_TEL}}" aria-label="Call SimplyDoors at {{PHONE}}"><span aria-hidden="true">📞</span> {{PHONE}}</a>
+</header>
+<div class="testbar hidden" id="testBar" role="status"></div>
+
+<main class="wrap">
+  <!-- STEP 1: the lead is saved the moment this is sent -->
+  <section id="stepOne">
+    <h1>Start your project</h1>
+    <p class="lead">Tell us what you need and add a few photos. <b>We'll call you within 1 business day.</b></p>
+    <form id="f1" novalidate>
+      <label for="name">Your name <span class="req">*</span></label>
+      <input id="name" name="name" type="text" autocomplete="name" autocapitalize="words" maxlength="80" enterkeyhint="next">
+      <div class="two">
+        <div><label for="phone">Phone</label>
+          <input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" maxlength="30" enterkeyhint="next"></div>
+        <div><label for="email">Email</label>
+          <input id="email" name="email" type="email" inputmode="email" autocomplete="email" autocapitalize="off" maxlength="120" enterkeyhint="next"></div>
+      </div>
+      <p class="hint">A phone number or an email: at least one, so we can reach you.</p>
+
+      <label for="address">Project address</label>
+      <input id="address" name="address" type="text" autocomplete="street-address" maxlength="200" placeholder="Street, city" enterkeyhint="next">
+
+      <fieldset>
+        <legend>What's the project? <span class="opt">Pick all that apply</span></legend>
+        <div class="chips">
+          <label><input type="checkbox" name="types" value="Exterior door"><span>Exterior door</span></label>
+          <label><input type="checkbox" name="types" value="Interior doors"><span>Interior doors</span></label>
+          <label><input type="checkbox" name="types" value="Windows"><span>Windows</span></label>
+          <label><input type="checkbox" name="types" value="Millwork"><span>Millwork</span></label>
+          <label><input type="checkbox" name="types" value="Other"><span>Other</span></label>
+        </div>
+      </fieldset>
+
+      <label for="description">Tell us about it</label>
+      <textarea id="description" name="description" rows="4" maxlength="4000"
+        placeholder="e.g. Replace our front door and two sidelites. We'd like more light, maybe a full-glass door."></textarea>
+
+      <fieldset>
+        <legend>Photos or plans <span class="opt">Up to 5</span></legend>
+        <div class="files" id="files"></div>
+        <button type="button" class="addfile" id="addFile"><span aria-hidden="true">＋</span> Add photos or a PDF</button>
+        <input type="file" id="picker" accept="image/*,application/pdf" multiple class="hidden">
+        <p class="hint" id="fileNote">Photos of the door, window or room help us come prepared.</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>How did you hear about us?</legend>
+        <div class="chips">
+          <label><input type="radio" name="heard" value="Google"><span>Google</span></label>
+          <label><input type="radio" name="heard" value="Facebook/Instagram"><span>Facebook / Instagram</span></label>
+          <label><input type="radio" name="heard" value="Friend or family"><span>Friend or family</span></label>
+          <label><input type="radio" name="heard" value="Builder or contractor"><span>Builder or contractor</span></label>
+          <label><input type="radio" name="heard" value="Drove by / saw a truck"><span>Drove by / saw a truck</span></label>
+          <label><input type="radio" name="heard" value="Other"><span>Other</span></label>
+        </div>
+      </fieldset>
+
+      <!-- people never see this box; form-filling robots do, and fill it in -->
+      <div class="trap" aria-hidden="true">
+        <label for="website">Leave this empty</label>
+        <input id="website" name="website" type="text" tabindex="-1" autocomplete="off">
+      </div>
+
+      <p class="error hidden" id="err1" role="alert"></p>
+      <button class="btn" type="submit" id="send">Send</button>
+      <p class="fine">We only use this to contact you about your project.</p>
+    </form>
+  </section>
+
+  <!-- sending, or saved on the phone until there's signal -->
+  <section id="waiting" class="hidden">
+    <div class="box wait">
+      <div class="big" id="waitTitle">Sending…</div>
+      <p id="waitText">One moment.</p>
+      <button class="btn secondary hidden" type="button" id="tryNow">Try now</button>
+    </div>
+  </section>
+
+  <!-- STEP 2: after "Got it", all optional -->
+  <section id="done" class="hidden">
+    <div class="box got">
+      <div class="big">Got it ✓</div>
+      <div class="muted">Your number</div>
+      <div class="receipt" id="receipt"></div>
+      <p><b>We'll call you within 1 business day.</b></p>
+      <p class="small muted hidden" id="emailNote">We also emailed you a receipt.</p>
+    </div>
+
+    <form class="more" id="f2" novalidate>
+      <h2>Tell us more <span class="opt">Optional</span></h2>
+      <p class="muted small">It helps us come prepared. Skip anything you're not sure about.</p>
+      <div class="counter">
+        <span class="clabel" id="doorsL">Number of doors</span>
+        <div class="ctl"><button type="button" data-count="doors" data-step="-1" aria-label="One fewer door">−</button>
+          <output id="doors" aria-labelledby="doorsL">–</output>
+          <button type="button" data-count="doors" data-step="1" aria-label="One more door">+</button></div>
+      </div>
+      <div class="counter">
+        <span class="clabel" id="windowsL">Number of windows</span>
+        <div class="ctl"><button type="button" data-count="windows" data-step="-1" aria-label="One fewer window">−</button>
+          <output id="windows" aria-labelledby="windowsL">–</output>
+          <button type="button" data-count="windows" data-step="1" aria-label="One more window">+</button></div>
+      </div>
+      <fieldset>
+        <legend>When do you want it done?</legend>
+        <div class="chips three">
+          <label><input type="radio" name="timeline" value="ASAP"><span>ASAP</span></label>
+          <label><input type="radio" name="timeline" value="1-3 months"><span>1–3 months</span></label>
+          <label><input type="radio" name="timeline" value="Just planning"><span>Just planning</span></label>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>You are a…</legend>
+        <div class="chips three">
+          <label><input type="radio" name="who" value="Homeowner"><span>Homeowner</span></label>
+          <label><input type="radio" name="who" value="Builder"><span>Builder</span></label>
+          <label><input type="radio" name="who" value="Contractor"><span>Contractor</span></label>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Best time to call</legend>
+        <div class="chips three">
+          <label><input type="radio" name="best_time" value="Morning"><span>Morning</span></label>
+          <label><input type="radio" name="best_time" value="Afternoon"><span>Afternoon</span></label>
+          <label><input type="radio" name="best_time" value="Evening"><span>Evening</span></label>
+        </div>
+      </fieldset>
+      <p class="error hidden" id="err2" role="alert"></p>
+      <button class="btn" type="submit" id="saveMore">Save</button>
+      <button class="link" type="button" id="skipMore">Skip</button>
+    </form>
+
+    <div class="box thanks hidden" id="thanks">
+      <div class="big">Thank you!</div>
+      <p id="thanksText">That helps us prepare. You can close this page.</p>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <img src="static/logo.png" alt="" class="foot-logo" width="110" height="34">
+  <div>{{STREET}}<br>{{CITY}}</div>
+  <a href="tel:{{PHONE_TEL}}">{{PHONE}}</a>
+</footer>
+<script src="static/intake.js?v={{VERSION}}"></script>
+</body>
+</html>
