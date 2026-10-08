@@ -47,7 +47,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-45"
+APP_VERSION = "stage3-46"
 
 
 @asynccontextmanager
@@ -457,6 +457,35 @@ async def studio_job_details(number: str, request: Request):
     return d
 
 
+# Studio's quote screen can find a lead the same way (signed, every pick logged), and tells this app when a quote
+# was made for one: the lead then shows the quote and moves to Quoted.
+@app.get("/api/studio/leads")
+def studio_lead_search(request: Request, q: str = ""):
+    studio_caller(request)
+    return {"results": [x for x in leads.search_open(q, False) if not x["is_test"]]}
+
+
+@app.get("/api/studio/leads/{lid}")
+def studio_lead_details(lid: int, request: Request):
+    who = studio_caller(request)
+    d = leads.contact(lid, False)
+    if not d:
+        raise HTTPException(404, "That lead couldn't be found.")
+    audit(None, f"{who} (Studio)", "lead_picked_for_quote", f"lead:{lid}", {"receipt": d["receipt"]}, client_ip(request), ua(request))
+    return d
+
+
+@app.post("/api/studio/leads/{lid}/quoted")
+def studio_lead_quoted(lid: int, request: Request, ref: str = ""):
+    who = studio_caller(request)
+    ref = " ".join(ref.split())[:60]
+    if not ref:
+        raise HTTPException(422, "Missing the quote number.")
+    if not leads.quoted(lid, ref, who, client_ip(request), ua(request)):
+        raise HTTPException(404, "That lead couldn't be found.")
+    return {"ok": True}
+
+
 # ---------------------------------------------------------------- reports
 def _save_photo(upload_bytes: bytes, dest: str, g: dict | None = None, receipt: str = "", who: str = "",
                 clean_dest: str | None = None) -> int:
@@ -520,6 +549,7 @@ async def submit_report(slug: str, request: Request, staff=Depends(current_staff
         kept = []
         if spec.get("kind") == "measure":
             _measure_people(c, staff, data, str(form.get("revision_of") or "").strip(), errors)
+            _measure_lead(staff, data, str(form.get("lead_id") or "").strip(), errors)
 
         photo_blobs = []
         for ps in photo_slots(form_type, data):
@@ -559,8 +589,14 @@ async def submit_report(slug: str, request: Request, staff=Depends(current_staff
         started_at = str(form.get("started_at", ""))[:40] or None
         queued = 1 if str(form.get("queued", "")) == "1" else 0
         is_test = bool(staff["is_owner"]) and str(form.get("is_test", "")) == "1"   # only the owner can file test reports
-        return await run_in_threadpool(_store_report, form_type, spec, staff, submission_id, data, photo_blobs,
-                                       started_at, queued, client_ip(request), ua(request), kept, is_test)
+        out = await run_in_threadpool(_store_report, form_type, spec, staff, submission_id, data, photo_blobs,
+                                      started_at, queued, client_ip(request), ua(request), kept, is_test)
+        if data.get("lead_id") and not out.get("duplicate") and not data.get("revision_of"):
+            try:     # the measure is saved either way; this only shows it on the lead
+                leads.measured(data["lead_id"], out["receipt"], staff, client_ip(request), ua(request))
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+        return out
 
 
 def _next_receipt(c, pre: str) -> str:
@@ -715,10 +751,22 @@ def _measure_people(c, staff, data, revision_of, errors):
         data["measured_by"] = od.get("measured_by") or staff["name"]
         data["measured_by_id"] = od.get("measured_by_id", staff["id"])
         data["measured_by_email"] = od.get("measured_by_email") or ""
+        if od.get("lead_id"):
+            data["lead_id"], data["lead_receipt"] = od["lead_id"], od.get("lead_receipt")
         if data["measured_by_id"] != staff["id"]:
             data["revised_by"], data["revised_by_email"] = staff["name"], staff["email"] or ""
         return
     data["measured_by"], data["measured_by_id"], data["measured_by_email"] = staff["name"], staff["id"], staff["email"] or ""
+
+
+def _measure_lead(staff, data, lead_id, errors):
+    """A measure picked from a lead (customer form or phone call) is linked to it. A revision keeps its lead."""
+    if not lead_id:
+        return
+    if not lead_id.isdigit() or not (d := leads.contact(int(lead_id), bool(staff["is_owner"]))):
+        errors.append("That lead couldn't be found any more. Tap “Not this lead” and type the customer in.")
+        return
+    data["lead_id"], data["lead_receipt"] = d["id"], d["receipt"]
 
 
 def _kept_photos(c, staff, raw, open_slots, errors) -> list:
@@ -751,6 +799,24 @@ def _kept_photos(c, staff, raw, open_slots, errors) -> list:
 def _measure_allowed(staff):
     if "Measure Report" not in visible_forms(staff):
         raise HTTPException(403, "Measure isn't switched on yet. Ask Adem or Paz.")
+
+
+@app.get("/api/measure/leads")
+def measure_leads(q: str = "", staff=Depends(current_staff)):
+    """Measure's "Pick a lead": anyone who can measure (names and addresses only; phone and email come with the pick)."""
+    _measure_allowed(staff)
+    return {"results": leads.search_open(q, bool(staff["is_owner"]))}
+
+
+@app.get("/api/measure/leads/{lid}")
+def measure_lead_pick(lid: int, request: Request, staff=Depends(current_staff)):
+    _measure_allowed(staff)
+    d = leads.contact(lid, bool(staff["is_owner"]))
+    if not d:
+        raise HTTPException(404, "That lead couldn't be found.")
+    audit(staff["id"], staff["name"], "lead_picked_for_measure", f"lead:{lid}", {"receipt": d["receipt"]},
+          client_ip(request), ua(request))
+    return d
 
 
 @app.get("/api/measures")
@@ -2102,6 +2168,22 @@ async def lead_note(lid: int, request: Request, staff=Depends(current_leads)):
     c.execute("INSERT INTO lead_notes(lead_id, staff_id, at, text) VALUES (?,?,?,?)", (lid, staff["id"], now, text))
     c.execute("UPDATE leads SET touched_at=? WHERE id=?", (now, lid))
     _lead_log(staff, request, "lead_note_added", r, {"note": text[:500]})
+    return leads.detail(_lead(lid, staff))
+
+
+@app.put("/api/leads/{lid}/sf-job")
+async def lead_sf_job(lid: int, request: Request, staff=Depends(current_leads)):
+    """The Service Fusion job made for this lead (typed in; nothing is sent to Service Fusion)."""
+    body = await request.json()
+    num = str((body or {}).get("number", "")).strip()
+    if num and not re.fullmatch(r"\d{4,20}", num):
+        raise HTTPException(422, "Type the Service Fusion job number (numbers only).")
+    r = _lead(lid, staff)
+    data = json.loads(r["data"])
+    if data.get("sf_job", "") != num:
+        data["sf_job"] = num
+        conn().execute("UPDATE leads SET data=?, touched_at=? WHERE id=?", (json.dumps(data, ensure_ascii=False), now_iso(), lid))
+        _lead_log(staff, request, "lead_sf_job_set", r, {"from": r and json.loads(r["data"]).get("sf_job", ""), "to": num})
     return leads.detail(_lead(lid, staff))
 
 

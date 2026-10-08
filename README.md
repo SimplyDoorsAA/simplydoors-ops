@@ -95,6 +95,11 @@ GitHub Pages portal + Google Apps Script, one form at a time.
   change and note is in the activity log. Leads stay in this app: nothing goes to Service Fusion.
 - **Add a lead by hand** (a phone call, a walk-in): **＋ Add a lead** on the Leads screen. Same numbering, claimed for
   you unless you untick it, nobody is emailed, and it's in the activity log.
+- **One customer across the app:** the Measure form has **Or pick a lead** (anyone who measures; picking one is logged):
+  it fills in the customer, links the measure to the lead, and moves the lead to Measure booked. Simply Studio can find a
+  lead the same way for a quote (signed, like its Service Fusion lookup) and tells this app when a quote is made: the
+  lead shows it and moves to Quoted. Statuses only ever move forward this way, never off Won or Lost. The lead page has
+  **Copy details for Service Fusion** and a box for the Service Fusion job #; nothing is sent to Service Fusion.
 - **Spam (no outside service):**
   - **Robots** get a normal-looking "Got it", are never emailed and never alert anyone. They're listed under Suspected
     spam → "Stopped automatically" for 30 days. Caught when: the hidden trap box is filled in, it's sent under 3 seconds

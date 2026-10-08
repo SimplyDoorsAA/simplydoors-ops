@@ -226,6 +226,18 @@
           : `<p class="muted small">They didn't answer the extra questions.</p>`}
       </section>
 
+      ${d.spam ? "" : `<section class="sec"><h2>Measures and quotes</h2>
+        ${d.measures.length ? d.measures.map(m => `<div class="note1"><b>${esc(m.receipt)}</b> <span class="muted small">measured by ${esc(m.by || "?")} · ${esc(when(m.submitted_at))}</span></div>`).join("")
+          : '<p class="muted small">No measure yet. On the Measure form, use “Or pick a lead” and choose this customer.</p>'}
+        ${d.quotes.length ? d.quotes.map(q => `<div class="note1"><b>Quote ${esc(q.ref)}</b> <span class="muted small">${esc(q.by)} in Studio · ${esc(when(q.at))}</span></div>`).join("")
+          : '<p class="muted small">No quote from Studio yet.</p>'}
+        <h3>Service Fusion</h3>
+        <p class="muted small">Nothing is sent to Service Fusion from here. Copy the details, make the customer and job there, then type the job number below.</p>
+        <button type="button" class="btn secondary" id="sfCopy">Copy details for Service Fusion</button>
+        <div class="arow" style="margin-top:10px"><input id="sfJob" type="text" inputmode="numeric" maxlength="20" placeholder="Service Fusion job #" value="${esc(d.sf_job)}">
+          <button type="button" class="mini primary" id="sfSave">Save</button></div>
+      </section>`}
+
       ${d.files.length || d.files_not_saved ? `<section class="sec"><h2>Photos and files</h2>
         <div class="lphotos">${d.files.filter(f => f.kind === "photo").map(f => `<a href="api/leads/files/${f.id}" target="_blank" rel="noopener">
           <img src="api/leads/files/${f.id}" alt="${esc(f.name)}" loading="lazy"></a>`).join("")}</div>
@@ -275,6 +287,13 @@
       if (!text) return toast("Type the note first.");
       act(() => api(`api/leads/${d.id}/notes`, { method: "POST", json: { text } }));
     };
+    const sc = $("#sfCopy");
+    if (sc) sc.onclick = async () => {
+      try { await navigator.clipboard.writeText(d.sf_copy); toast("Copied. Paste it into Service Fusion."); }
+      catch (e) { prompt("Copy this:", d.sf_copy); }
+    };
+    const ss = $("#sfSave");
+    if (ss) ss.onclick = () => act(async () => { const r = await api(`api/leads/${d.id}/sf-job`, { method: "PUT", json: { number: $("#sfJob").value.trim() } }); toast("Saved"); return r; });
     const dt = $("#delTest");
     if (dt) dt.onclick = async () => {
       if (!confirm("Delete this test lead, its files and its activity-log lines?")) return;

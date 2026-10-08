@@ -84,3 +84,4 @@ h1 .tag { vertical-align: 6px; }
 #addLead label.check { margin-top: 18px; }
 #addLead input[type=tel] { width: 100%; font: inherit; padding: 13px 12px; min-height: 50px; border: 1.5px solid var(--line);
   border-radius: 10px; background: #fff; color: var(--ink); }
+#sfJob { flex: 1; font: inherit; padding: 11px 12px; min-height: 46px; border: 1.5px solid var(--line); border-radius: 10px; }

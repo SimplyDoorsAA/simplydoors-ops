@@ -541,6 +541,81 @@ def bundle(lid: int):
     return lead, json.loads(lead["data"]), files
 
 
+# ---------------------------------------------------------------- one customer across the app (Measure, Studio quotes)
+ORDER = list(STATUSES)
+
+
+def advance(lid: int, to: str) -> str | None:
+    """Moves a lead forward to `to` (never back, never off Won/Lost). Returns the old status if it moved."""
+    c = conn()
+    r = c.execute("SELECT status FROM leads WHERE id=?", (lid,)).fetchone()
+    if not r or r["status"] in CLOSED or ORDER.index(r["status"]) >= ORDER.index(to):
+        return None
+    c.execute("UPDATE leads SET status=?, touched_at=? WHERE id=?", (to, now_iso(), lid))
+    return r["status"]
+
+
+def search_open(q: str, include_test: bool, limit: int = 15) -> list[dict]:
+    """Leads still in play (not spam, not Won/Lost), newest first, matching a name, phone, address or receipt."""
+    q = " ".join(str(q or "").split())[:60]
+    sql = ("SELECT id, receipt, name, address, data, status, is_test FROM leads WHERE spam='' AND status NOT IN ('won','lost')"
+           " AND (is_test=0 OR ?)")
+    args: list = [1 if include_test else 0]
+    if q:
+        digits = re.sub(r"\D", "", q)
+        sql += " AND (name LIKE ? OR address LIKE ? OR receipt LIKE ?" + (" OR replace(replace(replace(replace(phone,'-',''),' ',''),'(',''),')','') LIKE ?" if len(digits) >= 3 else "") + ")"
+        args += [f"%{q}%"] * 3 + ([f"%{digits}%"] if len(digits) >= 3 else [])
+    rows = conn().execute(sql + " ORDER BY id DESC LIMIT ?", args + [limit]).fetchall()
+    return [{"id": r["id"], "receipt": r["receipt"], "name": r["name"], "address": r["address"],
+             "types": json.loads(r["data"]).get("types") or [], "status": STATUSES[r["status"]], "is_test": bool(r["is_test"])}
+            for r in rows]
+
+
+def contact(lid: int, include_test: bool):
+    """Name, phone, email, address of one open lead (for filling in a measure or a Studio quote), or None."""
+    r = conn().execute("SELECT * FROM leads WHERE id=? AND spam='' AND (is_test=0 OR ?)", (lid, 1 if include_test else 0)).fetchone()
+    if not r:
+        return None
+    d = json.loads(r["data"])
+    return {"id": r["id"], "receipt": r["receipt"], "name": r["name"], "phone": r["phone"], "email": r["email"],
+            "address": r["address"], "types": d.get("types") or [], "description": d.get("description") or "",
+            "status": STATUSES[r["status"]], "is_test": bool(r["is_test"])}
+
+
+def measured(lid: int, receipt: str, staff, ip: str, agent: str) -> None:
+    """A measure was sent for this lead: it shows on the lead, and the lead moves to Measure booked."""
+    r = conn().execute("SELECT receipt FROM leads WHERE id=?", (lid,)).fetchone()
+    if not r:
+        return
+    was = advance(lid, "measure_booked")
+    conn().execute("UPDATE leads SET touched_at=? WHERE id=?", (now_iso(), lid))
+    audit(staff["id"], staff["name"], "lead_measured", f"lead:{lid}",
+          {"receipt": r["receipt"], "measure": receipt, **({"status_from": was} if was else {})}, ip, agent)
+
+
+def quoted(lid: int, ref: str, who: str, ip: str, agent: str) -> bool:
+    """Studio made a quote for this lead."""
+    c = conn()
+    r = c.execute("SELECT receipt, data FROM leads WHERE id=? AND spam=''", (lid,)).fetchone()
+    if not r:
+        return False
+    data = json.loads(r["data"])
+    data["quotes"] = (data.get("quotes") or [])[-19:] + [{"ref": ref, "by": who, "at": now_iso()}]
+    c.execute("UPDATE leads SET data=?, touched_at=? WHERE id=?", (json.dumps(data, ensure_ascii=False), now_iso(), lid))
+    was = advance(lid, "quoted")
+    audit(None, f"{who} (Studio)", "lead_quoted", f"lead:{lid}",
+          {"receipt": r["receipt"], "quote": ref, **({"status_from": was} if was else {})}, ip, agent)
+    return True
+
+
+def sf_copy_text(r) -> str:
+    """The customer's details in one block, to paste into Service Fusion (nothing is sent there from this app)."""
+    d = json.loads(r["data"])
+    lines = [r["name"], r["phone"], r["email"], r["address"], ", ".join(d.get("types") or []), d.get("description") or "",
+             f"From SimplyDoors lead {r['receipt']}"]
+    return "\n".join(x for x in lines if x)
+
+
 # ---------------------------------------------------------------- the Leads screen
 def _stale(r, cutoff: str) -> bool:
     return bool(r["owner_id"]) and r["status"] not in CLOSED and (r["touched_at"] or r["claimed_at"] or "") < cutoff
@@ -582,11 +657,17 @@ def blocked_recent(staff) -> dict:
     return {"count": n, "rows": [dict(r) | {"is_test": bool(r["is_test"])} for r in rows]}
 
 
-HISTORY = ("lead_added", "lead_received", "lead_details_added", "lead_claimed", "lead_reassigned", "lead_status_changed",
+HISTORY = ("lead_measured", "lead_quoted", "lead_sf_job_set", "lead_added", "lead_received", "lead_details_added", "lead_claimed", "lead_reassigned", "lead_status_changed",
            "lead_note_added", "lead_moved_to_leads")
 
 
 def _history_text(action: str, d: dict) -> str:
+    if action == "lead_measured":
+        return f"Measured: {d.get('measure')}" + (" (status moved to Measure booked)" if d.get("status_from") else "")
+    if action == "lead_quoted":
+        return f"Quoted in Studio: {d.get('quote')}" + (" (status moved to Quoted)" if d.get("status_from") else "")
+    if action == "lead_sf_job_set":
+        return f"Service Fusion job set: {d.get('to') or '(removed)'}"
     if action == "lead_added":
         return f"Added it by hand ({d.get('source', 'phone call')})" + (" and claimed it" if d.get("claimed") else "")
     if action == "lead_received":
@@ -621,6 +702,9 @@ def detail(r) -> dict:
         hist.append({"at": a["at"], "who": "Customer" if a["actor_name"] == "Customer form" else a["actor_name"],
                      "what": _history_text(a["action"], det if isinstance(det, dict) else {})})
     emails = c.execute("SELECT audience, status, sent_at FROM emails WHERE lead_id=? ORDER BY id", (r["id"],)).fetchall()
+    measures = c.execute("SELECT r.id, r.receipt, r.submitted_at, json_extract(r.data, '$.measured_by') AS by FROM reports r"
+                         " WHERE r.form_type='Measure Report' AND json_extract(r.data, '$.lead_id')=? ORDER BY r.id",
+                         (r["id"],)).fetchall()
     return {"id": r["id"], "receipt": r["receipt"], "submitted_at": r["submitted_at"], "is_test": bool(r["is_test"]),
             "spam": r["spam"], "name": r["name"], "phone": r["phone"], "email": r["email"], "address": r["address"],
             "types": d.get("types") or [], "description": d.get("description") or "", "heard": d.get("heard") or "",
@@ -630,7 +714,9 @@ def detail(r) -> dict:
             "claimed_at": r["claimed_at"], "stale": _stale(r, _ago(hours=STALE_HOURS)),
             "files": [dict(f) for f in files],
             "notes": [{"at": n["at"], "by": n["name"], "text": n["text"]} for n in notes],
-            "history": hist, "emails": [dict(e) for e in emails]}
+            "history": hist, "emails": [dict(e) for e in emails],
+            "measures": [dict(m) for m in measures], "quotes": d.get("quotes") or [], "sf_job": d.get("sf_job") or "",
+            "sf_copy": sf_copy_text(r)}
 
 
 def tidy(c) -> None:
