@@ -46,6 +46,8 @@ STAGE = {
     "install": {_norm(x) for x in ("10 Install Scheduled", "13 Ready for Install", "16 Partial Completed", "Warranty",
                                    "18 Warranty Scheduled")},
     "delivery": {_norm("15 Delivery Scheduled")},
+    # Price List purchase orders: jobs that still need product ordered
+    "po": {_norm(x) for x in ("4 Need to Order", "5 Ordered Pend ACK", "6 In Prod no ETA", "7 Awaiting Product")},
 }
 # Used only if Service Fusion's status list can't be read.
 FALLBACK_OPEN = ["1 Unscheduled", "2 Scheduled Consult", "3 Awaiting Deposit", "4 Need to Order", "5 Ordered Pend ACK",
