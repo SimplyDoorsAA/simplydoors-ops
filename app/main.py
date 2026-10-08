@@ -410,6 +410,18 @@ def studio_caller(request: Request) -> str:
     return who.strip()[:120]
 
 
+@app.get("/api/studio/test-mode")
+def studio_test_mode(request: Request, email: str = ""):
+    """Studio follows the owner's Test mode switch here: one switch for both apps. True only for the owner's own
+    email while the switch is on, so nobody else's Studio work can ever be turned into a test."""
+    studio_caller(request)
+    email = email.strip().lower()
+    if not email or get_setting("owner_test_mode") != "1":
+        return {"test_mode": False}
+    row = conn().execute("SELECT 1 FROM staff WHERE is_owner=1 AND active=1 AND lower(trim(email))=?", (email,)).fetchone()
+    return {"test_mode": bool(row)}
+
+
 @app.get("/api/studio/jobs")
 def studio_job_search(request: Request, q: str = ""):
     studio_caller(request)

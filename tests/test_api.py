@@ -1163,6 +1163,18 @@ def test_job_lookup_for_studio_is_signed(client, fake_sf):
         assert signed("/api/studio/jobs", {"q": "bill"}, ts=int(tm.time()) - 300).status_code == 401
         good = signed("/api/studio/jobs", {"q": "bill"}).request.headers
         assert client.get("/api/studio/jobs?q=tom", headers=dict(good)).status_code == 401
+        # one Test mode switch for both apps: Studio asks here, and only the owner's own email can be in test mode
+        from app.db import set_setting
+        owner_email = conn().execute("SELECT email FROM staff WHERE is_owner=1").fetchone()[0]
+        set_setting("owner_test_mode", "0")
+        assert signed("/api/studio/test-mode", {"email": owner_email}).json() == {"test_mode": False}
+        set_setting("owner_test_mode", "1")
+        assert signed("/api/studio/test-mode", {"email": " " + owner_email.upper()}).json() == {"test_mode": True}
+        other = conn().execute("SELECT email FROM staff WHERE is_owner=0 AND email!='' LIMIT 1").fetchone()[0]
+        assert signed("/api/studio/test-mode", {"email": other}).json() == {"test_mode": False}
+        assert signed("/api/studio/test-mode").json() == {"test_mode": False}
+        assert client.get("/api/studio/test-mode?email=" + owner_email).status_code == 401
+        set_setting("owner_test_mode", "0")
         M.STUDIO_SSO_SECRET = ""
         assert signed("/api/studio/jobs").status_code == 503
     finally:
