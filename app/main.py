@@ -1462,6 +1462,8 @@ def pl_po_check(po: str = "", staff=Depends(current_pricelist)):
 @app.post("/api/pricelist/pos")
 async def pl_send_po(request: Request, staff=Depends(current_pricelist)):
     body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Bad request.")
     v = _vendor(str(body.get("vendor", "")))
     test = bool(staff["is_owner"]) and get_setting("owner_test_mode") == "1"
     if not v["order_email"] and not test:
