@@ -201,7 +201,7 @@ def _po_html(po: dict) -> str:
         f"<td style='padding:6px 10px;border:1px solid #e0e0e0'>{escape(ln['name'])}"
         f"{_size_html(ln)}</td></tr>"
         for ln in po["lines"])
-    notes = f"<p style='margin:14px 0 0'><b>Notes:</b> {escape(po['notes'])}</p>" if po.get("notes") else ""
+    notes = f"<p style='margin:14px 0 0;white-space:pre-line'><b>Notes:</b> {escape(po['notes'])}</p>" if po.get("notes") else ""
     return f"""<div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;border:1px solid #ddd;border-radius:8px;overflow:hidden;color:#1f2933">
 <div style="background:#2f5d50;color:#ffffff;padding:16px 20px"><h2 style="margin:0;color:#ffffff">Purchase Order {escape(po['po_number'])}</h2>
 <div style="font-size:13px;color:#ffffff">SimplyDoors · {escape(po['order_date'])} · {escape(po['ship_method'])}</div></div>
