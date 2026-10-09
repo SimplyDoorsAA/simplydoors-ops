@@ -30,11 +30,13 @@
   <!-- SIGN IN -->
   <section id="viewLogin" class="view hidden">
     <h1>Sign in</h1>
-    <p class="muted">Pick your department, then your name.</p>
+    <p class="muted" id="loginHint">Pick your department, then your name.</p>
     <div class="pills" id="deptPills"></div>
     <form id="loginForm" class="hidden" autocomplete="off">
       <label for="loginName">Your name</label>
       <select id="loginName" required></select>
+      <input id="loginNameText" class="hidden" type="text" autocomplete="name" autocapitalize="words" maxlength="80"
+             placeholder="First and last name">
       <label for="loginPin">PIN</label>
       <input id="loginPin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="off" enterkeyhint="go" required>
       <p class="error hidden" id="loginError" role="alert"></p>

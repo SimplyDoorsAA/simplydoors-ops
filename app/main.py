@@ -42,12 +42,13 @@ from .pdf import build_pdf
 
 BASE_PATH = os.environ.get("BASE_PATH", "/ops").rstrip("/")
 COOKIE = "sdops_session"
+DEVICE_COOKIE = "sdops_device"      # "this phone has signed in before"; outlives the session, never cleared on sign-out
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "1") == "1"
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-47"
+APP_VERSION = "stage3-48"
 
 
 @asynccontextmanager
@@ -202,8 +203,19 @@ def healthz():
 
 
 # ---------------------------------------------------------------- sign in
+def _set_device_cookie(resp, request: Request, staff_id: int | None):
+    """Remembers this phone so it gets the name list next time and its wrong PINs stay short locks."""
+    token, max_age = auth.remember_device(request.cookies.get(DEVICE_COOKIE), staff_id, client_ip(request), ua(request))
+    resp.set_cookie(DEVICE_COOKIE, token, max_age=max_age, httponly=True, secure=COOKIE_SECURE, samesite="lax",
+                    path=(BASE_PATH or "") + "/")
+
+
 @app.get("/api/directory")
-def directory():
+def directory(request: Request):
+    """Staff names by department, for the sign-in screen. Only for a phone that has signed in here before (or
+    finished a setup link): the app is reachable from the internet, and the list shouldn't be. A new phone types the name."""
+    if not auth.known_device(request.cookies.get(DEVICE_COOKIE)):
+        raise HTTPException(403, "This phone hasn't signed in here before. Type your name.")
     rows = conn().execute("SELECT name, dept FROM staff WHERE active=1 ORDER BY dept, name").fetchall()
     out = {}
     for r in rows:
@@ -222,15 +234,18 @@ def login(request: Request, body: LoginBody):
     name, pin = body.name[:80], body.pin[:12]
     if not name or not pin:
         raise HTTPException(400, "Pick your name and enter your PIN.")
-    row, msg, newly_locked = auth.attempt_login(name, pin, client_ip(request), ua(request))
+    known = auth.known_device(request.cookies.get(DEVICE_COOKIE))
+    row, msg, newly_locked = auth.attempt_login(name, pin, client_ip(request), ua(request), known_device=known)
     if newly_locked:
-        alerts.push_throttled(f"lock:{name}", "Ops app: account locked", f"{name} was locked after too many wrong PINs. {msg}", "high")
+        where = "" if known else " The wrong PINs came from a phone that has never signed in here."
+        alerts.push_throttled(f"lock:{name}", "Ops app: account locked", f"{name} was locked after too many wrong PINs. {msg}{where}", "high")
     if not row:
         raise HTTPException(401, msg)
     token, max_age = auth.create_session(row, client_ip(request), ua(request))
     resp = JSONResponse({"ok": True})
     resp.set_cookie(COOKIE, token, max_age=max_age, httponly=True, secure=COOKIE_SECURE, samesite="lax",
                     path=(BASE_PATH or "") + "/")
+    _set_device_cookie(resp, request, row["id"])
     return resp
 
 
@@ -285,6 +300,7 @@ def setup_complete(request: Request, body: SetupBody):
     resp = JSONResponse({"ok": True})
     resp.set_cookie(COOKIE, token, max_age=max_age, httponly=True, secure=COOKIE_SECURE, samesite="lax",
                     path=(BASE_PATH or "") + "/")
+    _set_device_cookie(resp, request, row["id"])
     return resp
 
 
@@ -2459,6 +2475,7 @@ def _nightly_work():
     c = conn()
     c.execute("DELETE FROM ip_failures WHERE at < ?", (cutoff,))
     c.execute("DELETE FROM sessions WHERE expires_at < ?", (now_iso(),))
+    auth.tidy_devices()
     leads.tidy(c)
     for f in os.listdir(PHOTO_DIR) if os.path.isdir(PHOTO_DIR) else []:   # photos of an upload cut off mid-save
         p = os.path.join(PHOTO_DIR, f)
