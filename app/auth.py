@@ -14,6 +14,8 @@ IP_MAX_FAILS = 20            # wrong PINs from one address in IP_WINDOW before i
 IP_WINDOW_MINUTES = 15
 STAFF_SESSION_DAYS = 14      # staff stay signed in on their own phone
 ADMIN_SESSION_HOURS = 12     # admins sign in again more often
+DEVICE_DAYS = 400            # how long a phone stays "known" after its last sign-in (browsers cap cookies at 400 days)
+UNKNOWN_DEVICE_LOCK_MINUTES = LOCK_STEPS[0]   # wrong PINs from a phone that never signed in here: a short lock, never admin-only
 
 
 def _utc(s: str) -> datetime:
@@ -131,15 +133,34 @@ def _locked_msg(locked_until, now) -> str | None:
     return f"This account is locked for {mins} more minute(s), or ask Adem or Paz to unlock it."
 
 
-def attempt_login(staff_name: str, pin: str, ip: str, ua: str):
-    """Returns (staff_row | None, message, newly_locked: bool)."""
+def find_staff_by_name(staff_name: str):
+    """The active person with this name. Exact first; otherwise ignoring case and extra spaces, so a name typed
+    on a phone that has never signed in here ("jose blanco") still finds Jose Blanco."""
+    c = conn()
+    row = c.execute("SELECT * FROM staff WHERE name=? AND active=1", (staff_name,)).fetchone()
+    if row:
+        return row
+    loose = " ".join(staff_name.split()).lower()
+    if not loose:
+        return None
+    rows = c.execute("SELECT * FROM staff WHERE lower(name)=? AND active=1", (loose,)).fetchall()
+    if len(rows) == 1:
+        return rows[0]
+    rows = [r for r in c.execute("SELECT * FROM staff WHERE active=1").fetchall() if " ".join(r["name"].split()).lower() == loose]
+    return rows[0] if len(rows) == 1 else None
+
+
+def attempt_login(staff_name: str, pin: str, ip: str, ua: str, known_device: bool = True):
+    """Returns (staff_row | None, message, newly_locked: bool).
+    known_device=False means this phone has never signed in here: its wrong PINs still count, but the lock they
+    cause is always the short one, so a stranger can't lock a crew member out until an admin steps in."""
     c = conn()
     ip_try = _ip_try(ip)
     if ip_try is None:
         audit(None, staff_name, "login_blocked_ip", staff_name, None, ip, ua)
         return None, "Too many wrong PINs from this connection. Try again in 15 minutes.", False
 
-    row = c.execute("SELECT * FROM staff WHERE name=? AND active=1", (staff_name,)).fetchone()
+    row = find_staff_by_name(staff_name)
     now = datetime.now(timezone.utc)
     if row and _locked_msg(row["locked_until"], now):
         c.execute("DELETE FROM ip_failures WHERE rowid=?", (ip_try,))     # a locked account isn't a wrong PIN
@@ -178,6 +199,17 @@ def attempt_login(staff_name: str, pin: str, ip: str, ua: str):
             level = cur["lock_level"]
             if cur["last_lock_at"] and _utc(cur["last_lock_at"]) < now - timedelta(days=1):
                 level = 0                       # a day without trouble starts over
+            if not known_device:
+                # A phone that never signed in here: a short lock that doesn't climb the ladder, so it can't
+                # reach the admin-only lock however often it tries (the per-connection block still applies).
+                mins = UNKNOWN_DEVICE_LOCK_MINUTES
+                until = _iso(now + timedelta(minutes=mins))
+                msg = f"Too many wrong PINs. This account is locked for {mins} minutes."
+                c.execute("UPDATE staff SET failed_count=0, locked_until=? WHERE id=?", (until, row["id"]))
+                audit(row["id"], row["name"], "account_locked", row["name"],
+                      {"lock": level, "until": until, "unknown_device": True}, ip, ua)
+                c.execute("COMMIT")
+                return None, msg, True
             level += 1
             if level > len(LOCK_STEPS):
                 until, msg = ADMIN_ONLY_UNTIL, "Too many wrong PINs. This account is locked until Adem or Paz unlocks it."
@@ -235,3 +267,37 @@ def end_session(token: str | None) -> None:
 
 def end_all_sessions(staff_id: int) -> None:
     conn().execute("DELETE FROM sessions WHERE staff_id=?", (staff_id,))
+
+
+# ---------------------------------------------------------------- known phones
+def known_device(token: str | None) -> bool:
+    """True if this browser's device cookie belongs to a phone that signed in here within DEVICE_DAYS."""
+    if not token:
+        return False
+    c = conn()
+    d = c.execute("SELECT last_seen FROM devices WHERE token_hash=?", (_token_hash(token),)).fetchone()
+    if not d:
+        return False
+    if _utc(d["last_seen"]) < datetime.now(timezone.utc) - timedelta(days=DEVICE_DAYS):
+        c.execute("DELETE FROM devices WHERE token_hash=?", (_token_hash(token),))
+        return False
+    return True
+
+
+def remember_device(token: str | None, staff_id: int | None, ip: str, ua: str) -> tuple[str, int]:
+    """Marks this browser as a phone that has signed in. Keeps the existing cookie when it's still valid (just
+    refreshes last_seen), otherwise makes a new one. Returns (token, max_age_seconds) for the cookie."""
+    now = _iso(datetime.now(timezone.utc))
+    life = int(timedelta(days=DEVICE_DAYS).total_seconds())
+    if token and known_device(token):
+        conn().execute("UPDATE devices SET last_seen=? WHERE token_hash=?", (now, _token_hash(token)))
+        return token, life
+    token = secrets.token_urlsafe(32)
+    conn().execute("INSERT INTO devices(token_hash, staff_id, created_at, last_seen, ip, user_agent) VALUES (?,?,?,?,?,?)",
+                   (_token_hash(token), staff_id, now, now, ip, (ua or "")[:300]))
+    return token, life
+
+
+def tidy_devices() -> None:
+    cutoff = _iso(datetime.now(timezone.utc) - timedelta(days=DEVICE_DAYS))
+    conn().execute("DELETE FROM devices WHERE last_seen < ?", (cutoff,))

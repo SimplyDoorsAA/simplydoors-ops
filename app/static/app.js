@@ -87,13 +87,31 @@
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
   // ------------------------------------------------------------ sign in
+  // The name list is only shown to a phone that has signed in here before (the server knows by a cookie).
+  // A new phone types the name instead, and gets the list from its next sign-in on.
+  function typedNameLogin() {
+    $("#deptPills").innerHTML = "";
+    $("#loginHint").textContent = "This phone hasn't signed in here before. Type your first and last name, then your PIN.";
+    $("#loginName").classList.add("hidden"); $("#loginName").required = false;
+    $("#loginNameText").classList.remove("hidden"); $("#loginNameText").required = true;
+    $("#loginForm").classList.remove("hidden");
+    $("#loginError").classList.add("hidden");
+  }
   async function showLogin() {
     me = null; setUser(); show("viewLogin");
-    let dir = null;
+    $("#loginHint").textContent = "Pick your department, then your name.";
+    $("#loginName").classList.remove("hidden"); $("#loginName").required = true;
+    $("#loginNameText").classList.add("hidden"); $("#loginNameText").required = false;
+    $("#loginForm").classList.add("hidden");
+    let dir = null, unknownPhone = false;
     try { dir = await api("api/directory"); localStorage.setItem("sdops_dir", JSON.stringify(dir)); }
-    catch (e) { dir = JSON.parse(localStorage.getItem("sdops_dir") || "null"); }
+    catch (e) {
+      dir = JSON.parse(localStorage.getItem("sdops_dir") || "null");   // offline, or an old list this phone fetched before
+      unknownPhone = e.status === 403 && !dir;
+    }
     const pills = $("#deptPills");
     pills.innerHTML = "";
+    if (unknownPhone) return typedNameLogin();
     if (!dir) { pills.innerHTML = `<p class="error">Can't reach the server. Check your signal and reload.</p>`; return; }
     Object.keys(dir).forEach(dept => {
       const b = document.createElement("button");
@@ -111,9 +129,10 @@
   }
   $("#loginForm").addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    const name = $("#loginName").value, pin = $("#loginPin").value.trim();
+    const typed = !$("#loginNameText").classList.contains("hidden");
+    const name = typed ? $("#loginNameText").value.trim() : $("#loginName").value, pin = $("#loginPin").value.trim();
     const err = $("#loginError"), btn = $("#loginBtn");
-    if (!name || !pin) { err.textContent = "Pick your name and enter your PIN."; err.classList.remove("hidden"); return; }
+    if (!name || !pin) { err.textContent = typed ? "Type your name and enter your PIN." : "Pick your name and enter your PIN."; err.classList.remove("hidden"); return; }
     btn.disabled = true; btn.textContent = "Checking…";
     try {
       await api("api/login", { method: "POST", json: { name, pin } });

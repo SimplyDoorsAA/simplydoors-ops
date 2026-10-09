@@ -58,8 +58,17 @@ def jpeg(color=(200, 50, 50), size=(3000, 2000)) -> bytes:
 
 
 def login(c, name, pin):
-    c.cookies.clear()
+    """Signs in as a fresh session on the same phone: the session cookie goes, the "this phone has signed in
+    before" cookie stays, like a real phone that signs out and back in."""
+    for ck in list(c.cookies.jar):
+        if ck.name != "sdops_device":
+            c.cookies.jar.clear(ck.domain, ck.path, ck.name)
     return c.post("/ops/api/login", json={"name": name, "pin": pin}, headers=H)
+
+
+def forget_phone(c):
+    """Makes the test client look like a phone that has never signed in here."""
+    c.cookies.clear()
 
 
 def receiving(c, sub_id, **over):
@@ -234,6 +243,7 @@ def test_pin_import(client):
 def test_lockouts_escalate(client):
     sid = conn().execute("SELECT id FROM staff WHERE name='Elijah Kimmel'").fetchone()[0]
     auth.set_pin(sid, "424242", "admin")
+    assert login(client, "Jaime Mendoza", "135790").status_code == 200   # a phone that has signed in before
     msgs = []
     for lock in range(3):
         conn().execute("DELETE FROM ip_failures")  # this test is about per-person locks, not the per-connection block
@@ -245,6 +255,52 @@ def test_lockouts_escalate(client):
     conn().execute("UPDATE staff SET locked_until='9999-12-31T00:00:00Z' WHERE id=?", (sid,))
     assert "Ask Adem or Paz" in login(client, "Elijah Kimmel", "424242").json()["detail"]
     conn().execute("DELETE FROM ip_failures")
+
+
+def test_unknown_phone_never_sees_names_and_only_gets_short_locks(client):
+    """The app is on the internet. A phone that never signed in here gets no staff list, and its wrong PINs
+    can lock someone for 15 minutes but never until an admin unlocks them."""
+    sid = conn().execute("SELECT id FROM staff WHERE name='Elijah Kimmel'").fetchone()[0]
+    auth.set_pin(sid, "424242", "admin")
+    conn().execute("UPDATE staff SET failed_count=0, locked_until=NULL, lock_level=0, last_lock_at=NULL WHERE id=?", (sid,))
+    forget_phone(client)
+    r = client.get("/ops/api/directory")
+    assert r.status_code == 403 and "Type your name" in r.json()["detail"]
+    msgs = []
+    for lock in range(4):
+        conn().execute("DELETE FROM ip_failures")
+        for i in range(5):
+            r = login(client, "Elijah Kimmel", "000000")
+            forget_phone(client)
+        msgs.append(r.json()["detail"])
+        conn().execute("UPDATE staff SET locked_until='2000-01-01T00:00:00Z' WHERE id=?", (sid,))
+    assert all("15 minutes" in m for m in msgs), msgs
+    st = conn().execute("SELECT lock_level FROM staff WHERE id=?", (sid,)).fetchone()
+    assert st["lock_level"] == 0          # the ladder to the admin-only lock never moved
+    conn().execute("UPDATE staff SET locked_until=NULL WHERE id=?", (sid,))
+    # the right PIN, typed loosely, works from the unknown phone and makes it a known one
+    forget_phone(client)
+    assert login(client, "  elijah   kimmel ", "424242").status_code == 200
+    assert client.cookies.get("sdops_device")
+    d = client.get("/ops/api/directory").json()
+    assert "Elijah Kimmel" in sum(d.values(), [])
+    # a known phone keeps the session-less directory even after signing out
+    client.post("/ops/api/logout", headers=H)
+    assert client.get("/ops/api/directory").status_code == 200
+    conn().execute("DELETE FROM ip_failures")
+
+
+def test_known_phone_cookie_outlives_the_session(client):
+    assert login(client, "Jaime Mendoza", "135790").status_code == 200
+    dev = client.cookies.get("sdops_device")
+    assert dev
+    assert login(client, "Jaime Mendoza", "135790").status_code == 200
+    assert client.cookies.get("sdops_device") == dev      # the same phone is not re-registered on every sign-in
+    assert conn().execute("SELECT COUNT(*) FROM devices WHERE token_hash=?",
+                          (auth._token_hash(dev),)).fetchone()[0] == 1
+    # a device that hasn't been seen for over DEVICE_DAYS is forgotten
+    conn().execute("UPDATE devices SET last_seen='2020-01-01T00:00:00Z' WHERE token_hash=?", (auth._token_hash(dev),))
+    assert client.get("/ops/api/directory").status_code == 403
 
 
 def test_parallel_wrong_pins_all_count(client):

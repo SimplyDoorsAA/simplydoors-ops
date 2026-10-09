@@ -59,6 +59,16 @@ CREATE TABLE IF NOT EXISTS sessions (
     ip TEXT, user_agent TEXT
 );
 
+-- Phones (browsers) that have signed in before. Only a known phone is shown the staff name list,
+-- and wrong PINs from an unknown phone can never lock someone out until an admin steps in.
+CREATE TABLE IF NOT EXISTS devices (
+    token_hash TEXT PRIMARY KEY,
+    staff_id INTEGER REFERENCES staff(id),       -- who signed in on it first
+    created_at TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    ip TEXT, user_agent TEXT
+);
+
 CREATE TABLE IF NOT EXISTS invites (
     id INTEGER PRIMARY KEY,
     staff_id INTEGER NOT NULL REFERENCES staff(id),

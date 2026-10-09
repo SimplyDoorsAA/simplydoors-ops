@@ -167,6 +167,9 @@ GitHub Pages portal + Google Apps Script, one form at a time.
 ## Stage 1
 
 - Sign-in with name + 6–8 digit PIN, checked on the server. Lockouts get longer with repeated misses (15 min, 1 hour, then admin unlock). Connections making many wrong guesses are blocked.
+- The staff name list only appears on a phone that has signed in here before (a long-lived cookie, kept after sign-out). A new phone types the name
+  (spelling and spaces are forgiven), and gets the list from then on. Wrong PINs from a phone that never signed in here only ever cause the 15-minute
+  lock, never the admin-only one, so a stranger on the internet can't lock a crew member out for the day.
 - **Receiving Report** form, built for phones:
   - Big tap targets, photo previews, take a photo or pick one from the gallery.
   - Every field and photo is saved on the phone while it's typed, and survives reloads.
