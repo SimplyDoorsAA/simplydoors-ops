@@ -157,11 +157,15 @@
       if (body.name.length < 2 || (!body.phone && !body.email)) {
         err.textContent = "Type their name, and a phone number or an email."; err.classList.remove("hidden"); return;
       }
+      const btn = $("button[type=submit]", f);
+      if (btn.disabled) return;
+      btn.disabled = true;   // a double tap would save the lead twice
       try {
         const d = await api("api/leads", { method: "POST", json: body });
         toast(`Saved as ${d.receipt}`);
         location.hash = "lead=" + d.id;
       } catch (e) { err.textContent = e.message; err.classList.remove("hidden"); }
+      finally { btn.disabled = false; }
     };
   }
 
