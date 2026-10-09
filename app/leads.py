@@ -587,10 +587,10 @@ def contact(lid: int, include_test: bool):
             "status": STATUSES[r["status"]], "is_test": bool(r["is_test"])}
 
 
-def measured(lid: int, receipt: str, staff, ip: str, agent: str) -> None:
+def measured(lid: int, receipt: str, staff, ip: str, agent: str, is_test: bool = False) -> None:
     """A measure was sent for this lead: it shows on the lead, and the lead moves to Measure booked."""
-    r = conn().execute("SELECT receipt FROM leads WHERE id=?", (lid,)).fetchone()
-    if not r:
+    r = conn().execute("SELECT receipt, is_test FROM leads WHERE id=?", (lid,)).fetchone()
+    if not r or (is_test and not r["is_test"]):   # the owner's TEST measure never moves a real customer's lead
         return
     was = advance(lid, "measure_booked")
     conn().execute("UPDATE leads SET touched_at=? WHERE id=?", (now_iso(), lid))
