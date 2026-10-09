@@ -2414,3 +2414,18 @@ def test_company_goes_with_the_name_everywhere(client):
     # a link in the company box counts as spam, like one in the name
     _intake(client, "company-spam-01", ip="192.0.2.191", company="cheap http://spam.example")
     assert "A link in the name or company" in _lead("company-spam-01")["spam"]
+
+
+def test_owners_test_measure_leaves_a_real_lead_alone(client):
+    """Test mode: the owner tries Measure on a real customer's lead; the lead must not move to Measure booked."""
+    _intake(client, "tm-lead-0001", ip="192.0.2.161", name="Rosa Real", phone="(210) 555-0412", address="9 Elm St")
+    lid = _lead("tm-lead-0001")["id"]
+    login(client, "Adem Atis", "246810")
+    client.put("/ops/api/admin/forms-enabled", json={"forms": ["Receiving Report", "Measure Report"]}, headers=H)
+    r = _measure(client, "tm-msr-0001", [_door()], customer="Rosa Real", lead_id=str(lid), is_test="1")
+    assert r.status_code == 200, r.text
+    assert conn().execute("SELECT status FROM leads WHERE id=?", (lid,)).fetchone()[0] == "new"
+    assert not conn().execute("SELECT 1 FROM audit WHERE action='lead_measured' AND target=?", (f"lead:{lid}",)).fetchone()
+    # a real measure still moves it
+    assert _measure(client, "tm-msr-0002", [_door()], customer="Rosa Real", lead_id=str(lid)).status_code == 200
+    assert conn().execute("SELECT status FROM leads WHERE id=?", (lid,)).fetchone()[0] == "measure_booked"

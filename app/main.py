@@ -593,7 +593,7 @@ async def submit_report(slug: str, request: Request, staff=Depends(current_staff
                                       started_at, queued, client_ip(request), ua(request), kept, is_test)
         if data.get("lead_id") and not out.get("duplicate") and not data.get("revision_of"):
             try:     # the measure is saved either way; this only shows it on the lead
-                leads.measured(data["lead_id"], out["receipt"], staff, client_ip(request), ua(request))
+                leads.measured(data["lead_id"], out["receipt"], staff, client_ip(request), ua(request), is_test)
             except Exception:  # noqa: BLE001
                 traceback.print_exc()
         return out
