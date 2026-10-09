@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS leads (
     user_agent TEXT
 );
 CREATE INDEX IF NOT EXISTS leads_spam ON leads(spam, id);
+CREATE INDEX IF NOT EXISTS audit_target ON audit(target);   -- a lead's history, without reading the whole log
+CREATE INDEX IF NOT EXISTS emails_lead ON emails(lead_id);
 CREATE TABLE IF NOT EXISTS lead_files (
     id INTEGER PRIMARY KEY,
     lead_id INTEGER NOT NULL REFERENCES leads(id),
