@@ -415,7 +415,7 @@ def worker() -> None:
         try:
             process_queue_once()
         except Exception:  # noqa: BLE001
-            pass
+            traceback.print_exc()   # keep going, but leave a trace in the app's log
         _wake.wait(30)
         _wake.clear()
 
