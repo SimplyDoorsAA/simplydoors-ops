@@ -627,6 +627,20 @@ def email_rows(form_type: str, data: dict) -> list[tuple[str, str]]:
     return rows
 
 
+def needs_attention(form_type: str, data: dict) -> str | None:
+    """Why a report should sit on the admin's "Needs attention" list until someone closes it out, or None.
+    The same rules that put NEEDS FOLLOW-UP / DEFECTIVE / URGENT in the email subject."""
+    if form_type == "Installation Completion" and data.get("attention"):
+        return "Install follow-up"
+    if form_type == "Vehicle Inspection" and data.get("defective"):
+        return "Defective vehicle"
+    if form_type == "Vehicle Incident":
+        return "Vehicle incident"
+    if form_type == "Employee Incident":
+        return "Employee incident"
+    return None
+
+
 def summary(form_type: str, data: dict) -> str:
     if FORMS.get(form_type, {}).get("kind") == "measure":
         return " · ".join(x for x in (data.get("customer"), data.get("po"),

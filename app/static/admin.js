@@ -28,6 +28,7 @@
     login_fail_unknown_name: "Sign-in with unknown name", login_while_locked: "Tried to sign in while locked",
     login_blocked_ip: "Blocked: too many wrong PINs from one connection", account_locked: "Account locked",
     account_unlocked: "Account unlocked", logout: "Signed out", report_submitted: "Submitted a report",
+    report_resolved: "Marked a report resolved", report_reopened: "Reopened a resolved report", attention_backfilled: "Needs attention list started",
     report_viewed: "Opened a report", report_pdf_downloaded: "Downloaded a report PDF", email_sent: "Email sent",
     email_failed: "Email failed", email_skipped_no_recipients: "Email skipped (nobody on the list)",
     email_resend_requested: "Asked to resend email", email_retry_requested: "Asked to retry email",
@@ -61,24 +62,51 @@
   function tab(name) {
     $$(".tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
     $$("[data-panel]").forEach(p => p.classList.toggle("hidden", p.dataset.panel !== name));
-    ({ reports: loadReports, log: () => loadLog(true), staff: loadStaff, rules: loadRules, lists: loadLists, pricelist: loadPriceList,
-       status: loadStatus })[name]();
+    ({ reports: loadReports, vehicles: loadVehicles, log: () => loadLog(true), staff: loadStaff, rules: loadRules, lists: loadLists,
+       pricelist: loadPriceList, status: loadStatus })[name]();
   }
   $$(".tabs button").forEach(b => b.onclick = () => tab(b.dataset.tab));
 
   // ------------------------------------------------------------ reports
-  async function loadReports() {
-    const q = encodeURIComponent($("#repQ").value.trim()), f = encodeURIComponent($("#repForm").value);
+  // "Needs attention": flagged reports (install follow-up, defective vehicle, incident) stay open until an admin
+  // marks them resolved with a note. The red count on the Reports tab is how many are still open.
+  const attnBadge = (r) => r.attention === "open" ? ` <span class="badge bad">${esc(r.attention_reason || "needs attention")}</span>`
+    : r.attention === "resolved" ? ' <span class="badge ok">resolved</span>' : "";
+  async function refreshAttnCount() {
     try {
-      const rows = await api(`api/admin/reports?q=${q}&form=${f}`);
+      const n = (await api("api/admin/attention")).open;
+      $("#attnCount").textContent = n; $("#attnCount").classList.toggle("hidden", !n);
+    } catch (e) { /* the count is a nicety */ }
+  }
+  async function loadReports() {
+    const q = encodeURIComponent($("#repQ").value.trim()), f = encodeURIComponent($("#repForm").value), a = $("#repAttn").value;
+    refreshAttnCount();
+    try {
+      const rows = await api(`api/admin/reports?q=${q}&form=${f}&attention=${a}`);
       $("#repList").innerHTML = rows.length ? `<table class="rows"><thead><tr><th>Receipt</th><th>Form</th><th>From</th>
         <th class="hide-sm">Details</th><th>Received</th><th>Email</th></tr></thead><tbody>` +
-        rows.map(r => `<tr class="click" data-id="${r.id}"><td><b>${esc(r.receipt)}</b>${r.is_test ? ' <span class="badge warn">TEST</span>' : ""}</td><td>${esc(r.form_type)}</td>
+        rows.map(r => `<tr class="click" data-id="${r.id}"><td><b>${esc(r.receipt)}</b>${r.is_test ? ' <span class="badge warn">TEST</span>' : ""}${attnBadge(r)}</td><td>${esc(r.form_type)}</td>
           <td>${esc(r.staff_name)}</td><td class="hide-sm">${esc(r.summary)}</td><td>${esc(when(r.submitted_at))}${r.queued_on_phone ? ' <span class="badge warn">sent late</span>' : ""}${r.no_geo ? ` <span class="badge warn">${r.no_geo} photo${r.no_geo > 1 ? "s" : ""} without location</span>` : ""}</td>
           <td>${emailBadge(r.email_status)}</td></tr>`).join("") + `</tbody></table>`
+        : a === "open" ? `<p class="muted">Nothing needs attention. Flagged reports (install follow-ups, defective vehicles, incidents) show here until they're marked resolved.</p>`
         : `<p class="muted">No reports yet.</p>`;
       $$("#repList tr.click").forEach(tr => tr.onclick = () => openReport(tr.dataset.id));
     } catch (e) { fail(e); }
+  }
+  $("#repAttn").onchange = loadReports;
+
+  function attentionPanel(r) {
+    if (!r.attention) return "";
+    if (r.attention === "resolved") {
+      return `<div class="rule attn"><b><span class="badge ok">resolved</span> ${esc(r.attention_reason || "")}</b>
+        <div class="det">Marked resolved by ${esc(r.resolved_by || "")} on ${esc(when(r.resolved_at))}</div>
+        <p class="note">${esc(r.resolved_note || "")}</p>
+        <button class="mini" id="reopen" type="button">Reopen</button></div>`;
+    }
+    return `<div class="rule attn open"><b><span class="badge bad">needs attention</span> ${esc(r.attention_reason || "")}</b>
+      <div class="det">Open since ${esc(when(r.submitted_at))}. Say what was done, then mark it resolved.</div>
+      <textarea id="resolveNote" maxlength="500" placeholder="What was done? e.g. brake light replaced 10/14, or trim fixed on the return visit"></textarea>
+      <button class="mini primary" id="resolve" type="button">Mark resolved</button></div>`;
   }
   const emailBadge = (s) => s === "sent" ? '<span class="badge ok">sent</span>' : s === "failed" ? '<span class="badge bad">failed</span>'
     : s === "pending" ? '<span class="badge warn">waiting</span>' : '<span class="badge">none</span>';
@@ -94,6 +122,7 @@
         <div class="actions"><a class="mini" href="api/admin/reports/${r.id}/pdf" target="_blank" rel="noopener">Open PDF</a>
         <button class="mini" id="resend" type="button">Email it again</button>
         ${r.is_test && amOwner ? '<button class="mini danger" id="delTest" type="button">Delete test report</button>' : ""}</div>
+        ${attentionPanel(r)}
         <table class="kv">${r.rows.map(([a, b]) => `<tr><td>${esc(a)}</td><td>${esc(b)}</td></tr>`).join("")}</table>
         <h3>Photos (${r.photos.length})</h3>
         <div class="gallery">${r.photos.map(p => `<div><a href="api/admin/photos/${p.id}" target="_blank" rel="noopener"><img loading="lazy" src="api/admin/photos/${p.id}" alt=""></a>
@@ -104,6 +133,17 @@
         ${r.emails.map(e => `<div class="rule"><b>${emailBadge(e.status)}</b> ${esc(e.subject)}<div class="det">To: ${esc(e.recipients)}
           ${e.sent_at ? `<br>Sent ${esc(when(e.sent_at))}` : ""}${e.last_error ? `<br>Last error: ${esc(e.last_error)}` : ""}</div>
           ${e.status !== "sent" ? `<button class="mini" data-retry="${e.id}" type="button">Try sending now</button>` : ""}</div>`).join("") || '<p class="muted">No email (nobody on the list).</p>'}`);
+      if ($("#resolve")) $("#resolve").onclick = async () => {
+        const note = $("#resolveNote").value.trim();
+        if (!note) { $("#resolveNote").focus(); return toast("Say what was done first."); }
+        try { await api(`api/admin/reports/${r.id}/resolve`, { method: "POST", json: { note } }); toast(`${r.receipt} marked resolved`); openReport(id); loadReports(); }
+        catch (e) { fail(e); }
+      };
+      if ($("#reopen")) $("#reopen").onclick = async () => {
+        if (!confirm(`Put ${r.receipt} back on the Needs attention list?`)) return;
+        try { await api(`api/admin/reports/${r.id}/reopen`, { method: "POST" }); toast(`${r.receipt} reopened`); openReport(id); loadReports(); }
+        catch (e) { fail(e); }
+      };
       $("#resend").onclick = async () => {
         if (!confirm("Send this report's email again to everyone on the list?")) return;
         try { await api(`api/admin/reports/${r.id}/resend`, { method: "POST" }); toast("Queued to send again"); openReport(id); } catch (e) { fail(e); }
@@ -116,6 +156,26 @@
       $$("[data-retry]").forEach(b => b.onclick = async () => {
         try { await api(`api/admin/emails/${b.dataset.retry}/retry`, { method: "POST" }); toast("Trying again"); setTimeout(() => openReport(id), 2500); } catch (e) { fail(e); }
       });
+    } catch (e) { fail(e); }
+  }
+
+  // ------------------------------------------------------------ vehicles
+  async function loadVehicles() {
+    try {
+      const cards = await api("api/admin/vehicles");
+      $("#vehList").innerHTML = cards.length ? `<div class="vehcards">` + cards.map(v => {
+        const open = v.open_defects.length + v.open_incidents.length;
+        return `<div class="rule veh${open ? " open" : ""}">
+          <h3>${esc(v.vehicle)} ${open ? `<span class="badge bad">${open} open</span>` : v.inspections ? '<span class="badge ok">all clear</span>' : ""}</h3>
+          <div class="det">${v.last_inspection ? `Last inspection: ${esc(v.last_inspection.trip || "")} ${esc(when(v.last_inspection.when))} by ${esc(v.last_inspection.by)}` : "No inspections in the last 6 months"}
+            ${v.last_odometer ? ` · Odometer ${v.last_odometer.reading.toLocaleString()}` : ""} · ${v.inspections} inspection${v.inspections === 1 ? "" : "s"} in 6 months</div>
+          ${v.open_defects.map(d => `<p class="vline"><a href="#" data-open="${d.id}"><b>${esc(d.receipt)}</b></a> ${esc(when(d.when))} · ${esc(d.by)}<br>
+            <span class="badge bad">defective</span> ${esc(d.items.join(", "))}${d.remarks ? `<br><span class="det">${esc(d.remarks)}</span>` : ""}</p>`).join("")}
+          ${v.open_incidents.map(d => `<p class="vline"><a href="#" data-open="${d.id}"><b>${esc(d.receipt)}</b></a> ${esc(when(d.when))} · ${esc(d.by)}<br><span class="badge bad">incident</span> open</p>`).join("")}
+          ${v.repeat_items.length ? `<p class="vline"><b>Keeps failing (90 days):</b> ${v.repeat_items.map(x => `${esc(x.item)} <span class="badge warn">×${x.times}</span>`).join(", ")}</p>` : ""}
+        </div>`;
+      }).join("") + `</div>` : `<p class="muted">No vehicles yet.</p>`;
+      $$("#vehList [data-open]").forEach(a => a.onclick = (ev) => { ev.preventDefault(); openReport(a.dataset.open); });
     } catch (e) { fail(e); }
   }
 
@@ -471,6 +531,7 @@
       $("#addStaff").elements.is_admin.closest("label").classList.toggle("hidden", !amOwner);   // only the owner adds admins
       me.forms.forEach(f => $("#repForm").insertAdjacentHTML("beforeend", `<option>${esc(f.type)}</option>`));
       $("#ui").classList.remove("hidden");
+      if (location.hash === "#attention") { $("#repAttn").value = "open"; history.replaceState(null, "", location.pathname); }   // from the 5 pm phone alert
       tab("reports");
     } catch (e) { $("#gate").classList.remove("hidden"); }
   })();
