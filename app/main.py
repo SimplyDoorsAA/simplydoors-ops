@@ -2130,6 +2130,7 @@ async def intake_send(request: Request, staff=Depends(current_staff)):
 async def intake_device(request: Request, staff=Depends(current_staff)):
     """Install the customer form on this phone or tablet; leads from it say whose device it was."""
     body = await request.json()
+    body = body if isinstance(body, dict) else {}
     label = " ".join(str((body or {}).get("label", "")).split())[:60] or f"{staff['name'].split(' ')[0]}’s device"
     test = bool(staff["is_owner"]) and get_setting("owner_test_mode") == "1"
     r = sends.create(staff, "device", label=label, is_test=test)
@@ -2217,6 +2218,7 @@ def lead_claim(lid: int, request: Request, staff=Depends(current_leads)):
 @app.post("/api/leads/{lid}/assign")
 async def lead_assign(lid: int, request: Request, staff=Depends(current_leads)):
     body = await request.json()
+    body = body if isinstance(body, dict) else {}
     r = _lead(lid, staff)
     if r["spam"]:
         raise HTTPException(409, "Move it to Leads first.")
@@ -2240,6 +2242,7 @@ async def lead_assign(lid: int, request: Request, staff=Depends(current_leads)):
 @app.put("/api/leads/{lid}/status")
 async def lead_status(lid: int, request: Request, staff=Depends(current_leads)):
     body = await request.json()
+    body = body if isinstance(body, dict) else {}
     st = str((body or {}).get("status", ""))
     if st not in leads.STATUSES:
         raise HTTPException(422, "Pick a status.")
@@ -2255,6 +2258,7 @@ async def lead_status(lid: int, request: Request, staff=Depends(current_leads)):
 @app.post("/api/leads/{lid}/notes")
 async def lead_note(lid: int, request: Request, staff=Depends(current_leads)):
     body = await request.json()
+    body = body if isinstance(body, dict) else {}
     text = str((body or {}).get("text", "")).strip()
     if not text:
         raise HTTPException(422, "Type the note first.")
@@ -2273,6 +2277,7 @@ async def lead_note(lid: int, request: Request, staff=Depends(current_leads)):
 async def lead_sf_job(lid: int, request: Request, staff=Depends(current_leads)):
     """The Service Fusion job made for this lead (typed in; nothing is sent to Service Fusion)."""
     body = await request.json()
+    body = body if isinstance(body, dict) else {}
     num = str((body or {}).get("number", "")).strip()
     if num and not re.fullmatch(r"\d{4,20}", num):
         raise HTTPException(422, "Type the Service Fusion job number (numbers only).")
