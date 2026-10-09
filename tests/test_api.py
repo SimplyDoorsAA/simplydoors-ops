@@ -2752,3 +2752,19 @@ def test_owners_test_measure_leaves_a_real_lead_alone(client):
     # a real measure still moves it
     assert _measure(client, "tm-msr-0002", [_door()], customer="Rosa Real", lead_id=str(lid)).status_code == 200
     assert conn().execute("SELECT status FROM leads WHERE id=?", (lid,)).fetchone()[0] == "measure_booked"
+
+
+def test_switched_off_staff_form_links_stop_working(client):
+    """A staff member who is switched off: their installed forms and sent links no longer count as trusted."""
+    from app import sends
+    login(client, "Jaime Mendoza", "135790")
+    dv = client.post("/ops/api/intake/device", json={"label": "Truck iPad"}, headers=H).json()
+    dc = dv["url"].split("s=", 1)[1].split("&")[0]
+    assert sends.find(dc) is not None
+    conn().execute("UPDATE staff SET active=0 WHERE name='Jaime Mendoza'")
+    try:
+        assert sends.find(dc) is None
+        _intake(client, "off-staff-lead-1", ip="192.0.2.181", s=dc, name="Still Saved")
+        assert "source" not in json.loads(_lead("off-staff-lead-1")["data"])     # the customer's form still arrives
+    finally:
+        conn().execute("UPDATE staff SET active=1 WHERE name='Jaime Mendoza'")
