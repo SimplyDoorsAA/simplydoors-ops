@@ -556,6 +556,10 @@
         inner = `<fieldset><legend>${ask}</legend>${help}` +
           f.items.map(([k, t]) => `<label class="check"><input type="checkbox" name="${esc(k)}"><span>${esc(t)}</span></label>`).join("") + `</fieldset>`;
         break;
+      case "poreceive":
+        inner = `<label>${ask}</label>${help}<div class="popick"></div>
+          <input type="hidden" name="po_id"><input type="hidden" name="po_lines"><input type="hidden" name="po_snap"><input type="hidden" name="po_none">`;
+        break;
       case "joblookup":
         if (!me.job_lookup) return "";
         inner = `<div class="jl" data-jl="${esc(f.lookup || "install")}"></div><input type="hidden" name="sf_job"><input type="hidden" name="sf_filled">`;
@@ -1152,6 +1156,162 @@
     });
   }
 
+  // ------------------------------------------------------------ Receiving: pick the PO, mark each line
+  // The PO the crew picked is kept in hidden fields (po_id, the PO as loaded in po_snap, the marks in po_lines) so a
+  // draft reopens exactly as it was, even with no signal. Prices never reach the phone.
+  const PO_STATES = [["received", "Received"], ["short", "Short"], ["backordered", "Backordered"]];
+  let poList = null, poQuery = "", poTimer = null;
+  const poEl = () => $(".popick", form);
+  const hid = (n) => form.elements[n];
+  const poSnap = () => { try { return JSON.parse(hid("po_snap").value || "null"); } catch (e) { return null; } };
+  const poMarks = () => { try { return JSON.parse(hid("po_lines").value || "[]"); } catch (e) { return []; } };
+  function setMarks(m) { hid("po_lines").value = JSON.stringify(m); saveDraftSoon(); }
+  function poProblems() {
+    if (!poEl()) return [];
+    if (hid("po_none").value === "1") return [];
+    const snap = poSnap();
+    if (!hid("po_id").value || !snap) return ["Pick the PO (or choose “No PO”)"];
+    const marks = Object.fromEntries(poMarks().map(m => [m.i, m]));
+    let left = 0, badShort = 0;
+    snap.lines.filter(l => l.remaining > 0).forEach(l => {
+      const m = marks[l.i];
+      if (!m || !m.state) left++;
+      else if (m.state === "short" && !(/^\d+$/.test(String(m.got ?? "")) && Number(m.got) < l.remaining)) badShort++;
+    });
+    const out = [];
+    if (left) out.push(`${left} PO line${left > 1 ? "s" : ""} not marked`);
+    if (badShort) out.push(`how many came on ${badShort} short line${badShort > 1 ? "s" : ""}`);
+    return out;
+  }
+  function mountPoPick() {
+    if (!poEl()) return;
+    poList = null; poQuery = "";
+    renderPoPick();
+  }
+  async function loadPoList() {
+    const el = poEl(); if (!el) return;
+    try {
+      poList = await api(`api/receiving/pos?q=${encodeURIComponent(poQuery)}`);
+    } catch (e) {
+      poList = e.status === 0 ? "offline" : [];
+    }
+    if (poEl() === el && !hid("po_id").value && hid("po_none").value !== "1") renderPoPick();
+  }
+  function renderPoPick() {
+    const el = poEl(); if (!el) return;
+    const snap = poSnap();
+    if (hid("po_none").value === "1") {
+      el.innerHTML = `<div class="po-none"><b>No PO picked.</b> Type the job or PO number and customer below.
+        <button type="button" class="link" data-po-undo>Pick a PO instead</button></div>`;
+      return;
+    }
+    if (hid("po_id").value && snap) return renderPoLines(snap);
+    el.innerHTML = `<input type="search" class="po-q" placeholder="Search PO #, customer, vendor…" value="${esc(poQuery)}" autocomplete="off">
+      <div class="po-list">${poList === null ? '<p class="muted small">Loading open POs…</p>'
+        : poList === "offline" ? '<p class="error small">No signal, so the PO list can\'t load. Choose “No PO” and type the number, or try again in a minute.</p>'
+        : !poList.length ? `<p class="muted small">${poQuery ? "No open PO matches." : "No open POs right now."}</p>`
+        : poList.map(p => `<button type="button" class="po-opt" data-po-pick="${p.id}"><b>${esc(p.po_number)}</b>${p.is_test ? ' <span class="pillnote">TEST</span>' : ""}${p.recv_status === "partial" ? ' <span class="pillnote">part came</span>' : ""}
+            <span class="muted small">${esc(p.vendor)} · ${esc(p.job_customer || p.job_number || "no job")} · ${p.lines.filter(l => l.remaining > 0).length} line${p.lines.length === 1 ? "" : "s"} to come</span></button>`).join("")}</div>
+      <button type="button" class="btn secondary" data-po-none>No PO (type the number instead)</button>`;
+    if (poList === null) loadPoList();
+  }
+  function renderPoLines(snap) {
+    const marks = Object.fromEntries(poMarks().map(m => [m.i, m]));
+    const todo = snap.lines.filter(l => l.remaining > 0);
+    const poName = /^po\b/i.test(snap.po_number) ? snap.po_number : "PO " + snap.po_number;
+    poEl().innerHTML = `<div class="po-head"><div><b>${esc(poName)}</b>${snap.is_test ? ' <span class="pillnote">TEST</span>' : ""}<div class="muted small">${esc(snap.vendor)} · ${esc(snap.job_customer || snap.job_number || "no job")}</div></div>
+        <button type="button" class="link" data-po-change>Change</button></div>
+      <div class="okdef-head"><b>What came in?</b><button type="button" class="link" data-po-all>Mark all received</button></div>
+      ${todo.map(l => {
+        const m = marks[l.i] || {};
+        return `<div class="poline${m.state ? "" : " todo"}" data-poline="${l.i}">
+          <div class="po-pic">${l.pic ? `<img src="api/pictures/${l.pic}" alt="" loading="lazy">` : `<button type="button" class="po-addpic" data-po-pic="${l.i}" aria-label="Add a picture of ${esc(l.name)}">+ Picture</button>`}</div>
+          <div class="po-txt"><b>${esc(l.name)}</b><span class="muted small">${l.sku ? esc(l.sku) + " · " : ""}${l.remaining} ${esc(l.uom || "")} to come${l.received ? ` (${l.received} came earlier)` : ""}</span></div>
+          <div class="okbtns po-btns">${PO_STATES.map(([v, t]) => `<label class="${v === "received" ? "" : "bad"}"><input type="radio" name="" data-po-state="${l.i}" value="${v}"${m.state === v ? " checked" : ""}><span>${t}</span></label>`).join("")}</div>
+          ${m.state === "short" ? `<label class="po-got">How many came? <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" data-po-got="${l.i}" value="${esc(m.got ?? "")}" placeholder="0–${l.remaining - 1}"></label>` : ""}
+          </div>`;
+      }).join("") || '<p class="muted small">Everything on this PO has already come in.</p>'}`;
+  }
+  function pickPo(p) {
+    hid("po_id").value = p.id; hid("po_snap").value = JSON.stringify(p); hid("po_none").value = "";
+    setMarks([]);
+    // fill the number and customer the office will search by; still editable
+    const po = form.elements.po, cust = form.elements.customer;
+    if (po && !po.value.trim()) po.value = p.po_number;
+    if (cust && !cust.value.trim() && p.job_customer) cust.value = p.job_customer;
+    renderPoPick(); saveDraftSoon();
+  }
+  form.addEventListener("click", (e) => {
+    if (!poEl() || !poEl().contains(e.target)) return;
+    const t = e.target.closest("[data-po-pick],[data-po-none],[data-po-undo],[data-po-change],[data-po-all],[data-po-pic]");
+    if (!t) return;
+    if (t.dataset.poPick) { const p = (poList || []).find(x => String(x.id) === t.dataset.poPick); if (p) pickPo(p); }
+    else if ("poNone" in t.dataset) { hid("po_none").value = "1"; renderPoPick(); saveDraftSoon(); }
+    else if ("poUndo" in t.dataset || "poChange" in t.dataset) {
+      if ("poChange" in t.dataset && poMarks().length && !confirm("Pick a different PO? The lines you marked will be cleared.")) return;
+      hid("po_none").value = ""; hid("po_id").value = ""; hid("po_snap").value = ""; setMarks([]);
+      poList = null; renderPoPick();
+    } else if ("poAll" in t.dataset) {
+      const snap = poSnap(); if (!snap) return;
+      setMarks(snap.lines.filter(l => l.remaining > 0).map(l => ({ i: l.i, state: "received" })));
+      renderPoLines(snap);
+    } else if (t.dataset.poPic) { poPicLine = Number(t.dataset.poPic); $("#poPicPicker").click(); }
+  });
+  form.addEventListener("change", (e) => {
+    const r = e.target.closest("[data-po-state]");
+    if (!r) return;
+    const i = Number(r.dataset.poState), marks = poMarks().filter(m => m.i !== i);
+    marks.push({ i, state: r.value });
+    setMarks(marks); renderPoLines(poSnap());
+    if (r.value === "short") { const g = $(`[data-po-got="${i}"]`, form); if (g) g.focus(); }
+  });
+  form.addEventListener("input", (e) => {
+    const g = e.target.closest("[data-po-got]");
+    if (!g) return;
+    const i = Number(g.dataset.poGot);
+    setMarks(poMarks().map(m => m.i === i ? { ...m, got: g.value.replace(/\D/g, "") } : m));
+  });
+  form.addEventListener("input", (e) => {
+    if (!e.target.classList.contains("po-q")) return;
+    poQuery = e.target.value.trim();
+    clearTimeout(poTimer);
+    poTimer = setTimeout(async () => {
+      poList = null; await loadPoList();
+      const q = $(".po-q", form); if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
+    }, 300);
+  });
+  // a crew member adds the missing picture for a line; it's saved to the price list for next time
+  let poPicLine = null;
+  $("#poPicPicker").addEventListener("change", async (ev) => {
+    const file = ev.target.files && ev.target.files[0]; ev.target.value = "";
+    const snap = poSnap(), i = poPicLine;
+    if (!file || !snap || i === null) return;
+    const btn = $(`[data-po-pic="${i}"]`, form); if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
+    try {
+      const fd = new FormData();
+      fd.append("po_id", snap.id); fd.append("line", i); fd.append("file", await compress(file), "picture.jpg");
+      const r = await api("api/receiving/pictures", { method: "POST", body: fd });
+      snap.lines.forEach(l => { if (l.i === i) l.pic = r.pic; });
+      hid("po_snap").value = JSON.stringify(snap); saveDraftSoon();
+    } catch (e) {
+      alert(e.status === 0 ? "No signal: the picture wasn't saved. You can add it next time." : e.message);
+    }
+    renderPoLines(poSnap());
+  });
+  // RMA: the vendor comes from the PO when the number matches one
+  form.addEventListener("change", async (e) => {
+    if (!spec || spec.slug !== "rma" || e.target.name !== "po") return;
+    const sel = form.elements.vendor; if (!sel || (sel.value && sel.value !== "Custom")) return;
+    try {
+      const v = (await api(`api/receiving/po-vendor?po=${encodeURIComponent(e.target.value.trim())}`)).vendor;
+      if (!v || sel.value) return;
+      const opt = [...sel.options].find(o => o.value && (o.value.toLowerCase() === v.toLowerCase() || v.toLowerCase().startsWith(o.value.toLowerCase())));
+      if (opt) sel.value = opt.value;
+      else if (form.elements.vendor_custom) { sel.value = "Custom"; form.elements.vendor_custom.value = v; }
+      applyConditions(); saveDraftSoon();
+    } catch (err) { /* offline: they pick it */ }
+  });
+
   function readFields() {
     const f = {};
     for (const el of form.elements) {
@@ -1238,6 +1398,7 @@
     renderTiles();
     setupSignatures();
     mountFormLookup();
+    mountPoPick();
   }
 
   $("#clearBtn").addEventListener("click", async () => {
@@ -1256,6 +1417,11 @@
       const v = vals[f.key];
       if (f.type === "checks") {
         if (f.required) f.items.forEach(([k, t]) => { if (!vals[k]) { const l = form.elements[k].closest("label"); l.classList.add("invalid"); problems.push(t.length > 40 ? t.slice(0, 38) + "…" : t); } });
+        continue;
+      }
+      if (f.type === "poreceive") {
+        const pr = poProblems();
+        if (pr.length) { markDiv(f.key); problems.push(...pr); }
         continue;
       }
       if (f.type === "okdef") {

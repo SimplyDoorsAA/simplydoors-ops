@@ -2589,3 +2589,145 @@ def test_company_goes_with_the_name_everywhere(client):
     # a link in the company box counts as spam, like one in the name
     _intake(client, "company-spam-01", ip="192.0.2.191", company="cheap http://spam.example")
     assert "A link in the name or company" in _lead("company-spam-01")["spam"]
+
+
+# ------------------------------------------------------------------ receiving against a PO, product pictures
+def _make_po(number, lines, vendor="WG", test=0, customer="Rivera"):
+    staff_id = conn().execute("SELECT id FROM staff WHERE name='Adem Atis'").fetchone()[0]
+    cur = conn().execute(
+        "INSERT INTO pl_pos(po_number, vendor, job_number, job_customer, order_date, ship_method, ship_to, lines, total,"
+        " staff_id, sent_to, is_test, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (number, vendor, "10236499077", customer, "2026-10-01", "Delivery", "shop", json.dumps(lines), 999.0,
+         staff_id, "orders@vendor.test", test, "2026-10-01T15:00:00Z"))
+    return cur.lastrowid
+
+
+def _recv(c, sub, po_id, marks, **over):
+    data = {"submission_id": sub, "po": "PO-RCV-1", "customer": "Rivera", "location": "Location B", "sales_notify": "none",
+            "sop_unloaded": "1", "sop_inspected": "1", "sop_entered": "1", "po_id": str(po_id), "po_lines": json.dumps(marks)}
+    data.update(over)
+    files = {"ticket1": ("t1.jpg", jpeg(), "image/jpeg"), "product1": ("p1.jpg", jpeg((20, 120, 20)), "image/jpeg")}
+    return c.post("/ops/api/reports/receiving", data=data, files=files, headers=H)
+
+
+def test_receiving_against_a_po(client):
+    lines = [{"sku": "SL-2868", "name": "2-panel shaker slab", "size": "2/8 x 6/8", "qty": 4, "price": 120.0, "uom": "EA"},
+             {"sku": "HG-35", "name": "Hinge 3.5in", "size": "", "qty": 12, "price": 2.5, "uom": "EA"},
+             {"sku": "", "name": "Casing bundle", "size": "", "qty": 2, "price": 40.0, "uom": "BD"}]
+    po_id = _make_po("PO-RCV-1", lines)
+    login(client, "Jaime Mendoza", "135790")                  # a crew member, no admin
+    # the pick list: open POs, lines with quantities, never prices
+    pos = client.get("/ops/api/receiving/pos?q=PO-RCV").json()
+    po = next(p for p in pos if p["id"] == po_id)
+    assert [(ln["ordered"], ln["remaining"]) for ln in po["lines"]] == [(4, 4), (12, 12), (2, 2)]
+    assert "price" not in json.dumps(po) and "total" not in po and po["vendor"].startswith("Woodgrain")
+    # every line must be marked
+    r = _recv(client, "sub-rcvpo-0001", po_id, [{"i": 0, "state": "received"}])
+    assert r.status_code == 422 and "Mark every PO line" in r.json()["detail"]
+    # short needs a count below what was expected
+    r = _recv(client, "sub-rcvpo-0002", po_id, [{"i": 0, "state": "received"}, {"i": 1, "state": "short", "got": "12"},
+                                                 {"i": 2, "state": "backordered"}])
+    assert r.status_code == 422 and "how many came" in r.json()["detail"]
+    r = _recv(client, "sub-rcvpo-0003", po_id, [{"i": 0, "state": "received"}, {"i": 1, "state": "short", "got": "8"},
+                                                 {"i": 2, "state": "backordered"}])
+    assert r.status_code == 200, r.text
+    receipt = r.json()["receipt"]
+    rep = conn().execute("SELECT id, attention, attention_reason, data FROM reports WHERE receipt=?", (receipt,)).fetchone()
+    assert (rep["attention"], rep["attention_reason"]) == ("open", "Short delivery")
+    assert json.loads(rep["data"])["short"] is True
+    e = conn().execute("SELECT subject FROM emails WHERE report_id=? ORDER BY id LIMIT 1", (rep["id"],)).fetchone()[0]
+    assert e.startswith("SHORT DELIVERY - Receiving Report")
+    st = conn().execute("SELECT received, recv_status FROM pl_pos WHERE id=?", (po_id,)).fetchone()
+    assert json.loads(st["received"]) == {"0": 4, "1": 8, "2": 0} and st["recv_status"] == "partial"
+    # the report shows each line
+    login(client, "Adem Atis", "246810")
+    rows = dict(client.get(f"/ops/api/admin/reports/{rep['id']}").json()["rows"])
+    assert rows["Purchase order"].startswith("PO-RCV-1") and rows["Hinge 3.5in (HG-35)"] == "SHORT: 8 of 12 came"
+    assert rows["Casing bundle"] == "BACKORDERED: 0 of 2"
+    # the rest arrives: only the lines still to come are asked for, and the PO is done
+    login(client, "Jaime Mendoza", "135790")
+    po = next(p for p in client.get("/ops/api/receiving/pos").json() if p["id"] == po_id)
+    assert [ln["remaining"] for ln in po["lines"]] == [0, 4, 2]
+    r = _recv(client, "sub-rcvpo-0004", po_id, [{"i": 1, "state": "received"}, {"i": 2, "state": "received"}])
+    assert r.status_code == 200, r.text
+    rep2 = conn().execute("SELECT attention, data FROM reports WHERE receipt=?", (r.json()["receipt"],)).fetchone()
+    assert rep2["attention"] is None
+    assert conn().execute("SELECT recv_status FROM pl_pos WHERE id=?", (po_id,)).fetchone()[0] == "done"
+    assert all(p["id"] != po_id for p in client.get("/ops/api/receiving/pos").json())      # off the pick list
+    r = _recv(client, "sub-rcvpo-0005", po_id, [])
+    assert r.status_code == 422 and "already received" in r.json()["detail"]
+    # no PO: works as before
+    r = _recv(client, "sub-rcvpo-0006", "", [])
+    assert r.status_code == 200, r.text
+    # the office: PO list shows the state and finds it by search
+    login(client, "Adem Atis", "246810")
+    hits = client.get("/ops/api/pricelist/pos?q=PO-RCV-1").json()
+    assert hits and hits[0]["recv_status"] == "done" and hits[0]["received"] == {"0": 4, "1": 12, "2": 2}
+    assert client.get("/ops/api/pricelist/pos?q=nothing-matches-this").json() == []
+
+
+def test_test_pos_stay_separate_from_real_receiving(client):
+    po_id = _make_po("PO-RCV-TEST", [{"sku": "X1", "name": "Test slab", "qty": 1}], test=1)
+    login(client, "Jaime Mendoza", "135790")
+    assert all(p["id"] != po_id for p in client.get("/ops/api/receiving/pos").json())
+    r = _recv(client, "sub-rcvpo-0101", po_id, [{"i": 0, "state": "received"}])
+    assert r.status_code == 200          # filed, but a real report never touches a test PO
+    assert conn().execute("SELECT recv_status FROM pl_pos WHERE id=?", (po_id,)).fetchone()[0] == ""
+
+
+def test_product_pictures(client):
+    po_id = _make_po("PO-PIC-1", [{"sku": "sl 2868", "name": "Slab", "qty": 2}, {"sku": "", "name": "Casing  Bundle", "qty": 1}])
+    login(client, "Jaime Mendoza", "135790")
+    up = lambda line: client.post("/ops/api/receiving/pictures", data={"po_id": str(po_id), "line": str(line)},  # noqa: E731
+                                  files={"file": ("p.jpg", jpeg(size=(2400, 1600)), "image/jpeg")}, headers=H)
+    r = up(0)
+    assert r.status_code == 200, r.text
+    pid = r.json()["pic"]
+    assert up(0).status_code == 409                               # crews only fill gaps
+    assert up(1).status_code == 200                               # no part #: filed under the description
+    assert client.post("/ops/api/receiving/pictures", data={"po_id": str(po_id), "line": "9"},
+                       files={"file": ("p.jpg", jpeg(), "image/jpeg")}, headers=H).status_code == 404
+    assert client.post("/ops/api/receiving/pictures", data={"po_id": str(po_id), "line": "0"},
+                       files={"file": ("p.jpg", b"not a picture", "image/jpeg")}, headers=H).status_code in (409, 422)
+    img = client.get(f"/ops/api/pictures/{pid}")
+    assert img.status_code == 200 and img.headers["content-type"] == "image/jpeg"
+    assert max(Image.open(io.BytesIO(img.content)).size) == 1200
+    po = next(p for p in client.get("/ops/api/receiving/pos").json() if p["id"] == po_id)
+    assert po["lines"][0]["pic"] == pid and po["lines"][1]["pic"]
+    from app import pricelist as pl
+    assert pl.picture_key("sl 2868") == "SL2868" and pl.picture_key("", "Casing  Bundle") == "name:casing bundle"
+    # signed out: no pictures
+    client.cookies.clear()
+    assert client.get(f"/ops/api/pictures/{pid}").status_code == 401
+    assert conn().execute("SELECT COUNT(*) FROM audit WHERE action='product_picture_added'").fetchone()[0] >= 2
+
+
+def test_rma_vendor_from_po(client):
+    _make_po("PO-RMA-55", [{"sku": "A", "name": "Door", "qty": 1}], vendor="BC")
+    login(client, "Jaime Mendoza", "135790")
+    assert client.get("/ops/api/receiving/po-vendor?po=PO-RMA-55").json()["vendor"] == "Boise Cascade"
+    assert client.get("/ops/api/receiving/po-vendor?po=nope").json()["vendor"] == ""
+
+
+def test_editor_item_picture(client):
+    row = conn().execute("SELECT i.id, i.sku, s.vendor FROM pl_items i JOIN pl_sheets s ON s.id=i.sheet_id"
+                         " WHERE s.active=1 AND i.sku!='' ORDER BY i.id LIMIT 1").fetchone()
+    assert row, "earlier price list tests loaded a sheet"
+    iid = row["id"]
+    login(client, "Jaime Mendoza", "135790")
+    conn().execute("UPDATE staff SET price_list=1, price_edit=0 WHERE name='Jaime Mendoza'")
+    pic = {"file": ("p.jpg", jpeg(), "image/jpeg")}
+    assert client.post(f"/ops/api/pricelist/items/{iid}/picture", files=pic, headers=H).status_code == 403   # viewers can't
+    login(client, "Adem Atis", "246810")
+    r = client.post(f"/ops/api/pricelist/items/{iid}/picture", files=pic, headers=H)
+    assert r.status_code == 200, r.text
+    first = r.json()["pic"]
+    item = next(x for x in client.get(f"/ops/api/pricelist/items?vendor={row['vendor']}").json()["items"] if x["id"] == iid)
+    assert item["pic"] == first
+    path1 = conn().execute("SELECT path FROM pl_pictures WHERE id=?", (first,)).fetchone()[0]
+    r = client.post(f"/ops/api/pricelist/items/{iid}/picture", files={"file": ("p.jpg", jpeg((1, 2, 3)), "image/jpeg")}, headers=H)
+    assert r.json()["pic"] == first and not os.path.exists(path1)          # replaced in place, old file gone
+    assert client.delete(f"/ops/api/pricelist/items/{iid}/picture", headers=H).json()["ok"]
+    assert client.delete(f"/ops/api/pricelist/items/{iid}/picture", headers=H).status_code == 404
+    acts = [a[0] for a in conn().execute("SELECT action FROM audit WHERE action LIKE 'product_picture_%'")]
+    assert {"product_picture_added", "product_picture_replaced", "product_picture_removed"} <= set(acts)

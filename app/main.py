@@ -48,7 +48,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-49"
+APP_VERSION = "stage3-50"
 
 
 @asynccontextmanager
@@ -672,6 +672,8 @@ def _store_report(form_type, spec, staff, submission_id, data, photo_blobs, star
                 shutil.rmtree(tmp, ignore_errors=True)
                 continue
             c.execute("UPDATE reports SET receipt=? WHERE id=?", (receipt, rid))
+            if data.get("po_id") and data.get("po_lines"):      # Receiving against a PO: count what came in
+                pricelist.apply_receiving(c, data["po_id"], data["po_lines"], is_test)
             folder = os.path.join(PHOTO_DIR, str(rid))
             shutil.rmtree(folder, ignore_errors=True)       # only ever a leftover from a report that never saved
             if inside:
@@ -1935,8 +1937,131 @@ def pricelist_tz():
 
 
 @app.get("/api/pricelist/pos")
-def pl_pos(staff=Depends(current_pricelist)):
-    return pricelist.recent_pos()
+def pl_pos(q: str = "", staff=Depends(current_pricelist)):
+    return pricelist.recent_pos(q=q[:80])
+
+
+# ---------------------------------------------------------------- Receiving against a PO, and product pictures
+PICTURE_DIR = os.path.join(PHOTO_DIR, "products")       # inside photos/, so the nightly off-site copy includes them
+
+
+def _owner_test(staff) -> bool:
+    return bool(staff["is_owner"]) and get_setting("owner_test_mode") == "1"
+
+
+@app.get("/api/receiving/pos")
+def receiving_pos(q: str = "", staff=Depends(current_staff)):
+    """Open POs for the Receiving form: PO #, vendor, job and each line's quantity and picture. Never prices, so
+    anyone who can file a Receiving Report may see it."""
+    return pricelist.open_pos_for_receiving(_owner_test(staff), q[:80])
+
+
+@app.get("/api/receiving/po-vendor")
+def receiving_po_vendor(po: str = "", staff=Depends(current_staff)):
+    """The vendor on the PO with this number, for the RMA form ('' if none)."""
+    return {"vendor": pricelist.vendor_for_po_number(po[:60])}
+
+
+@app.get("/api/pictures/{pid}")
+def picture_file(pid: int, staff=Depends(current_staff)):
+    r = pricelist.get_picture(pid)
+    if not r or not os.path.isfile(r["path"]):
+        raise HTTPException(404)
+    return FileResponse(r["path"], media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+
+
+async def _picture_bytes(file) -> bytes:
+    """A product picture from an upload: checked, turned upright, at most 1200 px, as a JPEG."""
+    if file is None or isinstance(file, str):
+        raise HTTPException(400, "Choose a picture first.")
+    b = await file.read(MAX_PHOTO_BYTES + 1)
+    if not b or len(b) > MAX_PHOTO_BYTES:
+        raise HTTPException(400, "That picture is empty or too large (15 MB at most).")
+    if not await run_in_threadpool(_check_photo, b):
+        raise HTTPException(422, "That file couldn't be read as a picture. Take it again.")
+
+    def shrink():
+        with Image.open(io.BytesIO(b), formats=PHOTO_FORMATS) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            im.thumbnail((1200, 1200))
+            out = io.BytesIO()
+            im.save(out, "JPEG", quality=82, optimize=True)
+            return out.getvalue()
+    return await run_in_threadpool(shrink)
+
+
+def _store_picture(vendor: str, key: str, jpeg: bytes, who: str, source: str) -> int:
+    os.makedirs(PICTURE_DIR, exist_ok=True)
+    path = os.path.join(PICTURE_DIR, f"{secrets.token_hex(12)}.jpg")
+    with open(path, "wb") as f:
+        f.write(jpeg)
+    pid, old_path = pricelist.set_picture(vendor, key, path, who, source)
+    if old_path and old_path != path:
+        try:
+            os.remove(old_path)
+        except OSError:
+            pass
+    return pid
+
+
+@app.post("/api/receiving/pictures")
+async def receiving_add_picture(request: Request, staff=Depends(current_staff)):
+    """A crew member adds the missing picture for a line on the PO they're receiving. Only fills gaps: a line that
+    already has a picture keeps it (editors replace pictures in the Price List)."""
+    require_app_header(request)
+    async with request.form() as form:
+        try:
+            po_id, line = int(str(form.get("po_id", ""))), int(str(form.get("line", "")))
+        except ValueError:
+            raise HTTPException(400, "Pick the PO line first.") from None
+        r = pricelist.get_po(po_id)
+        lines = json.loads(r["lines"]) if r else []
+        if not r or not 0 <= line < len(lines) or bool(r["is_test"]) != _owner_test(staff):
+            raise HTTPException(404, "That PO line wasn't found.")
+        key = pricelist.picture_key(lines[line].get("sku"), lines[line].get("name"))
+        if not key:
+            raise HTTPException(400, "This line has no part # or description to file a picture under.")
+        if pricelist.find_picture(r["vendor"], key):
+            raise HTTPException(409, "This item already has a picture.")
+        jpeg = await _picture_bytes(form.get("file"))
+    pid = _store_picture(r["vendor"], key, jpeg, staff["name"], "receiving")
+    audit(staff["id"], staff["name"], "product_picture_added", f"{r['vendor']}: {key}",
+          {"po": r["po_number"], "from": "receiving"}, client_ip(request), ua(request))
+    return {"ok": True, "pic": pid}
+
+
+@app.post("/api/pricelist/items/{iid}/picture")
+async def pl_item_picture(iid: int, request: Request, staff=Depends(current_pricelist_editor)):
+    require_app_header(request)
+    d = pricelist.get_item(iid)
+    if not d:
+        raise HTTPException(404, "That item isn't on a live sheet any more.")
+    key = pricelist.picture_key(d["sku"], d["name"])
+    async with request.form() as form:
+        jpeg = await _picture_bytes(form.get("file"))
+    replaced = bool(pricelist.find_picture(d["vendor"], key))
+    pid = _store_picture(d["vendor"], key, jpeg, staff["name"], "editor")
+    audit(staff["id"], staff["name"], "product_picture_replaced" if replaced else "product_picture_added",
+          f"{_vendor(d['vendor'])['name']}: {d['sku']}", {"item": d["name"], "from": "price list"}, client_ip(request), ua(request))
+    return {"ok": True, "pic": pid}
+
+
+@app.delete("/api/pricelist/items/{iid}/picture")
+def pl_item_picture_delete(iid: int, request: Request, staff=Depends(current_pricelist_editor)):
+    require_app_header(request)
+    d = pricelist.get_item(iid)
+    if not d:
+        raise HTTPException(404, "That item isn't on a live sheet any more.")
+    old = pricelist.remove_picture(d["vendor"], pricelist.picture_key(d["sku"], d["name"]))
+    if not old:
+        raise HTTPException(404, "This item has no picture.")
+    try:
+        os.remove(old["path"])
+    except OSError:
+        pass
+    audit(staff["id"], staff["name"], "product_picture_removed", f"{_vendor(d['vendor'])['name']}: {d['sku']}",
+          {"item": d["name"]}, client_ip(request), ua(request))
+    return {"ok": True}
 
 
 def _po_or_404(pid: int):
