@@ -1074,9 +1074,12 @@
     const body = { channel, first_name: $("#sFirst").value.trim(), company: $("#sCompany").value.trim(), phone: $("#sPhone").value.trim(), email: $("#sEmail").value.trim() };
     if (channel === "email_sent" && !body.email) return sErr("Type their email to send it from SimplyDoors.");
     sErr("");
+    if (b.disabled) return;
+    b.disabled = true;   // a double tap would make two links (or email the customer twice)
     let r;
     try { r = await api("api/intake/sends", { method: "POST", json: body }); }
     catch (e) { return sErr(e.status === 0 ? "No signal right now. Try again in a moment." : e.message); }
+    finally { b.disabled = false; }
     if (channel === "text") location.href = `sms:${encodeURIComponent(body.phone.replace(/[^\d+]/g, ""))}?&body=${encodeURIComponent(r.message)}`;
     else if (channel === "email_app") location.href = `mailto:${encodeURIComponent(body.email)}?subject=${encodeURIComponent(r.subject)}&body=${encodeURIComponent(r.message)}`;
     else if (channel === "in_person") { location.href = r.in_person; return; }
