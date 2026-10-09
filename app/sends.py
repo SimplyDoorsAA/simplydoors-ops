@@ -87,7 +87,7 @@ def find(code: str):
         return None
     r = conn().execute("SELECT s.*, st.name AS staff_name, st.active AS staff_active FROM intake_sends s"
                        " JOIN staff st ON st.id=s.staff_id WHERE s.code=?", (code,)).fetchone()
-    if not r or not r["active"]:
+    if not r or not r["active"] or not r["staff_active"]:   # a switched-off staff member's links and devices stop too
         return None
     if r["channel"] == "in_person" and r["created_at"] < _iso(datetime.now(timezone.utc) - timedelta(hours=IN_PERSON_HOURS)):
         return None
