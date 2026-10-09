@@ -48,7 +48,7 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_REQUEST_BYTES = 150 * 1024 * 1024   # a big measure job can carry 100+ photos
-APP_VERSION = "stage3-48"
+APP_VERSION = "stage3-49"
 
 
 @asynccontextmanager
@@ -658,11 +658,12 @@ def _store_report(form_type, spec, staff, submission_id, data, photo_blobs, star
         rid = None
         try:
             c.execute("BEGIN IMMEDIATE")
+            reason = forms_mod.needs_attention(form_type, data)
             cur = c.execute(
-                "INSERT INTO reports(submission_id, form_type, staff_id, submitted_at, started_at, queued_on_phone, data, is_test)"
-                " VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO reports(submission_id, form_type, staff_id, submitted_at, started_at, queued_on_phone, data, is_test,"
+                " attention, attention_reason) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (submission_id, form_type, staff["id"], now_iso(), started_at, queued, json.dumps(data, ensure_ascii=False),
-                 1 if is_test else 0))
+                 1 if is_test else 0, "open" if reason else None, reason))
             rid = cur.lastrowid
             receipt = _next_receipt(c, pre)
             if want and receipt != want:          # someone else got that number first: stamp again
@@ -1039,9 +1040,13 @@ def admin_reports(request: Request, admin=Depends(current_admin)):
     if p.get("q"):
         where.append("(r.receipt LIKE ? OR s.name LIKE ? OR r.data LIKE ?)")
         args += [f"%{p['q']}%"] * 3
+    if p.get("attention") in ("open", "resolved"):      # the "Needs attention" filter
+        where.append("r.attention=?")
+        args.append(p["attention"])
     w = (" WHERE " + " AND ".join(where)) if where else ""
     rows = conn().execute(
         f"SELECT r.id, r.receipt, r.form_type, r.submitted_at, r.queued_on_phone, r.is_test, s.name AS staff_name, r.data,"
+        f" r.attention, r.attention_reason, r.resolved_at, r.resolved_by,"
         f" (SELECT status FROM emails e WHERE e.report_id=r.id ORDER BY e.id DESC LIMIT 1) AS email_status,"
         f" (SELECT COUNT(*) FROM photos p WHERE p.report_id=r.id AND COALESCE(p.geo_status,'missing') NOT IN ('ok','signature')) AS no_geo"
         f" FROM reports r JOIN staff s ON s.id=r.staff_id{w} ORDER BY r.id DESC LIMIT 300", args).fetchall()
@@ -1049,9 +1054,166 @@ def admin_reports(request: Request, admin=Depends(current_admin)):
     for r in rows:
         d = json.loads(r["data"])
         summary = forms_mod.summary(r["form_type"], d)
-        out.append({k: r[k] for k in ("id", "receipt", "form_type", "submitted_at", "queued_on_phone",
-                                      "staff_name", "email_status", "no_geo")} | {"summary": summary, "is_test": bool(r["is_test"])})
+        out.append({k: r[k] for k in ("id", "receipt", "form_type", "submitted_at", "queued_on_phone", "staff_name", "email_status",
+                                      "no_geo", "attention", "attention_reason", "resolved_at", "resolved_by")}
+                   | {"summary": summary, "is_test": bool(r["is_test"])})
     return out
+
+
+@app.get("/api/admin/attention")
+def admin_attention_count(admin=Depends(current_admin)):
+    """How many flagged reports are still open (for the badge on the Reports tab). Test reports don't count."""
+    n = conn().execute("SELECT COUNT(*) FROM reports WHERE attention='open' AND is_test=0").fetchone()[0]
+    return {"open": n}
+
+
+class ResolveBody(BaseModel):
+    note: str = ""
+
+
+@app.post("/api/admin/reports/{rid}/resolve")
+def admin_resolve_report(rid: int, body: ResolveBody, request: Request, admin=Depends(current_admin)):
+    """Closes out a flagged report. The note is what was done ("brake light replaced"), and it's required: a
+    resolved item with no note tells the next person nothing."""
+    note = " ".join(body.note.split())[:500]
+    if not note:
+        raise HTTPException(400, "Say what was done, in a few words, before marking it resolved.")
+    c = conn()
+    r = c.execute("SELECT receipt, attention FROM reports WHERE id=?", (rid,)).fetchone()
+    if not r:
+        raise HTTPException(404)
+    if not r["attention"]:
+        raise HTTPException(400, "This report was never flagged, so there's nothing to resolve.")
+    if r["attention"] == "resolved":
+        raise HTTPException(400, "This report is already resolved.")
+    c.execute("UPDATE reports SET attention='resolved', resolved_at=?, resolved_by=?, resolved_note=? WHERE id=?",
+              (now_iso(), admin["name"], note, rid))
+    audit(admin["id"], admin["name"], "report_resolved", f"report:{rid}", {"receipt": r["receipt"], "note": note},
+          client_ip(request), ua(request))
+    return {"ok": True}
+
+
+@app.post("/api/admin/reports/{rid}/reopen")
+def admin_reopen_report(rid: int, request: Request, admin=Depends(current_admin)):
+    """Puts a resolved report back on the Needs attention list (marked resolved by mistake, or the fix didn't hold)."""
+    c = conn()
+    r = c.execute("SELECT receipt, attention, resolved_note FROM reports WHERE id=?", (rid,)).fetchone()
+    if not r:
+        raise HTTPException(404)
+    if r["attention"] != "resolved":
+        raise HTTPException(400, "Only a resolved report can be reopened.")
+    c.execute("UPDATE reports SET attention='open', resolved_at=NULL, resolved_by=NULL, resolved_note=NULL WHERE id=?", (rid,))
+    audit(admin["id"], admin["name"], "report_reopened", f"report:{rid}", {"receipt": r["receipt"], "was": r["resolved_note"]},
+          client_ip(request), ua(request))
+    return {"ok": True}
+
+
+def backfill_attention():
+    """One-time, on the first start after this feature: flagged reports from the last 30 days go on the Needs
+    attention list, so nothing recent is lost in the switch-over. Older ones are left alone (handled by now, or
+    not worth reopening). Admins mark the already-handled ones resolved with a note."""
+    if get_setting("attention_backfill_due") != "1":
+        return
+    c = conn()
+    since = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    n = 0
+    for r in c.execute("SELECT id, form_type, data FROM reports WHERE attention IS NULL AND submitted_at>=?", (since,)).fetchall():
+        reason = forms_mod.needs_attention(r["form_type"], json.loads(r["data"]))
+        if reason:
+            c.execute("UPDATE reports SET attention='open', attention_reason=? WHERE id=?", (reason, r["id"]))
+            n += 1
+    set_setting("attention_backfill_due", "0")
+    audit(None, "system", "attention_backfilled", None, {"opened": n, "since": since})
+
+
+def open_attention(min_age_hours: float = 0):
+    """Flagged reports still open (never test ones), oldest first; optionally only those open longer than a cutoff."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=min_age_hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return conn().execute(
+        "SELECT r.id, r.receipt, r.form_type, r.attention_reason, r.submitted_at, r.data, s.name AS staff_name"
+        " FROM reports r JOIN staff s ON s.id=r.staff_id WHERE r.attention='open' AND r.is_test=0 AND r.submitted_at<=?"
+        " ORDER BY r.id", (cutoff,)).fetchall()
+
+
+@app.get("/api/admin/vehicles")
+def admin_vehicles(admin=Depends(current_admin)):
+    """One card per truck: open defects, items that keep failing, the last inspection and odometer reading.
+    Built from Vehicle Inspection and Vehicle Incident reports of the last 180 days (test reports left out)."""
+    since = (datetime.now(timezone.utc) - timedelta(days=180)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    repeat_since = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows = conn().execute(
+        "SELECT r.id, r.receipt, r.form_type, r.submitted_at, r.attention, r.data, s.name AS staff_name FROM reports r"
+        " JOIN staff s ON s.id=r.staff_id WHERE r.form_type IN ('Vehicle Inspection','Vehicle Incident') AND r.is_test=0"
+        " AND r.submitted_at>=? ORDER BY r.id DESC", (since,)).fetchall()
+    cards: dict[str, dict] = {}
+
+    def card(name):
+        return cards.setdefault(name, {"vehicle": name, "last_inspection": None, "last_odometer": None, "open_defects": [],
+                                       "open_incidents": [], "repeat_items": [], "inspections": 0, "_fails": {}})
+    for r in rows:
+        d = json.loads(r["data"])
+        v = (d.get("vehicle") or "").strip() or "(no vehicle given)"
+        c = card(v)
+        if r["form_type"] == "Vehicle Incident":
+            if r["attention"] == "open":
+                c["open_incidents"].append({"id": r["id"], "receipt": r["receipt"], "when": r["submitted_at"], "by": r["staff_name"]})
+            continue
+        c["inspections"] += 1
+        if c["last_inspection"] is None:          # rows are newest first
+            c["last_inspection"] = {"id": r["id"], "receipt": r["receipt"], "when": r["submitted_at"], "by": r["staff_name"],
+                                    "trip": d.get("trip"), "defective": bool(d.get("defective"))}
+        try:
+            odo = int(float(d.get("odometer")))
+        except (TypeError, ValueError):
+            odo = None
+        if odo is not None and (c["last_odometer"] is None or c["last_odometer"]["when"] < r["submitted_at"]):
+            c["last_odometer"] = {"reading": odo, "when": r["submitted_at"]}
+        bad = [k for k, val in (d.get("items") or {}).items() if val == "Defective"]
+        if r["attention"] == "open" and bad:
+            c["open_defects"].append({"id": r["id"], "receipt": r["receipt"], "when": r["submitted_at"], "by": r["staff_name"],
+                                      "items": bad, "remarks": d.get("remarks") or ""})
+        if r["submitted_at"] >= repeat_since:
+            for k in bad:
+                c["_fails"][k] = c["_fails"].get(k, 0) + 1
+    for name in forms_mod.get_list("vehicles"):     # trucks with no reports yet still get a card
+        card(name)
+    out = []
+    for c in cards.values():
+        c["repeat_items"] = sorted(({"item": k, "times": n} for k, n in c.pop("_fails").items() if n >= 2),
+                                   key=lambda x: -x["times"])
+        out.append(c)
+    out.sort(key=lambda c: (-(len(c["open_defects"]) + len(c["open_incidents"])), c["vehicle"].lower()))
+    return out
+
+
+ATTENTION_ALERT_HOUR = 17      # 5 pm local, Monday to Saturday
+
+
+def attention_alert_once(local_now=None):
+    """Once per work day after 5 pm: one phone alert to the owner if anything flagged has been open over 24 hours.
+    Silent when the list is clear. Runs from the 10-minute nightly loop, so 'once' is kept in settings."""
+    local_now = local_now or datetime.now(geo.TZ)
+    if local_now.hour < ATTENTION_ALERT_HOUR or local_now.weekday() == 6:
+        return False
+    day = local_now.strftime("%Y-%m-%d")
+    if get_setting("attention_alert_day") == day:
+        return False
+    set_setting("attention_alert_day", day)
+    rows = open_attention(min_age_hours=24)
+    if not rows:
+        return False
+    by_reason: dict[str, int] = {}
+    for r in rows:
+        by_reason[r["attention_reason"] or "flagged report"] = by_reason.get(r["attention_reason"] or "flagged report", 0) + 1
+    parts = ", ".join(f"{n} {reason.lower()}{'' if n == 1 else 's'}" for reason, n in by_reason.items())
+    oldest = rows[0]
+    days = max(1, int((datetime.now(timezone.utc) - datetime.strptime(oldest["submitted_at"], "%Y-%m-%dT%H:%M:%SZ")
+                       .replace(tzinfo=timezone.utc)).total_seconds() // 86400))
+    msg = (f"{len(rows)} item{'s' if len(rows) != 1 else ''} need attention: {parts}. "
+           f"Oldest: {oldest['receipt']} ({oldest['attention_reason']}), {days} day{'s' if days != 1 else ''} old. "
+           f"Admin > Reports > Needs attention.")
+    alerts.push("Ops app: items need attention", msg, "default", click=f"{leads.OPS_URL}/admin#attention")
+    return True
 
 
 @app.get("/api/admin/reports/{rid}")
@@ -1076,6 +1238,8 @@ def admin_report(rid: int, request: Request, admin=Depends(current_admin)):
         "id": r["id"], "receipt": r["receipt"], "form_type": r["form_type"], "staff_name": r["staff_name"],
         "submitted_at": r["submitted_at"], "started_at": r["started_at"], "queued_on_phone": r["queued_on_phone"],
         "is_test": bool(r["is_test"]),
+        "attention": r["attention"], "attention_reason": r["attention_reason"], "resolved_at": r["resolved_at"],
+        "resolved_by": r["resolved_by"], "resolved_note": r["resolved_note"],
         "rows": display_rows(r["form_type"], data),
         "photos": [{"id": p["id"], "slot": p["slot"], "label": labels.get(p["slot"], p["slot"]),
                     "located": p["geo_status"] in ("ok", "signature"), "signature": p["geo_status"] == "signature",
@@ -2476,6 +2640,7 @@ def _nightly_work():
     c.execute("DELETE FROM ip_failures WHERE at < ?", (cutoff,))
     c.execute("DELETE FROM sessions WHERE expires_at < ?", (now_iso(),))
     auth.tidy_devices()
+    attention_alert_once(local_now)
     leads.tidy(c)
     for f in os.listdir(PHOTO_DIR) if os.path.isdir(PHOTO_DIR) else []:   # photos of an upload cut off mid-save
         p = os.path.join(PHOTO_DIR, f)
@@ -2508,6 +2673,7 @@ def nightly():
 def startup():
     os.makedirs(PHOTO_DIR, exist_ok=True)
     init_db()
+    backfill_attention()
     sfjobs.init()
     audit(None, "system", "app_started", None, {"version": APP_VERSION})
     mailer.start_worker()

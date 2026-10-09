@@ -34,6 +34,18 @@ GitHub Pages portal + Google Apps Script, one form at a time.
   Service Fusion. The customer's copy never shows it.
 - Key: `SF_CLIENT_ID` / `SF_CLIENT_SECRET` in `~/ai-server/opsapp/.env`, saved by `deploy/sf-setup.sh`. Health: Admin → Status.
 
+## Needs attention (flagged reports)
+
+- A report is **flagged** when an installer ticks a follow-up answer on Installation Completion (NEEDS FOLLOW-UP), a Vehicle Inspection
+  has a Defective item, or it's a Vehicle or Employee Incident. Flagged reports show a red badge in Admin → Reports and stay **open**
+  until an admin marks them **resolved** with a short note of what was done (who and when go in the activity log). "Reopen" puts one back.
+- Filter: Admin → Reports → **Needs attention**. The red number on the Reports tab is how many are open (test reports never count).
+- **Admin → Vehicles:** one card per truck from the last 6 months of inspections and incidents: open defects, items that failed more
+  than once in 90 days, the last inspection and odometer reading.
+- **5 pm alert:** Monday to Saturday after 5 pm, one phone alert to the owner if anything flagged has been open more than 24 hours.
+  Nothing is sent when the list is clear. Tapping it opens Admin → Reports with the Needs attention filter on.
+- First start after this update: flagged reports from the previous 30 days are opened too, so mark the ones already handled resolved.
+
 ## Price List (beta)
 
 - A **Price List** tile (marked BETA) on the home screen opens vendor net costs, a buy list and purchase orders: `/ops/pricelist`.

@@ -209,6 +209,14 @@ def init_db() -> None:
     rcols = {r[1] for r in c.execute("PRAGMA table_info(reports)")}
     if "is_test" not in rcols:
         c.execute("ALTER TABLE reports ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0")
+    if "attention" not in rcols:
+        # "Needs attention": a flagged report (install follow-up, defective vehicle, incident) is 'open' until an
+        # admin marks it 'resolved' with a note. NULL = nothing to follow up. Filled in by the app for new reports;
+        # reports from the last 30 days that were flagged before this existed are opened too (main.backfill_attention).
+        for col, typ in (("attention", "TEXT"), ("attention_reason", "TEXT"), ("resolved_at", "TEXT"),
+                         ("resolved_by", "TEXT"), ("resolved_note", "TEXT")):
+            c.execute(f"ALTER TABLE reports ADD COLUMN {col} {typ}")
+        c.execute("INSERT OR IGNORE INTO settings(key, value) VALUES ('attention_backfill_due', '1')")
     cols = {r[1] for r in c.execute("PRAGMA table_info(staff)")}
     pcols = {r[1] for r in c.execute("PRAGMA table_info(photos)")}
     for col, typ in (("taken_at", "TEXT"), ("lat", "REAL"), ("lon", "REAL"), ("acc", "REAL"),

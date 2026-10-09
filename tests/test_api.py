@@ -529,6 +529,131 @@ def test_inspection_defective_routing(client):
     assert client.post("/ops/api/reports/inspection", data=partial, headers=H).status_code == 422
 
 
+def test_needs_attention_open_resolve_reopen(client):
+    """A flagged report (defective truck) sits on the Needs attention list until an admin resolves it with a note."""
+    login(client, "Adem Atis", "246810")
+    first = next(iter(_ok_items()))
+    bad = {"submission_id": "sub-att-0001", "trip": "Pre-Trip", "vehicle": "Small Truck", "odometer": "50100",
+           "remarks": "Left brake light out", **_ok_items(**{first: "Defective"})}
+    rc = client.post("/ops/api/reports/inspection", data=bad, headers=H).json()["receipt"]
+    rid = conn().execute("SELECT id FROM reports WHERE receipt=?", (rc,)).fetchone()[0]
+    row = conn().execute("SELECT attention, attention_reason FROM reports WHERE id=?", (rid,)).fetchone()
+    assert (row["attention"], row["attention_reason"]) == ("open", "Defective vehicle")
+    # a clean inspection isn't flagged at all
+    rc2 = client.post("/ops/api/reports/inspection", data={**bad, "submission_id": "sub-att-0002", "remarks": "", **_ok_items()},
+                      headers=H).json()["receipt"]
+    ok_id = conn().execute("SELECT id FROM reports WHERE receipt=?", (rc2,)).fetchone()[0]
+    assert conn().execute("SELECT attention FROM reports WHERE id=?", (ok_id,)).fetchone()[0] is None
+    assert client.post(f"/ops/api/admin/reports/{ok_id}/resolve", json={"note": "x"}, headers=H).status_code == 400
+    # the list filter and the count
+    ids = [r["id"] for r in client.get("/ops/api/admin/reports?attention=open").json()]
+    assert rid in ids and ok_id not in ids
+    assert client.get("/ops/api/admin/attention").json()["open"] >= 1
+    d = client.get(f"/ops/api/admin/reports/{rid}").json()
+    assert d["attention"] == "open" and d["attention_reason"] == "Defective vehicle"
+    # resolving needs a note
+    r = client.post(f"/ops/api/admin/reports/{rid}/resolve", json={"note": "   "}, headers=H)
+    assert r.status_code == 400 and "Say what was done" in r.json()["detail"]
+    assert client.post(f"/ops/api/admin/reports/{rid}/resolve", json={"note": "Brake light replaced 10/9"}, headers=H).status_code == 200
+    d = client.get(f"/ops/api/admin/reports/{rid}").json()
+    assert d["attention"] == "resolved" and d["resolved_by"] == "Adem Atis" and d["resolved_note"] == "Brake light replaced 10/9"
+    assert client.post(f"/ops/api/admin/reports/{rid}/resolve", json={"note": "again"}, headers=H).status_code == 400
+    assert rid in [r["id"] for r in client.get("/ops/api/admin/reports?attention=resolved").json()]
+    assert conn().execute("SELECT COUNT(*) FROM audit WHERE action='report_resolved' AND target=?", (f"report:{rid}",)).fetchone()[0] == 1
+    # and back again
+    assert client.post(f"/ops/api/admin/reports/{rid}/reopen", headers=H).status_code == 200
+    assert conn().execute("SELECT attention, resolved_note FROM reports WHERE id=?", (rid,)).fetchone()[:] == ("open", None)
+    # crews can't touch it
+    login(client, "Jaime Mendoza", "135790")
+    assert client.post(f"/ops/api/admin/reports/{rid}/resolve", json={"note": "x"}, headers=H).status_code == 403
+    assert client.get("/ops/api/admin/vehicles").status_code == 403
+
+
+def test_install_follow_up_and_incidents_are_flagged(client):
+    login(client, "Adem Atis", "246810")
+    photos = {"after1": ("a.jpg", jpeg(), "image/jpeg"), "after2": ("b.jpg", jpeg((1, 2, 3)), "image/jpeg")}
+    base = {"po": "4321", "customer": "Ortiz", "work": "Yes", "walkthrough": "Yes"}
+
+    def flag(receipt):
+        return conn().execute("SELECT attention, attention_reason FROM reports WHERE receipt=?", (receipt,)).fetchone()[:]
+    # a clean install isn't flagged; one the customer didn't sign is
+    sig = io.BytesIO(); Image.new("RGBA", (600, 200), (0, 0, 0, 0)).save(sig, "PNG")
+    r = client.post("/ops/api/reports/install", data={**base, "submission_id": "sub-flag-0001", "cust_present": "Yes", "signer": "A Ortiz"},
+                    files={**photos, "sig": ("s.png", sig.getvalue(), "image/png")}, headers=H)
+    assert r.status_code == 200, r.text
+    assert flag(r.json()["receipt"]) == (None, None)
+    r = client.post("/ops/api/reports/install", data={**base, "submission_id": "sub-flag-0002", "cust_present": "No", "no_sign_reason": "Not home"},
+                    files=photos, headers=H)
+    assert r.status_code == 200, r.text
+    assert flag(r.json()["receipt"]) == ("open", "Install follow-up")
+    # incidents are always flagged
+    r = client.post("/ops/api/reports/vincident", data={"submission_id": "sub-flag-0003", "vehicle": "Big Truck", "date": "2026-10-09",
+                    "time": "08:15", "location": "I-10 at Huebner", "police": "No", "other_vehicle": "No", "description": "Scraped a post"},
+                    headers=H)
+    assert r.status_code == 200, r.text
+    assert flag(r.json()["receipt"]) == ("open", "Vehicle incident")
+    r = client.post("/ops/api/reports/incident", data={"submission_id": "sub-flag-0004", "department": "Warehouse", "supervisor": "Paz",
+                    "date": "2026-10-09", "time": "09:00", "location": "Dock 2", "description": "Slipped", "action": "First aid",
+                    "root_cause": "Wet floor", "prevent": "Mat"}, headers=H)
+    assert r.status_code == 200, r.text
+    assert flag(r.json()["receipt"]) == ("open", "Employee incident")
+
+
+def test_vehicles_page(client):
+    login(client, "Adem Atis", "246810")
+    first = next(iter(_ok_items()))
+    # a second defective report on the same item makes it a repeat offender; the newer odometer wins
+    bad = {"submission_id": "sub-veh-0001", "trip": "Post-Trip", "vehicle": "Small Truck", "odometer": "50240",
+           "remarks": "Still out", **_ok_items(**{first: "Defective"})}
+    assert client.post("/ops/api/reports/inspection", data=bad, headers=H).status_code == 200
+    cards = client.get("/ops/api/admin/vehicles").json()
+    names = [c["vehicle"] for c in cards]
+    assert {"Small Truck", "Big Truck", "Sprinter Van"} <= set(names)       # trucks with no reports still get a card
+    small = next(c for c in cards if c["vehicle"] == "Small Truck")
+    assert small["last_odometer"]["reading"] == 50240 and small["last_inspection"]["trip"] == "Post-Trip"
+    assert len(small["open_defects"]) >= 2 and all(d["items"] for d in small["open_defects"])
+    assert small["repeat_items"] and small["repeat_items"][0]["times"] >= 2
+    opens = [len(c["open_defects"]) + len(c["open_incidents"]) for c in cards]
+    assert opens == sorted(opens, reverse=True) and opens[0] >= 2      # most open items first
+
+
+def test_attention_alert_once_a_day_after_five(client, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from app import alerts, geo, main as m
+    from app.db import set_setting
+    pushed = []
+    monkeypatch.setattr(alerts, "push", lambda title, msg, priority="default", click="": pushed.append(msg))
+    set_setting("attention_alert_day", "")
+    # nothing open for 24 hours yet: quiet
+    assert m.attention_alert_once(datetime(2026, 10, 9, 17, 5, tzinfo=geo.TZ)) is False and pushed == []
+    # age one open item two days, plus a test report that must not count
+    rid = conn().execute("SELECT id FROM reports WHERE attention='open' AND is_test=0 ORDER BY id LIMIT 1").fetchone()[0]
+    old = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    conn().execute("UPDATE reports SET submitted_at=? WHERE id=?", (old, rid))
+    receipt = conn().execute("SELECT receipt FROM reports WHERE id=?", (rid,)).fetchone()[0]
+    set_setting("attention_alert_day", "")
+    assert m.attention_alert_once(datetime(2026, 10, 9, 16, 59, tzinfo=geo.TZ)) is False      # before 5 pm
+    assert m.attention_alert_once(datetime(2026, 10, 11, 18, 0, tzinfo=geo.TZ)) is False      # Sunday
+    assert m.attention_alert_once(datetime(2026, 10, 9, 17, 5, tzinfo=geo.TZ)) is True
+    assert len(pushed) == 1 and "need attention" in pushed[0] and receipt in pushed[0] and "2 days old" in pushed[0]
+    assert m.attention_alert_once(datetime(2026, 10, 9, 18, 5, tzinfo=geo.TZ)) is False      # once a day
+    assert len(pushed) == 1
+
+
+def test_attention_backfill_opens_recent_flagged_reports(client):
+    from app import main as m
+    from app.db import set_setting
+    rid = conn().execute("SELECT id FROM reports WHERE attention='open' ORDER BY id LIMIT 1").fetchone()[0]
+    conn().execute("UPDATE reports SET attention=NULL, attention_reason=NULL WHERE id=?", (rid,))
+    set_setting("attention_backfill_due", "1")
+    m.backfill_attention()
+    assert conn().execute("SELECT attention FROM reports WHERE id=?", (rid,)).fetchone()[0] == "open"
+    conn().execute("UPDATE reports SET attention=NULL WHERE id=?", (rid,))
+    m.backfill_attention()                       # one-time: a second start does nothing
+    assert conn().execute("SELECT attention FROM reports WHERE id=?", (rid,)).fetchone()[0] is None
+    conn().execute("UPDATE reports SET attention='open' WHERE id=?", (rid,))
+
+
 def test_disciplinary_goes_to_employee_and_is_confidential(client):
     login(client, "Adem Atis", "246810")
     data = {"submission_id": "sub-dsc-0001", "target": _sid("Jaime Mendoza"), "level": "First Written Warning",

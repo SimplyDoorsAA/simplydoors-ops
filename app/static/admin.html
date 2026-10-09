@@ -19,7 +19,8 @@
   <div id="gate" class="hidden"><h1>Admins only</h1><p>Sign in on the <a href="./">staff app</a> first, then come back here.</p></div>
   <div id="ui" class="hidden">
     <nav class="tabs" role="tablist">
-      <button data-tab="reports" class="active">Reports</button>
+      <button data-tab="reports" class="active">Reports <span class="badge bad hidden" id="attnCount" title="Open items on the Needs attention list"></span></button>
+      <button data-tab="vehicles">Vehicles</button>
       <button data-tab="log">Activity log</button>
       <button data-tab="staff">Staff &amp; PINs</button>
       <button data-tab="rules">Email lists</button>
@@ -32,8 +33,18 @@
       <div class="filters">
         <input id="repQ" type="search" placeholder="Search receipt, name, PO, customer…">
         <select id="repForm"><option value="">All forms</option></select>
+        <select id="repAttn" title="Flagged reports: install follow-ups, defective vehicles and incidents">
+          <option value="">Everything</option>
+          <option value="open">Needs attention</option>
+          <option value="resolved">Resolved</option>
+        </select>
       </div>
       <div id="repList"></div>
+    </section>
+
+    <section data-panel="vehicles" class="hidden">
+      <p class="muted small">One card per truck, from the last 6 months of vehicle inspections and incidents. Open defects are closed out on the report itself (Reports → Needs attention → Mark resolved).</p>
+      <div id="vehList"></div>
     </section>
 
     <section data-panel="log" class="hidden">

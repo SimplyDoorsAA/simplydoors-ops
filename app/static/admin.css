@@ -63,3 +63,13 @@ html, body { overflow-x: hidden; }
 .rule.mine { border-color: var(--green); background: #fbfdf8; }
 #myCopies { margin: 8px 0; }
 td.ck { width: 34px; } td.ck input { width: 22px; height: 22px; }
+
+/* Needs attention: the resolve box on a flagged report, and the Vehicles cards */
+.rule.attn.open { border-color: var(--red); }
+.rule.attn textarea { width: 100%; min-height: 60px; margin: 8px 0; font-size: 15px; }
+.rule.attn .note { margin: 6px 0 10px; white-space: pre-wrap; }
+.tabs .badge { margin-left: 4px; vertical-align: middle; }
+.vehcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.rule.veh { margin: 0; } .rule.veh.open { border-color: var(--red); }
+.rule.veh .vline { margin: 10px 0 0; font-size: 14px; line-height: 1.4; }
+.rule.veh a { color: inherit; }
