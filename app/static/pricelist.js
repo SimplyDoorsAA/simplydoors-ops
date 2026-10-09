@@ -12,7 +12,7 @@
     try {
       r = await fetch(path, { credentials: "same-origin", ...opts,
         headers: { "X-SD-App": "1", ...(opts.json ? { "Content-Type": "application/json" } : {}) },
-        body: opts.json ? JSON.stringify(opts.json) : undefined });
+        body: opts.json ? JSON.stringify(opts.json) : opts.body });
     } catch (e) { const err = new Error("No signal right now. Try again in a moment."); err.status = 0; throw err; }
     let data = null; try { data = await r.json(); } catch (e) { /* not JSON */ }
     if (!r.ok) { const err = new Error((data && data.detail) || `Error ${r.status}`); err.status = r.status; throw err; }
@@ -253,6 +253,10 @@
     $("#sheet").innerHTML = `<div class="grab"></div><button type="button" class="close" id="close" aria-label="Close">×</button>
       <div class="muted small">${esc(d.cat)} · ${esc(d.grp)}</div>
       <h1 style="margin-top:4px">${esc(d.name)}</h1>
+      ${d.pic ? `<a href="api/pictures/${d.pic}" target="_blank" rel="noopener"><img class="itempic" src="api/pictures/${d.pic}" alt="Picture of ${esc(d.name)}"></a>` : ""}
+      ${me.price_edit ? `<div class="picacts"><button type="button" class="link small" id="picAdd">${d.pic ? "Replace picture" : "+ Add a picture"}</button>
+        ${d.pic ? '<button type="button" class="link small danger-l" id="picDel">Remove picture</button>' : ""}
+        <input type="file" id="picFile" accept="image/*" class="hidden"></div>` : ""}
       <div class="meta" style="display:flex;flex-wrap:wrap;gap:6px">${tags(d)}</div>
       ${d.flag ? `<div class="flagbox">⚠ ${esc(d.flag)}<div class="small" style="font-weight:500;margin-top:4px">Confirm with the vendor before ordering.</div></div>` : ""}
       ${!isDoor(d) && others.length ? `<div class="box"><div class="vendorhead"><b>Compare vendors</b></div><div class="small muted" style="margin-top:6px">Only doors are compared across vendors. Search the part # or name to check another vendor.</div></div>` : ""}
@@ -606,13 +610,46 @@
       setTimeout(() => openPo(po.id), action === "download" ? 600 : 0);
     } catch (e) { tell(e.message); $$("#po-send, #po-dl").forEach(b => { b.disabled = false; }); btn.textContent = label; }
   }
+  // a product picture for the open item (editors): file = a File to add / replace, null = remove
+  async function itemPicture(file) {
+    const d = BYID.get(+$("#sheet").dataset.id); if (!d) return;
+    if (!file && !confirm("Remove this item's picture? Crews will see “+ Picture” on Receiving again.")) return;
+    try {
+      let r;
+      if (file) { const fd = new FormData(); fd.append("file", file); r = await api(`api/pricelist/items/${d.id}/picture`, { method: "POST", body: fd }); }
+      else r = await api(`api/pricelist/items/${d.id}/picture`, { method: "DELETE" });
+      // every item with the same vendor + part # shares the picture
+      const pk = (x) => x.sku ? "s:" + x.sku.replace(/\s+/g, "").toUpperCase() : "n:" + x.name.toLowerCase().split(/\s+/).join(" ");
+      (ITEMS[d.v] || []).forEach(x => { if (pk(x) === pk(d)) x.pic = file ? r.pic : null; });
+      toast(file ? "Picture saved" : "Picture removed"); openItem(d.id);
+    } catch (e) { toast(e.message); }
+  }
+  document.addEventListener("change", (e) => { if (e.target.id === "picFile" && e.target.files[0]) itemPicture(e.target.files[0]); });
+
+  const RECV = { partial: '<span class="st part">Part received</span>', done: '<span class="st done">Received</span>' };
+  let posQ = "", posTimer = null;
   async function loadPos() {
     try {
-      const rows = await api("api/pricelist/pos");
+      const rows = await api(`api/pricelist/pos?q=${encodeURIComponent(posQ)}`);
       $("#pastpos").innerHTML = rows.map(p => `<button type="button" class="po-row" data-po="${p.id}">
         <div><b>${esc(p.po_number)}</b>${p.is_test ? ' <span class="tag flag">TEST</span>' : ""}${p.manual ? ' <span class="tag v">by hand</span>' : ""}<div class="small muted">${esc(p.vendor_name || vname(p.vendor))} · ${esc(p.order_date)} · ${p.line_count} line${p.line_count > 1 ? "s" : ""} · ${esc(p.job_customer || p.job_number || "no job")} · by ${esc(p.by)}</div></div>
-        <div style="text-align:right"><b>${money(p.total)}</b><div>${p.status === "downloaded" ? '<span class="st dl">Downloaded</span>' : '<span class="st sent">Sent</span>'}</div></div></button>`).join("") || '<div class="muted small">No purchase orders yet.</div>';
+        <div style="text-align:right"><b>${money(p.total)}</b><div>${p.status === "downloaded" ? '<span class="st dl">Downloaded</span>' : '<span class="st sent">Sent</span>'}${RECV[p.recv_status] ? " " + RECV[p.recv_status] : ""}</div></div></button>`).join("")
+        || `<div class="muted small">${posQ ? "No purchase order matches." : "No purchase orders yet."}</div>`;
     } catch (e) { $("#pastpos").innerHTML = `<div class="muted small">${esc(e.message)}</div>`; }
+  }
+  document.addEventListener("input", (e) => {
+    if (e.target.id !== "posQ") return;
+    posQ = e.target.value.trim(); clearTimeout(posTimer); posTimer = setTimeout(loadPos, 300);
+  });
+  // what has come in on a PO, line by line (from Receiving Reports)
+  function receivedBox(p) {
+    if (!p.recv_status) return `<div class="box small" style="flex:1;margin:0">Nothing received against this PO yet. Crews pick it on the Receiving Report.</div>`;
+    const rows = p.lines.map((l, i) => {
+      const got = Math.min(p.received[String(i)] || 0, l.qty);
+      return `<tr><td>${esc(l.name)}${l.size ? " " + esc(l.size) : ""}</td><td style="text-align:right">${got} of ${l.qty}</td><td>${got >= l.qty ? "✓" : got ? "short" : "waiting"}</td></tr>`;
+    }).join("");
+    return `<div class="box small" style="flex:1;margin:0"><b>${p.recv_status === "done" ? "Everything received" : "Part received"}</b>
+      <table class="recv">${rows}</table><div class="muted">The Receiving Reports are in Admin → Reports (search the PO #).</div></div>`;
   }
   async function openPo(id) {
     try {
@@ -630,7 +667,8 @@
           <a class="btn secondary" style="text-align:center;line-height:54px;text-decoration:none" href="api/pricelist/pos/${p.id}/pdf?download=1">⬇︎ Download PDF</a>
           ${p.status === "downloaded" && canEmail ? `<button type="button" class="btn" id="po-sendnow" data-po="${p.id}">Send to vendor now</button>` : ""}
           ${p.manual ? `<button type="button" class="btn secondary" id="po-asnew">Write a new PO from this</button>` : `<button type="button" class="btn secondary" id="po-reorder" data-po="${p.id}">Copy into buy list</button>`}</div>
-        <div class="po-actions po-warn"><div class="box small" style="flex:1;margin:0">${p.is_test ? "<b>TEST PO</b> (emailed only to you). " : ""}${p.manual ? "Written by hand. " : ""}${p.status === "downloaded" ? `Saved and downloaded by ${esc(p.by)}. <b>Not emailed to the vendor.</b>${canEmail ? "" : ` ${esc(vend.name)} has no order email set, so send the PDF yourself.`}` : `Sent by ${esc(p.by)} · ${st}`}</div></div>${paper.html}`;
+        <div class="po-actions po-warn"><div class="box small" style="flex:1;margin:0">${p.is_test ? "<b>TEST PO</b> (emailed only to you). " : ""}${p.manual ? "Written by hand. " : ""}${p.status === "downloaded" ? `Saved and downloaded by ${esc(p.by)}. <b>Not emailed to the vendor.</b>${canEmail ? "" : ` ${esc(vend.name)} has no order email set, so send the PDF yourself.`}` : `Sent by ${esc(p.by)} · ${st}`}</div></div>
+        <div class="po-actions po-warn">${receivedBox(p)}</div>${paper.html}`;
       S.lastPo = p;
       $("#podoc").dataset.po = JSON.stringify({ vendor: p.vendor, lines: p.lines.map(l => ({ sku: l.sku, qty: l.qty })) });
       $("#podoc").classList.remove("hidden"); $("#podoc").scrollTop = 0;
@@ -1036,6 +1074,8 @@
     const tg = t.closest("[data-tagstyles]"); if (tg) { openStyleTagger(tg.dataset.tagstyles); return; }
     if (t.id === "close2") { closeSheet(); renderSheets(); return; }
     if (t.id === "edit") { openEditor(BYID.get(+$("#sheet").dataset.id)); return; }
+    if (t.id === "picAdd") { $("#picFile").click(); return; }
+    if (t.id === "picDel") { itemPicture(null); return; }
     if (t.id === "edSave") { saveEditor(t); return; }
     if (t.id === "edDelete") { deleteEdited(); return; }
     if (t.id === "edCancel") { const id = +$("#sheet").dataset.id; if (id && BYID.has(id)) openItem(id); else closeSheet(); return; }

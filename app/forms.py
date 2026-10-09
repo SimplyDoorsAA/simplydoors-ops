@@ -70,6 +70,8 @@ FORMS = {
         "slug": "receiving", "prefix": "RCV", "order": 1,
         "blurb": "Log a delivery coming in: tickets, product photos, where it went.",
         "fields": [
+            {"key": "po_pick", "label": "Purchase order", "ask": "Which PO is this delivery for?", "type": "poreceive",
+             "help": "Pick the PO, then mark each line. No PO (customer's goods, a vendor not ordered from here)? Choose “No PO” and type the number."},
             {"key": "po", "label": "Job / PO Number", "type": "text", "required": True},
             {"key": "customer", "label": "Customer", "type": "text", "required": True},
             {"key": "location", "label": "Receiving Location", "ask": "Where did you put it?", "type": "select",
@@ -483,6 +485,16 @@ def clean(form_type: str, raw: dict) -> tuple[dict, list[str]]:
             continue
         if t == "joblookup":
             continue                      # handled after every field is cleaned (lookup_changes)
+        if t == "poreceive":
+            if (raw.get("po_id") or "").strip():
+                from . import pricelist
+                po, lines, errs = pricelist.check_receiving(raw.get("po_id"), raw.get("po_lines") or "[]")
+                errors.extend(errs)
+                if po:
+                    data.update(po_id=po["id"], po_number=po["po_number"], po_vendor=po["vendor"],
+                                po_is_test=po["is_test"], po_lines=lines,
+                                short=any(ln["state"] != "received" for ln in lines))
+            continue
         need = f.get("required", False)
         if t in ("text", "textarea"):
             v = (raw.get(key) or "").strip()[:MAX_TEXT if t == "textarea" else 300]
@@ -588,6 +600,17 @@ def display_rows(form_type: str, data: dict) -> list[tuple[str, str]]:
             for ik, text in f["items"]:
                 rows.append((text, "Yes" if data.get(ik) else "No"))
             continue
+        if t == "poreceive":
+            if data.get("po_id"):
+                rows.append(("Purchase order", f"{data.get('po_number')} · {data.get('po_vendor')}"))
+                for ln in data.get("po_lines") or []:
+                    of = f"{ln['got']} of {ln['expected']}" + (f" ({ln['before']} came earlier)" if ln.get("before") else "")
+                    v = {"received": f"Received {of}", "short": f"SHORT: {of} came",
+                         "backordered": f"BACKORDERED: 0 of {ln['expected']}"}[ln["state"]]
+                    rows.append((ln["name"] + (f" ({ln['sku']})" if ln.get("sku") else ""), v))
+            elif FORMS[form_type].get("slug") == "receiving" and "po" in data:
+                rows.append(("Purchase order", "No PO picked (typed by hand)"))
+            continue
         if t == "joblookup":
             if data.get("sf_job"):
                 rows.append(("Service Fusion job", data["sf_job"]))
@@ -634,6 +657,8 @@ def needs_attention(form_type: str, data: dict) -> str | None:
         return "Install follow-up"
     if form_type == "Vehicle Inspection" and data.get("defective"):
         return "Defective vehicle"
+    if form_type == "Receiving Report" and data.get("short"):
+        return "Short delivery"
     if form_type == "Vehicle Incident":
         return "Vehicle incident"
     if form_type == "Employee Incident":
@@ -652,7 +677,7 @@ def summary(form_type: str, data: dict) -> str:
 def subject_for(form_type: str, data: dict, staff_name: str, receipt: str) -> str:
     d = data
     s = {
-        "Receiving Report": f"Receiving Report: {d.get('po')} - {d.get('customer')}",
+        "Receiving Report": f"{'SHORT DELIVERY - ' if d.get('short') else ''}Receiving Report: {d.get('po')} - {d.get('customer')}",
         "Delivery Proof": f"Delivery Proof: {d.get('po')} - {d.get('customer')}",
         "Installation Completion": f"{'NEEDS FOLLOW-UP - ' if d.get('attention') else ''}Install Complete: {d.get('po')} - {d.get('customer')}"
                                    f"{' (punch list)' if d.get('work') == 'No' else ''}{' (not signed)' if d.get('cust_present') == 'No' else ''}"

@@ -28,6 +28,8 @@
     login_fail_unknown_name: "Sign-in with unknown name", login_while_locked: "Tried to sign in while locked",
     login_blocked_ip: "Blocked: too many wrong PINs from one connection", account_locked: "Account locked",
     account_unlocked: "Account unlocked", logout: "Signed out", report_submitted: "Submitted a report",
+    product_picture_added: "Added a product picture", product_picture_replaced: "Replaced a product picture",
+    product_picture_removed: "Removed a product picture",
     report_resolved: "Marked a report resolved", report_reopened: "Reopened a resolved report", attention_backfilled: "Needs attention list started",
     report_viewed: "Opened a report", report_pdf_downloaded: "Downloaded a report PDF", email_sent: "Email sent",
     email_failed: "Email failed", email_skipped_no_recipients: "Email skipped (nobody on the list)",

@@ -110,6 +110,20 @@ CREATE TABLE IF NOT EXISTS pl_pos (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS pl_pos_number ON pl_pos(po_number);
+
+-- Product pictures, kept per vendor + part number (or, for a hand-written line with no part #, its description),
+-- so they survive a new version of the sheet. Price List editors add, replace or remove them; on Receiving a crew
+-- member can add one for a line that has none yet ("fill the gaps").
+CREATE TABLE IF NOT EXISTS pl_pictures (
+    id INTEGER PRIMARY KEY,
+    vendor TEXT NOT NULL,
+    pkey TEXT NOT NULL,                          -- picture_key(): the part # in capitals, or "name:<description>"
+    path TEXT NOT NULL,
+    added_by TEXT NOT NULL,
+    added_at TEXT NOT NULL,
+    source TEXT NOT NULL,                        -- 'editor' | 'receiving'
+    UNIQUE(vendor, pkey)
+);
 """
 
 SEED_VENDORS = [
@@ -141,6 +155,11 @@ def init(c) -> None:
     if "pack" not in cols:
         c.execute("ALTER TABLE pl_items ADD COLUMN pack TEXT NOT NULL DEFAULT ''")
     pcols = [r[1] for r in c.execute("PRAGMA table_info(pl_pos)")]
+    if "recv_status" not in pcols:
+        # Receiving against a PO: how many of each line have come in ({"<line index>": qty}) and the overall state:
+        # '' nothing received yet, 'partial' some lines short or backordered, 'done' everything in.
+        c.execute("ALTER TABLE pl_pos ADD COLUMN received TEXT NOT NULL DEFAULT '{}'")
+        c.execute("ALTER TABLE pl_pos ADD COLUMN recv_status TEXT NOT NULL DEFAULT ''")
     if "status" not in pcols:
         # hand-written POs (manual=1) and POs saved and downloaded without being emailed (status 'downloaded')
         c.execute("ALTER TABLE pl_pos ADD COLUMN status TEXT NOT NULL DEFAULT 'sent'")
@@ -232,6 +251,9 @@ def items(vendor: str) -> list[dict]:
         d["edited_at"], d["edited_by"] = r["edited_at"], r["edited_by"]
         d["style"] = r["style"] or ""
         out.append(d)
+    pics = pictures_for(vendor, [picture_key(d["sku"], d["name"]) for d in out])
+    for d in out:
+        d["pic"] = pics.get(picture_key(d["sku"], d["name"]))
     return out
 
 
@@ -660,6 +682,7 @@ def po_out(r, with_lines=False) -> dict:
          "ship_to": r["ship_to"], "ship_address": r["ship_address"], "notes": r["notes"], "total": r["total"],
          "sheet_label": r["sheet_label"], "sent_to": r["sent_to"], "created_at": r["created_at"],
          "is_test": bool(r["is_test"]), "status": r["status"], "manual": bool(r["manual"]),
+         "recv_status": r["recv_status"], "received": _received(r),
          "vendor_name": r["vendor_name"], "vendor_address": r["vendor_address"].split("\n") if r["vendor_address"] else [],
          "vendor_email_set": bool(r["vendor_email"]),       # a one-off vendor: whether it can be emailed from here
          "by": r["staff_name"] if "staff_name" in r.keys() else ""}
@@ -710,10 +733,202 @@ def clean_manual_lines(raw) -> tuple[list[dict], float]:
     return lines, round(total, 2)
 
 
-def recent_pos(limit=50) -> list[dict]:
+def recent_pos(limit=50, q: str = "") -> list[dict]:
+    """The newest POs; with q, those whose PO #, job #, customer, vendor or line text contains it (any of the words)."""
+    where, args = "", []
+    words = [w for w in re.split(r"\s+", (q or "").strip())[:5] if w]
+    for w in words:
+        where += (" AND" if where else " WHERE") + (" (p.po_number LIKE ? OR p.job_number LIKE ? OR p.job_customer LIKE ?"
+                                                    " OR p.vendor_name LIKE ? OR v.name LIKE ? OR p.lines LIKE ?)")
+        args += [f"%{w}%"] * 6
     rows = conn().execute("SELECT p.*, s.name AS staff_name FROM pl_pos p JOIN staff s ON s.id=p.staff_id "
-                          "ORDER BY p.id DESC LIMIT ?", (limit,)).fetchall()
+                          f"LEFT JOIN pl_vendors v ON v.code=p.vendor{where} ORDER BY p.id DESC LIMIT ?",
+                          (*args, limit)).fetchall()
     return [po_out(r) for r in rows]
+
+
+# ------------------------------------------------------------------ product pictures
+def picture_key(sku: str, name: str = "") -> str:
+    """What a picture is filed under for one vendor: the part # (capitals, no spaces), or for a line with no part #
+    (hand-written POs) its description, so a picture added once shows up again next time."""
+    s = re.sub(r"\s+", "", str(sku or "")).upper()
+    if s:
+        return s[:60]
+    n = " ".join(str(name or "").lower().split())
+    return ("name:" + n)[:200] if n else ""
+
+
+def pictures_for(vendor: str, keys) -> dict:
+    """{key: picture id} for the keys that have a picture."""
+    keys = [k for k in set(keys) if k]
+    out = {}
+    for i in range(0, len(keys), 500):
+        chunk = keys[i:i + 500]
+        marks = ",".join("?" * len(chunk))
+        for r in conn().execute(f"SELECT id, pkey FROM pl_pictures WHERE vendor=? AND pkey IN ({marks})", (vendor, *chunk)):
+            out[r["pkey"]] = r["id"]
+    return out
+
+
+def get_picture(pid: int):
+    return conn().execute("SELECT * FROM pl_pictures WHERE id=?", (pid,)).fetchone()
+
+
+def find_picture(vendor: str, key: str):
+    return conn().execute("SELECT * FROM pl_pictures WHERE vendor=? AND pkey=?", (vendor, key)).fetchone()
+
+
+def set_picture(vendor: str, key: str, path: str, who: str, source: str) -> tuple[int, str | None]:
+    """Files a saved picture under vendor + key, replacing any earlier one. Returns (id, the replaced file's path)."""
+    c = conn()
+    old = find_picture(vendor, key)
+    if old:
+        c.execute("UPDATE pl_pictures SET path=?, added_by=?, added_at=?, source=? WHERE id=?",
+                  (path, who, now_iso(), source, old["id"]))
+        return old["id"], old["path"]
+    cur = c.execute("INSERT INTO pl_pictures(vendor, pkey, path, added_by, added_at, source) VALUES (?,?,?,?,?,?)",
+                    (vendor, key, path, who, now_iso(), source))
+    return cur.lastrowid, None
+
+
+def remove_picture(vendor: str, key: str):
+    """Returns the removed row (its file is the caller's to delete), or None."""
+    old = find_picture(vendor, key)
+    if old:
+        conn().execute("DELETE FROM pl_pictures WHERE id=?", (old["id"],))
+    return old
+
+
+# ------------------------------------------------------------------ receiving against a PO
+RECV_STATES = ("received", "short", "backordered")
+
+
+def _received(r) -> dict:
+    try:
+        d = json.loads(r["received"] or "{}")
+        return {str(k): int(v) for k, v in d.items()} if isinstance(d, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+def _line_label(ln: dict) -> str:
+    return " ".join(x for x in (ln.get("name") or "", ln.get("size") or "") if x).strip() or ln.get("sku") or "Item"
+
+
+def receiving_lines(r) -> list[dict]:
+    """A PO's lines as the crew sees them on Receiving: what was ordered and what's still to come. Never prices."""
+    got = _received(r)
+    vendor = r["vendor"]
+    lines = json.loads(r["lines"])
+    pics = pictures_for(vendor, [picture_key(ln.get("sku"), ln.get("name")) for ln in lines])
+    out = []
+    for i, ln in enumerate(lines):
+        qty = int(ln.get("qty") or 0)
+        have = min(got.get(str(i), 0), qty)
+        out.append({"i": i, "sku": ln.get("sku") or "", "name": _line_label(ln), "uom": ln.get("uom") or "",
+                    "ordered": qty, "received": have, "remaining": qty - have,
+                    "pic": pics.get(picture_key(ln.get("sku"), ln.get("name")))})
+    return out
+
+
+def open_pos_for_receiving(include_test: bool, q: str = "", limit: int = 40) -> list[dict]:
+    """POs not fully received yet (newest first) for the Receiving form: PO #, vendor, job and lines, no prices.
+    Test POs only show for the owner in Test mode, and then only test POs."""
+    where = "p.recv_status != 'done' AND p.is_test=?"
+    args = [1 if include_test else 0]
+    for w in [w for w in re.split(r"\s+", (q or "").strip())[:5] if w]:
+        where += " AND (p.po_number LIKE ? OR p.job_number LIKE ? OR p.job_customer LIKE ? OR p.vendor_name LIKE ? OR v.name LIKE ?)"
+        args += [f"%{w}%"] * 5
+    rows = conn().execute("SELECT p.*, v.name AS listed_vendor FROM pl_pos p LEFT JOIN pl_vendors v ON v.code=p.vendor"
+                          f" WHERE {where} ORDER BY p.id DESC LIMIT ?", (*args, limit)).fetchall()
+    return [receiving_po(r) for r in rows]
+
+
+def receiving_po(r) -> dict:
+    vendor = r["vendor_name"] or (r["listed_vendor"] if "listed_vendor" in r.keys() else "") or po_vendor(dict(r))["name"]
+    return {"id": r["id"], "po_number": r["po_number"], "vendor": vendor, "job_number": r["job_number"],
+            "job_customer": r["job_customer"], "order_date": r["order_date"], "recv_status": r["recv_status"],
+            "is_test": bool(r["is_test"]), "lines": receiving_lines(r)}
+
+
+def check_receiving(po_id, raw_lines) -> tuple[dict | None, list[dict], list[str]]:
+    """Validates what the crew marked on Receiving against the PO. raw_lines: JSON text or list of
+    {i, state: received|short|backordered, got}. Returns (po summary, cleaned lines, errors)."""
+    try:
+        pid = int(str(po_id).strip())
+    except (TypeError, ValueError):
+        return None, [], ["That purchase order wasn't found. Pick it again, or choose “No PO”."]
+    r = conn().execute("SELECT p.*, v.name AS listed_vendor FROM pl_pos p LEFT JOIN pl_vendors v ON v.code=p.vendor"
+                       " WHERE p.id=?", (pid,)).fetchone()
+    if not r:
+        return None, [], ["That purchase order wasn't found. Pick it again, or choose “No PO”."]
+    po = receiving_po(r)
+    try:
+        marked = json.loads(raw_lines) if isinstance(raw_lines, str) else (raw_lines or [])
+    except ValueError:
+        marked = []
+    by_i = {}
+    for m in marked if isinstance(marked, list) else []:
+        if isinstance(m, dict) and str(m.get("i", "")).isdigit():
+            by_i[int(m["i"])] = m
+    lines, errors, left = [], [], 0
+    for ln in po["lines"]:
+        if ln["remaining"] <= 0:
+            continue                                  # came in on an earlier delivery
+        m = by_i.get(ln["i"]) or {}
+        state = str(m.get("state") or "")
+        if state not in RECV_STATES:
+            left += 1
+            continue
+        if state == "received":
+            got = ln["remaining"]
+        elif state == "backordered":
+            got = 0
+        else:
+            try:
+                got = int(str(m.get("got", "")).strip())
+            except ValueError:
+                got = -1
+            if not 0 <= got < ln["remaining"]:
+                errors.append(f"{ln['name']}: type how many came (0 to {ln['remaining'] - 1}).")
+                continue
+        lines.append({"i": ln["i"], "sku": ln["sku"], "name": ln["name"], "uom": ln["uom"], "ordered": ln["ordered"],
+                      "before": ln["received"], "expected": ln["remaining"], "got": got, "state": state})
+    if left:
+        errors.insert(0, f"Mark every PO line Received, Short or Backordered ({left} left).")
+    if not errors and not lines:
+        errors.append("Everything on this PO was already received. Choose “No PO” if this delivery is something else.")
+    summary = {"id": po["id"], "po_number": po["po_number"], "vendor": po["vendor"], "job_number": po["job_number"],
+               "job_customer": po["job_customer"], "is_test": po["is_test"]}
+    return summary, lines, errors
+
+
+def apply_receiving(c, po_id: int, lines: list[dict], is_test: bool) -> str | None:
+    """Adds what came in to the PO (inside the report's own save). A test report only ever touches a test PO and a
+    real one a real PO. Returns the PO's new receiving state, or None if nothing was applied."""
+    r = c.execute("SELECT * FROM pl_pos WHERE id=?", (po_id,)).fetchone()
+    if not r or bool(r["is_test"]) != bool(is_test):
+        return None
+    got = _received(r)
+    ordered = [int(ln.get("qty") or 0) for ln in json.loads(r["lines"])]
+    for ln in lines:
+        i = int(ln["i"])
+        if 0 <= i < len(ordered):
+            got[str(i)] = min(ordered[i], got.get(str(i), 0) + int(ln["got"]))
+    done = all(got.get(str(i), 0) >= q for i, q in enumerate(ordered))
+    status = "done" if done else ("partial" if any(got.values()) or lines else "")
+    c.execute("UPDATE pl_pos SET received=?, recv_status=? WHERE id=?", (json.dumps(got), status, po_id))
+    return status
+
+
+def vendor_for_po_number(po_number: str) -> str:
+    """The vendor on the newest real PO with this number (for the RMA form), or ''."""
+    po_number = (po_number or "").strip()
+    if not po_number:
+        return ""
+    r = conn().execute("SELECT p.vendor, p.vendor_name, v.name AS listed FROM pl_pos p LEFT JOIN pl_vendors v ON v.code=p.vendor"
+                       " WHERE p.po_number=? AND p.is_test=0 ORDER BY p.id DESC LIMIT 1", (po_number,)).fetchone()
+    return (r["vendor_name"] or r["listed"] or r["vendor"]) if r else ""
 
 
 def get_po(pid: int):

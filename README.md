@@ -34,6 +34,21 @@ GitHub Pages portal + Google Apps Script, one form at a time.
   Service Fusion. The customer's copy never shows it.
 - Key: `SF_CLIENT_ID` / `SF_CLIENT_SECRET` in `~/ai-server/opsapp/.env`, saved by `deploy/sf-setup.sh`. Health: Admin → Status.
 
+## Receiving against a PO, and product pictures
+
+- **Receiving Report** starts with "Which PO is this delivery for?": a search list of POs not fully received yet (PO #, vendor,
+  job, lines still to come; **never prices**, so every crew member can use it). Pick one and mark each line **Received**,
+  **Short** (and how many came) or **Backordered**; "Mark all received" does the easy case in one tap. The PO # and customer fill in.
+  "No PO" keeps the old way (type the number) for customer goods and anything not ordered here.
+- The PO keeps count across deliveries: Price List → Purchase orders shows **Part received** / **Received**, and opening a PO
+  lists each line's "4 of 4". A PO that's all in drops off the Receiving list. Purchase orders can be searched.
+- A delivery with a Short or Backordered line is flagged **Short delivery** on the Needs attention list, and its email subject
+  starts "SHORT DELIVERY". Test POs only show to the owner in Test mode, and only test reports count against them.
+- **RMA:** typing a PO # that matches a PO fills in the vendor.
+- **Product pictures** are kept per vendor + part # (or the description, for a line with no part #), so they survive a new
+  version of the sheet. Price List editors add, replace or remove one on the item ("+ Add a picture"). On Receiving, a line with
+  no picture shows "+ Picture": the crew's photo is saved for next time (crews can only fill gaps, never replace).
+
 ## Needs attention (flagged reports)
 
 - A report is **flagged** when an installer ticks a follow-up answer on Installation Completion (NEEDS FOLLOW-UP), a Vehicle Inspection
