@@ -5,6 +5,7 @@ import smtplib
 import ssl
 import threading
 import time
+import traceback
 from email.message import EmailMessage
 from email.utils import formataddr
 from html import escape
@@ -359,8 +360,13 @@ def process_queue_once() -> None:
     for e in due:
         try:
             _send_one(e)
-            c.execute("UPDATE emails SET status='sent', attempts=attempts+1, sent_at=?, last_error=NULL WHERE id=?",
-                      (now_iso(), e["id"]))
+        except Exception as ex:  # noqa: BLE001
+            _send_failed(c, e, ex)
+            continue
+        # it went out: from here on nothing may put it back in the queue, or everyone gets it twice
+        c.execute("UPDATE emails SET status='sent', attempts=attempts+1, sent_at=?, last_error=NULL WHERE id=?",
+                  (now_iso(), e["id"]))
+        try:
             details = {"report_id": e["report_id"], "to": e["recipients"], "subject": e["subject"]}
             if e["po_id"]:
                 details = {"po_id": e["po_id"], "to": e["recipients"], "cc": e["cc"], "subject": e["subject"]}
@@ -371,20 +377,24 @@ def process_queue_once() -> None:
             if e["bcc"]:
                 details["private_copies"] = len([x for x in e["bcc"].split(",") if x.strip()])
             audit(None, "system", "email_sent", f"email:{e['id']}", details)
-        except Exception as ex:  # noqa: BLE001
-            attempts = e["attempts"] + 1
-            status = "failed" if attempts >= MAX_ATTEMPTS else "pending"
-            wait = RETRY_SECONDS[min(attempts, len(RETRY_SECONDS) - 1)]
-            next_try = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + wait))
-            c.execute("UPDATE emails SET attempts=?, status=?, last_error=?, next_try_at=? WHERE id=?",
-                      (attempts, status, str(ex)[:500], next_try, e["id"]))
-            audit(None, "system", "email_failed", f"email:{e['id']}",
-                  {"lead_id": e["lead_id"], "attempt": attempts, "error": str(ex)[:300]} if e["lead_id"] else
-                  {"report_id": e["report_id"], "attempt": attempts, "error": str(ex)[:300]})
-            if attempts == 3 or status == "failed":
-                kind = "PO" if e["po_id"] else "Lead" if e["lead_id"] else "Customer form" if e["send_id"] else "Report"
-                alerts.push("Ops app: email not sending",
-                            f"{kind} email '{e['subject']}' failed {attempts}x: {str(ex)[:150]}", "high")
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+
+
+def _send_failed(c, e, ex) -> None:
+    attempts = e["attempts"] + 1
+    status = "failed" if attempts >= MAX_ATTEMPTS else "pending"
+    wait = RETRY_SECONDS[min(attempts, len(RETRY_SECONDS) - 1)]
+    next_try = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + wait))
+    c.execute("UPDATE emails SET attempts=?, status=?, last_error=?, next_try_at=? WHERE id=?",
+              (attempts, status, str(ex)[:500], next_try, e["id"]))
+    audit(None, "system", "email_failed", f"email:{e['id']}",
+          {"lead_id": e["lead_id"], "attempt": attempts, "error": str(ex)[:300]} if e["lead_id"] else
+          {"report_id": e["report_id"], "attempt": attempts, "error": str(ex)[:300]})
+    if attempts == 3 or status == "failed":
+        kind = "PO" if e["po_id"] else "Lead" if e["lead_id"] else "Customer form" if e["send_id"] else "Report"
+        alerts.push("Ops app: email not sending",
+                    f"{kind} email '{e['subject']}' failed {attempts}x: {str(ex)[:150]}", "high")
 
 
 def resend(report_id: int, actor, ip=None, agent=None) -> None:
