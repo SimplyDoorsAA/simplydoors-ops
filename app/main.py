@@ -1295,7 +1295,7 @@ def admin_retry_email(eid: int, request: Request, admin=Depends(current_admin)):
     c = conn()
     if not c.execute("SELECT 1 FROM emails WHERE id=? AND status!='sent'", (eid,)).fetchone():
         raise HTTPException(404)
-    c.execute("UPDATE emails SET status='pending', next_try_at=? WHERE id=?", (now_iso(), eid))
+    c.execute("UPDATE emails SET status='pending', attempts=0, next_try_at=? WHERE id=?", (now_iso(), eid))   # a full set of tries again
     audit(admin["id"], admin["name"], "email_retry_requested", f"email:{eid}", None, client_ip(request), ua(request))
     mailer._wake.set()
     return {"ok": True}
