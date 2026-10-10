@@ -232,6 +232,9 @@ def refresh(reason: str = "schedule") -> dict:
                 if r["number"] and r["number"] not in seen and r["status"].lower() not in CLOSED:
                     seen.add(r["number"])
                     rows.append(r)
+        if not rows and int(get_setting("sf_job_count") or "0") > 20:
+            # e.g. Service Fusion renamed its statuses: keep the last good list (and alert after 3 tries)
+            raise SFError("Service Fusion sent back no open jobs at all, so the last list was kept")
         c = conn()
         c.execute("BEGIN IMMEDIATE")
         try:
