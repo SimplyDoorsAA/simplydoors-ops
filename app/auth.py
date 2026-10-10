@@ -150,6 +150,11 @@ def find_staff_by_name(staff_name: str):
     return rows[0] if len(rows) == 1 else None
 
 
+# On a phone that has never signed in here the name is typed, so a wrong PIN and a made-up name get the same answer
+# (otherwise "4 more tries" would tell a stranger which names are real staff, which hiding the list is meant to stop).
+UNKNOWN_DEVICE_FAIL = "That name and PIN don't match. Type your first and last name, then your PIN."
+
+
 def attempt_login(staff_name: str, pin: str, ip: str, ua: str, known_device: bool = True):
     """Returns (staff_row | None, message, newly_locked: bool).
     known_device=False means this phone has never signed in here: its wrong PINs still count, but the lock they
@@ -170,7 +175,7 @@ def attempt_login(staff_name: str, pin: str, ip: str, ua: str, known_device: boo
     ok = check_pin(pin, row["pin_hash"] if row else None)    # slow on purpose; same time for unknown names
     if not row:
         audit(None, staff_name, "login_fail_unknown_name", staff_name, None, ip, ua)
-        return None, "Wrong PIN.", False
+        return None, "Wrong PIN." if known_device else UNKNOWN_DEVICE_FAIL, False
     # From here one sign-in at a time per database, so parallel wrong PINs each count and lock exactly once,
     # and a right PIN that lands after a parallel guess locked the account is still refused.
     c.execute("BEGIN IMMEDIATE")
@@ -192,7 +197,8 @@ def attempt_login(staff_name: str, pin: str, ip: str, ua: str, known_device: boo
         if not row["pin_hash"]:
             audit(row["id"], row["name"], "login_fail_no_pin", row["name"], None, ip, ua)
             c.execute("COMMIT")
-            return None, "Wrong PIN. If you've never been given a PIN, ask Adem or Paz.", False
+            return None, ("Wrong PIN. If you've never been given a PIN, ask Adem or Paz." if known_device
+                          else UNKNOWN_DEVICE_FAIL), False
         fails = c.execute("UPDATE staff SET failed_count=failed_count+1 WHERE id=? RETURNING failed_count",
                           (row["id"],)).fetchone()[0]
         if fails >= MAX_FAILS:
@@ -227,6 +233,8 @@ def attempt_login(staff_name: str, pin: str, ip: str, ua: str, known_device: boo
     except Exception:
         c.execute("ROLLBACK")
         raise
+    if not known_device:
+        return None, UNKNOWN_DEVICE_FAIL, False      # a typed name: the same answer whether or not the name is real
     left = MAX_FAILS - fails
     return None, f"Wrong PIN. {left} more tr{'y' if left == 1 else 'ies'} before the account locks.", False
 

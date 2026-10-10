@@ -290,6 +290,20 @@ def test_unknown_phone_never_sees_names_and_only_gets_short_locks(client):
     conn().execute("DELETE FROM ip_failures")
 
 
+def test_unknown_phone_cant_tell_real_names_from_made_up_ones(client):
+    sid = conn().execute("SELECT id FROM staff WHERE name='Elijah Kimmel'").fetchone()[0]
+    auth.set_pin(sid, "424242", "admin")
+    conn().execute("UPDATE staff SET failed_count=0, locked_until=NULL, lock_level=0, last_lock_at=NULL WHERE id=?", (sid,))
+    conn().execute("DELETE FROM ip_failures")
+    forget_phone(client)
+    real = login(client, "Elijah Kimmel", "000000").json()["detail"]
+    forget_phone(client)
+    fake = login(client, "Nobody Here", "000000").json()["detail"]
+    assert real == fake and "more tr" not in real
+    conn().execute("UPDATE staff SET failed_count=0 WHERE id=?", (sid,))
+    conn().execute("DELETE FROM ip_failures")
+
+
 def test_known_phone_cookie_outlives_the_session(client):
     assert login(client, "Jaime Mendoza", "135790").status_code == 200
     dev = client.cookies.get("sdops_device")
