@@ -1949,10 +1949,17 @@ def _owner_test(staff) -> bool:
     return bool(staff["is_owner"]) and get_setting("owner_test_mode") == "1"
 
 
+def _require_receiving(staff):
+    """Open POs list job numbers and customers: only for people who have the Receiving form."""
+    if not staff["is_admin"] and "Receiving Report" not in visible_forms(staff):
+        raise HTTPException(403, "Receiving isn't switched on for you.")
+
+
 @app.get("/api/receiving/pos")
 def receiving_pos(q: str = "", staff=Depends(current_staff)):
     """Open POs for the Receiving form: PO #, vendor, job and each line's quantity and picture. Never prices, so
     anyone who can file a Receiving Report may see it."""
+    _require_receiving(staff)
     return pricelist.open_pos_for_receiving(_owner_test(staff), q[:80])
 
 
@@ -2010,6 +2017,7 @@ async def receiving_add_picture(request: Request, staff=Depends(current_staff)):
     """A crew member adds the missing picture for a line on the PO they're receiving. Only fills gaps: a line that
     already has a picture keeps it (editors replace pictures in the Price List)."""
     require_app_header(request)
+    _require_receiving(staff)
     async with request.form() as form:
         try:
             po_id, line = int(str(form.get("po_id", ""))), int(str(form.get("line", "")))

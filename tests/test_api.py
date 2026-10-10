@@ -2722,6 +2722,22 @@ def test_product_pictures(client):
     assert conn().execute("SELECT COUNT(*) FROM audit WHERE action='product_picture_added'").fetchone()[0] >= 2
 
 
+def test_open_po_list_needs_the_receiving_form(client):
+    from app import forms
+    before = forms.enabled_forms()
+    login(client, "Adem Atis", "246810")
+    client.put("/ops/api/admin/forms-enabled", json={"forms": ["Measure Report"]}, headers=H)
+    try:
+        login(client, "Jaime Mendoza", "135790")
+        assert client.get("/ops/api/receiving/pos").status_code == 403
+        assert client.post("/ops/api/receiving/pictures", data={"po_id": "1", "line": "0"}, headers=H).status_code == 403
+    finally:
+        login(client, "Adem Atis", "246810")
+        client.put("/ops/api/admin/forms-enabled", json={"forms": list(before)}, headers=H)
+    login(client, "Jaime Mendoza", "135790")
+    assert client.get("/ops/api/receiving/pos").status_code == 200
+
+
 def test_rma_vendor_from_po(client):
     _make_po("PO-RMA-55", [{"sku": "A", "name": "Door", "qty": 1}], vendor="BC")
     login(client, "Jaime Mendoza", "135790")
