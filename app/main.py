@@ -1967,7 +1967,8 @@ def picture_file(pid: int, staff=Depends(current_staff)):
     r = pricelist.get_picture(pid)
     if not r or not os.path.isfile(r["path"]):
         raise HTTPException(404)
-    return FileResponse(r["path"], media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+    # a replaced picture keeps its id, so phones check back each time (a quick "not changed" when it's the same file)
+    return FileResponse(r["path"], media_type="image/jpeg", headers={"Cache-Control": "private, no-cache"})
 
 
 async def _picture_bytes(file) -> bytes:
