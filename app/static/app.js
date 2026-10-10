@@ -2242,6 +2242,7 @@
   async function flushOutbox() {
     if (flushing || !me) return;
     flushing = true;
+    let changed = false;                               // only redraw Home when a saved report went out (or failed for good)
     try {
       const all = await outboxAll();
       for (const e of all) {
@@ -2250,12 +2251,14 @@
         if (r.login) { needLogin = true; break; }
         needLogin = false;
         if (r.offline) break;                          // no signal; try again later
+        changed = true;
         // a server error on one report doesn't hold up the others
       }
     } finally {
       flushing = false;
       updateBanner();
-      if (!$("#viewHome").classList.contains("hidden")) showHome();
+      // redrawing Home every 30 s jumped a scrolled phone back to the top and re-asked the server for the list
+      if (changed && !$("#viewHome").classList.contains("hidden")) showHome();
     }
   }
 
